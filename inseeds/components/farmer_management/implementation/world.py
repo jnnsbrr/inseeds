@@ -63,8 +63,9 @@ class World(I.World):
 
     def update_output_table(self, t, init=False):
         df = self.create_output_table(t)
-        self.write_output_parquet(df, init)
-        self.write_output_csv(df, init)
+        if not hasattr(sys, "_called_from_test"):
+            self.write_output_parquet(df, init)
+            self.write_output_csv(df, init)
 
     def create_output_table(self, t):
         """Initialize output data"""
