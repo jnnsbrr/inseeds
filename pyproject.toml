@@ -29,7 +29,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12"
 ]
 dependencies = [
-    "copan:CORE>=0.8.0",
     "pycoupler>=1.0.0",
     "numpy>=1.20.3",
     "netCDF4>=1.5.8",
@@ -38,7 +37,9 @@ dependencies = [
     "ruamel.yaml>=0.17.16",
     "fuzzywuzzy>=0.18.0",
     "Levenshtein>=0.12.2",
-    "pyarrow>17.0.0"
+    "pyarrow>17.0.0",
+    "pycopancore @ git+https://github.com/jnnsbrr/pycopancore.git",
+    "pycoupler @ git+https://github.com/PIK-LPJmL/pycoupler.git"
 ]
 
 [project.optional-dependencies]
