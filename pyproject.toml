@@ -37,7 +37,8 @@ dependencies = [
     "scipy>=1.7.1",
     "ruamel.yaml>=0.17.16",
     "fuzzywuzzy>=0.18.0",
-    "Levenshtein>=0.12.2"
+    "Levenshtein>=0.12.2",
+    "pyarrow>17.0.0"
 ]
 
 [project.optional-dependencies]

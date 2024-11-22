@@ -13,7 +13,6 @@ from pycoupler.utils import search_country
 # paths
 sim_path = "./simulations"
 model_path = "./LPJmL"
-inseeds_config_file = "./inseeds/inseeds/models/farmer_management/config.yaml"
 
 spinup = True
 
@@ -41,7 +40,7 @@ config_spinup.regrid(sim_path, country_code=country_code, overwrite_input=False)
 config_spinup_fn = config_spinup.to_json()
 
 # create config for historic run
-config_historic = read_config(file_name="lpjml.js",
+config_historic = read_config(file_name="lpjml_config.cjson",
                                 model_path=model_path)
 
 # set historic run configuration

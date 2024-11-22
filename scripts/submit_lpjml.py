@@ -7,7 +7,7 @@ from pycoupler.utils import search_country
 # Settings ================================================================== #
 
 # paths
-sim_path = "./global_runs"
+sim_path = "./simulations"
 model_path = "/LPJmL"
 
 

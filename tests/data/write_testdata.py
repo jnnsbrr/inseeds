@@ -1,15 +1,21 @@
 """Run script for InSEEDS with LPJmL coupling"""
+import pickle
+
 from pycoupler.config import read_config
 from pycoupler.run import run_lpjml, check_lpjml
 from pycoupler.coupler import LPJmLCoupler
 from pycoupler.utils import search_country
 
+import os
+os.chdir("/p/projects/copan/users/jannesbr/repos/inseeds")
+
+# from pycopancore.runners.runner import Runner
 from inseeds.models.farmer_management import model as M # noqa
 
 # Settings ================================================================== #
 
 # paths
-sim_path = "./simulations"
+sim_path = "./test"
 model_path = "./LPJmL"
 inseeds_config_file = "./inseeds/models/farmer_management/config.yaml"  # noqa"
 
@@ -28,7 +34,7 @@ config_coupled = read_config(
 config_coupled.set_coupled(sim_path,
                            sim_name="coupled_test",
                            dependency="historic_run",
-                           start_year=2001, end_year=2100,
+                           start_year=2001, end_year=2030,
                            coupled_year=2023,
                            coupled_input=["with_tillage"],  # residue_on_field
                            coupled_output=["soilc_agr_layer",
@@ -89,19 +95,15 @@ lpjml = LPJmLCoupler(config_file=config_coupled_fn)
 # initialize (LPJmL) world
 world = M.World(model=M, lpjml=lpjml)
 
-# initialize (cells and) individuals
-farmers, cells = world.init_individuals()
+# write config as json
+world.lpjml.config.to_json("./inseeds/tests/data/config.json")
 
-for year in world.lpjml.get_sim_years():
-    world.update(year)
-
-
-with open('/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/input.pkl', 'wb') as outp:
+# write input and output data to pickle files
+with open('./inseeds/tests/data/lpjml_input.pkl', 'wb') as outp:
     pickle.dump(world.input, outp, pickle.HIGHEST_PROTOCOL)
 
-with open('/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/output.pkl', 'wb') as outp:
+with open('./inseeds/tests/data/output.pkl', 'wb') as outp:
     pickle.dump(world.output, outp, pickle.HIGHEST_PROTOCOL)
 
-with open('/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/lpjml.pkl', 'wb') as outp:
-    pickle.dump(world.lpjml.config, outp, pickle.HIGHEST_PROTOCOL)
-
+with open('./inseeds/tests/data/lpjml.pkl', 'wb') as outp:
+    pickle.dump(world.lpjml, outp, pickle.HIGHEST_PROTOCOL)
