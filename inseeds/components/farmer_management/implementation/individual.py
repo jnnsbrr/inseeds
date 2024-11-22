@@ -21,25 +21,22 @@ from .. import interface as I
 
 class AFT(Enum):
     """Available Inputs"""
+
     traditionalist: int = 0
     pioneer: int = 1
 
     @staticmethod
     def random(pioneer_share=0.5):
         return np.random.choice(
-            [AFT.pioneer, AFT.traditionalist],
-            p=[pioneer_share, 1-pioneer_share]
+            [AFT.pioneer, AFT.traditionalist], p=[pioneer_share, 1 - pioneer_share]
         )
 
-class Individual (I.Individual, base.Individual):
+
+class Individual(I.Individual, base.Individual):
     """Individual entity type mixin implementation class."""
 
     # standard methods:
-    def __init__(self,
-                 *,
-                 config=None,
-                 **kwargs):
-
+    def __init__(self, *, config=None, **kwargs):
         """Initialize an instance of Individual."""
         super().__init__(**kwargs)  # must be the first line
 
@@ -66,16 +63,15 @@ class Individual (I.Individual, base.Individual):
 
         # Randomize switch time at beginning of simulation to avoid
         #   synchronization of agents
-        self.strategy_switch_time = np.random.randint(
-            0, self.strategy_switch_duration
-        )
+        self.strategy_switch_time = np.random.randint(0, self.strategy_switch_duration)
         # initialize tbp for meaningful output
         self.tpb = 0
 
     def init_neighbourhood(self):
         """Initialize the neighbourhood of the agent."""
         self.neighbourhood = [
-            neighbour for cell_neighbours in self.cell.neighbourhood
+            neighbour
+            for cell_neighbours in self.cell.neighbourhood
             if len(cell_neighbours.individuals) > 0
             for neighbour in cell_neighbours.individuals
         ]
@@ -83,10 +79,10 @@ class Individual (I.Individual, base.Individual):
     @property
     def cell_cropyield(self):
         """Return the average crop yield of the cell."""
-        if (self.cell.output.harvestc.values.mean() == 0):
+        if self.cell.output.harvestc.values.mean() == 0:
             return 1e-3
         else:
-            if (self.behaviour == 0):
+            if self.behaviour == 0:
                 return self.cell.output.harvestc.values.mean() * 2
             else:
                 return self.cell.output.harvestc.values.mean()
@@ -94,7 +90,7 @@ class Individual (I.Individual, base.Individual):
     @property
     def cell_soilc(self):
         """Return the average soil carbon of the cell."""
-        if (self.cell.output.soilc_agr_layer.values[0].item() == 0):
+        if self.cell.output.soilc_agr_layer.values[0].item() == 0:
             return 1e-3
         else:
             return self.cell.output.soilc_agr_layer.values[0].item()
@@ -104,7 +100,8 @@ class Individual (I.Individual, base.Individual):
         """Return the average harvest date of the cell."""
         check = self.cell.output.hdate.band.values
         crop_idx = [
-            i for i, item in enumerate(self.cell.output.hdate.band.values)
+            i
+            for i, item in enumerate(self.cell.output.hdate.band.values)
             if any(x in item for x in self.cell.world.lpjml.config.cftmap)
         ]
         if np.sum(self.cell.output.cftfrac.isel(band=crop_idx).values) == 0:
@@ -112,24 +109,28 @@ class Individual (I.Individual, base.Individual):
         else:
             return np.average(
                 self.cell.output.hdate,
-                weights=self.cell.output.cftfrac.isel(band=crop_idx)
+                weights=self.cell.output.cftfrac.isel(band=crop_idx),
             )
 
     @property
     def attitude(self):
         """Calculate the attitude of the farmer following the TPB"""
-        return self.weight_social_learning * self.attitude_social_learning \
+        return (
+            self.weight_social_learning * self.attitude_social_learning
             + self.weight_own_land * self.attitude_own_land
+        )
 
     @property
     def attitude_own_land(self):
         """Calculate the attitude of the farmer based on their own land"""
         # compare own soil and yield to previous values
-        attitude_own_soil = self.soilc_previous / self.soilc  - 1
-        attitude_own_yield =  self.cropyield_previous / self.cropyield  - 1
+        attitude_own_soil = self.soilc_previous / self.soilc - 1
+        attitude_own_yield = self.cropyield_previous / self.cropyield - 1
 
-        return sigmoid(self.weight_yield * attitude_own_yield +
-                       self.weight_soil * attitude_own_soil)
+        return sigmoid(
+            self.weight_yield * attitude_own_yield
+            + self.weight_soil * attitude_own_soil
+        )
 
     @property
     def attitude_social_learning(self):
@@ -159,8 +160,9 @@ class Individual (I.Individual, base.Individual):
             soil_comparison = soils_diff / self.soilc - 1
 
         # calculate the attitude of social learning based on the comparison
-        return sigmoid(self.weight_yield * yield_comparison +
-                       self.weight_soil * soil_comparison)
+        return sigmoid(
+            self.weight_yield * yield_comparison + self.weight_soil * soil_comparison
+        )
 
     @property
     def social_norm(self):
@@ -168,14 +170,13 @@ class Individual (I.Individual, base.Individual):
         behaviour of the neighbours"""
         social_norm = 0
         if self.neighbourhood:
-            social_norm = (
-                sum(n.behaviour for n in self.neighbourhood) /
-                len(self.neighbourhood)
+            social_norm = sum(n.behaviour for n in self.neighbourhood) / len(
+                self.neighbourhood
             )
         if self.behaviour == 1:
-            return sigmoid(0.5-social_norm)
+            return sigmoid(0.5 - social_norm)
         else:
-            return sigmoid(social_norm-0.5)
+            return sigmoid(social_norm - 0.5)
 
     def split_neighbourhood(self, attribute):
         """split the neighbourhood of farmers after a defined boolean attribute
@@ -184,9 +185,9 @@ class Individual (I.Individual, base.Individual):
         # init split into two neighbourhood lists
         first_nb = []
         second_nb = []
-        
+
         # split the neighbourhood into two groups based on the attribute
-        #   of the neighbours 
+        #   of the neighbours
         for neighbour in self.neighbourhood:
             if getattr(neighbour, attribute) == 0:
                 first_nb.append(neighbour)
@@ -203,8 +204,7 @@ class Individual (I.Individual, base.Individual):
 
         # calculate the average of the variable for first group
         if first_nb:
-            first_var = sum(getattr(n, variable) for n in first_nb)\
-                / len(first_nb)
+            first_var = sum(getattr(n, variable) for n in first_nb) / len(first_nb)
         # if there are no neighbours of the same strategy, set the average
         #   to 0
         else:
@@ -212,8 +212,7 @@ class Individual (I.Individual, base.Individual):
 
         # calculate the average of the variable for second group
         if second_nb:
-            second_var = sum(getattr(n, variable) for n in second_nb)\
-                / len(second_nb)
+            second_var = sum(getattr(n, variable) for n in second_nb) / len(second_nb)
         # if there are no neighbours of the same strategy, set the average
         #   to 0
         else:
@@ -226,12 +225,14 @@ class Individual (I.Individual, base.Individual):
         # update the average harvest date of the cell
         self.avg_hdate = self.cell_avg_hdate
 
-        # running average over strategy_switch_duration years to avoid rapid 
+        # running average over strategy_switch_duration years to avoid rapid
         #    switching by weather fluctuations
-        self.cropyield = (1-1/self.strategy_switch_duration) * self.cropyield\
-            + 1/self.strategy_switch_duration * self.cell_cropyield
-        self.soilc = (1-1/self.strategy_switch_duration) * self.soilc\
-            + 1/self.strategy_switch_duration * self.cell_soilc
+        self.cropyield = (
+            1 - 1 / self.strategy_switch_duration
+        ) * self.cropyield + 1 / self.strategy_switch_duration * self.cell_cropyield
+        self.soilc = (
+            1 - 1 / self.strategy_switch_duration
+        ) * self.soilc + 1 / self.strategy_switch_duration * self.cell_soilc
         # self.cropyield = self.cell_cropyield
         # self.soilc = self.cell_soilc
 
@@ -240,9 +241,11 @@ class Individual (I.Individual, base.Individual):
 
         # If strategy switch time is down to 0 calculate TPB-based strategy
         # switch probability value
-        if self.strategy_switch_time <= 0 :
-            self.tpb = (self.weight_attitude * self.attitude
-                + self.weight_norm * self.social_norm) * self.pbc
+        if self.strategy_switch_time <= 0:
+            self.tpb = (
+                self.weight_attitude * self.attitude
+                + self.weight_norm * self.social_norm
+            ) * self.pbc
 
             if self.tpb > 0.5:
                 # switch strategy
@@ -254,7 +257,7 @@ class Individual (I.Individual, base.Individual):
                 # set back counter for strategy switch
                 self.strategy_switch_time = np.random.normal(
                     self.strategy_switch_duration,
-                    round(self.strategy_switch_duration/2)
+                    round(self.strategy_switch_duration / 2),
                 )
 
                 # freeze the current soilc and cropyield values that were used for
@@ -268,7 +271,7 @@ class Individual (I.Individual, base.Individual):
 
             # increase pbc if tpb is near 0.5 to learn from own experience
             elif self.tpb <= 0.5 and self.tpb > 0.4:
-                self.pbc = min(self.pbc + 0.25/self.strategy_switch_duration, 1)
+                self.pbc = min(self.pbc + 0.25 / self.strategy_switch_duration, 1)
 
         else:
             # decrease the counter for strategy switch time each year
@@ -285,8 +288,7 @@ class Individual (I.Individual, base.Individual):
             self.cell.input[single_var][:] = getattr(self, map_attribute)
 
     def init_coupled_vars(self):
-        """Initialize the mapped variables from the LPJmL output to the farmers
-        """
+        """Initialize the mapped variables from the LPJmL output to the farmers"""
         for attribute, lpjml_var in self.coupling_map.items():
             if not isinstance(lpjml_var, list):
                 lpjml_var = [lpjml_var]
@@ -294,9 +296,7 @@ class Individual (I.Individual, base.Individual):
             for single_var in lpjml_var:
                 if len(self.cell.input[single_var].values.flatten()) > 1:
                     continue
-                setattr(
-                    self, attribute, self.cell.input[single_var].item()
-                )
+                setattr(self, attribute, self.cell.input[single_var].item())
 
     processes = []
 

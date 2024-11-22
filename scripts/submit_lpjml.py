@@ -16,9 +16,9 @@ model_path = "/LPJmL"
 # Spinup run ---------------------------------------------------------------- #
 
 # create config for spinup run
-config_spinup = read_config(file_name="lpjml_config.cjson",
-                            model_path=model_path,
-                            spin_up=True)
+config_spinup = read_config(
+    file_name="lpjml_config.cjson", model_path=model_path, spin_up=True
+)
 
 # set spinup run configuration
 config_spinup.set_spinup(sim_path)
@@ -32,15 +32,16 @@ config_spinup_fn = config_spinup.to_json()
 
 
 # create config for historic run
-config_historic = read_config(file_name="lpjml_config.cjson",
-                              model_path=model_path)
+config_historic = read_config(file_name="lpjml_config.cjson", model_path=model_path)
 
 # set historic run configuration
-config_historic.set_transient(sim_path,
-                              sim_name="historic_run",
-                              dependency="spinup",
-                              start_year=1901,
-                              end_year=2000)
+config_historic.set_transient(
+    sim_path,
+    sim_name="historic_run",
+    dependency="spinup",
+    start_year=1901,
+    end_year=2000,
+)
 
 # management settings
 config_historic.tillage_type = "read"
@@ -58,18 +59,10 @@ config_historic_fn = config_historic.to_json()
 check_lpjml(config_spinup_fn)
 
 # run spinup job
-submit_lpjml(
-    config_file=config_spinup_fn,
-    wtime = "1:00:00",
-    ntasks=512
-)
+submit_lpjml(config_file=config_spinup_fn, wtime="1:00:00", ntasks=512)
 
 # check if everything is set correct
 check_lpjml(config_historic_fn)
 
 # run spinup job
-submit_lpjml(
-    config_file=config_historic_fn,
-    wtime = "0:30:00",
-    ntasks=512
-)
+submit_lpjml(config_file=config_historic_fn, wtime="0:30:00", ntasks=512)

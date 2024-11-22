@@ -10,11 +10,12 @@
 
 # from ..MODEL_COMPONENT import interface as MODEL_COMPONENT
 from pycopancore.data_model.variable import Variable
-from pycopancore.data_model.master_data_model.dimensions_and_units import \
-    DimensionsAndUnits as DAU
+from pycopancore.data_model.master_data_model.dimensions_and_units import (
+    DimensionsAndUnits as DAU,
+)
 
 
-class Model (object):
+class Model(object):
     """Interface for Model mixin."""
 
     # metadata:
@@ -40,34 +41,53 @@ class World(object):
     pass
 
 
-class Individual (object):
+class Individual(object):
     """Interface for Individual entity type mixin."""
 
-    aft_id = Variable('AFT ID', 'unique identifier for agent')
-    behaviour = Variable('agent behaviour', 'regenerative=1, conventional=0',
-                         datatype=bool)
-    pbc = Variable('perceived behavioural control',
-                   'own appraisal of how much efficacy agent posesses')
-    tpb = Variable('theory of planned behaviour',
-                   'attitude, subjective norm, perceived behavioural control')
-    social_norm = Variable('social norm',
-                            'social norm based on observation of own and\
-                             neighboring land')
-    attitude = Variable('attitude',
-                        'farmer attitude based on observation of yield and soilC of\
-                         own land and neighboring land')
-    attitude_own_land = Variable('attitude towards own land',
-                                 'attitude based on observation of yield and soilC\
-                                  of own land')
-    attitude_social_learning = Variable('attitude based on social learning',
-                                        'attitude based on observation of yield and\
-                                         soilC of neighboring land')
-    avg_hdate = Variable('average harvest date',
-                         'weighted average harvest date of grown crops (by crop area)',
-                         unit=DAU.doy)
-    soilc = Variable('soil organic carbon',
-                     'soil organic carbon content of agent land',
-                     unit=DAU.gC_per_m2)
-    cropyield = Variable('average crop yield',
-                         'average crop yield of agent land weighted by crop area',
-                         unit=DAU.gC_per_m2)
+    aft_id = Variable("AFT ID", "unique identifier for agent")
+    behaviour = Variable(
+        "agent behaviour", "regenerative=1, conventional=0", datatype=bool
+    )
+    pbc = Variable(
+        "perceived behavioural control",
+        "own appraisal of how much efficacy agent posesses",
+    )
+    tpb = Variable(
+        "theory of planned behaviour",
+        "attitude, subjective norm, perceived behavioural control",
+    )
+    social_norm = Variable(
+        "social norm",
+        "social norm based on observation of own and\
+                             neighboring land",
+    )
+    attitude = Variable(
+        "attitude",
+        "farmer attitude based on observation of yield and soilC of\
+                         own land and neighboring land",
+    )
+    attitude_own_land = Variable(
+        "attitude towards own land",
+        "attitude based on observation of yield and soilC\
+                                  of own land",
+    )
+    attitude_social_learning = Variable(
+        "attitude based on social learning",
+        "attitude based on observation of yield and\
+                                         soilC of neighboring land",
+    )
+    avg_hdate = Variable(
+        "average harvest date",
+        "weighted average harvest date of grown crops (by crop area)",
+        unit=DAU.doy,
+    )
+    soilc = Variable(
+        "soil organic carbon",
+        "soil organic carbon content of agent land",
+        unit=DAU.gC_per_m2,
+    )
+    cropyield = Variable(
+        "average crop yield",
+        "average crop yield of agent land weighted by crop area",
+        unit=DAU.gC_per_m2,
+    )

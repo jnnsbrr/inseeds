@@ -2,7 +2,7 @@ import os
 import argparse
 
 from pycoupler.coupler import LPJmLCoupler
-from inseeds.models import farmer_management.model as M
+from inseeds.models.farmer_management import model as M
 
 
 def run_inseeds(config_file):

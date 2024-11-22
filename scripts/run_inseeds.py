@@ -1,10 +1,11 @@
 """Run script for InSEEDS with LPJmL coupling"""
+
 from pycoupler.config import read_config
 from pycoupler.run import run_lpjml, check_lpjml
 from pycoupler.coupler import LPJmLCoupler
 from pycoupler.utils import search_country
 
-from inseeds.models.farmer_management import model as M # noqa
+from inseeds.models.farmer_management import model as M  # noqa
 
 # Settings ================================================================== #
 
@@ -20,23 +21,26 @@ country_code = "NLD"
 # Configuration ============================================================= #
 
 # create config for coupled run
-config_coupled = read_config(
-    model_path=model_path, file_name="lpjml_config.cjson"
-)
+config_coupled = read_config(model_path=model_path, file_name="lpjml_config.cjson")
 
 # set coupled run configuration
-config_coupled.set_coupled(sim_path,
-                           sim_name="coupled_test",
-                           dependency="historic_run",
-                           start_year=2001, end_year=2100,
-                           coupled_year=2023,
-                           coupled_input=["with_tillage"],  # residue_on_field
-                           coupled_output=["soilc_agr_layer",
-                                           "cftfrac",
-                                           "harvestc",
-                                           "hdate",
-                                           "country",
-                                           "terr_area"])
+config_coupled.set_coupled(
+    sim_path,
+    sim_name="coupled_test",
+    dependency="historic_run",
+    start_year=2001,
+    end_year=2100,
+    coupled_year=2023,
+    coupled_input=["with_tillage"],  # residue_on_field
+    coupled_output=[
+        "soilc_agr_layer",
+        "cftfrac",
+        "harvestc",
+        "hdate",
+        "country",
+        "terr_area",
+    ],
+)
 
 # only for single cells runs
 config_coupled.outputyear = 2022
@@ -55,11 +59,7 @@ config_coupled.residue_treatment = "read_residue_data"
 config_coupled.double_harvest = False
 
 # regrid by country - create new (extracted) input files and update config file
-config_coupled.regrid(
-    sim_path,
-    country_code=country_code,
-    overwrite_input=False
-)
+config_coupled.regrid(sim_path, country_code=country_code, overwrite_input=False)
 
 config_coupled.add_config(inseeds_config_file)
 
@@ -77,8 +77,7 @@ check_lpjml(config_coupled_fn)
 
 # run lpjml simulation for coupling in the background
 run_lpjml(
-    config_file=config_coupled_fn,
-    std_to_file=False  # write stdout and stderr to file
+    config_file=config_coupled_fn, std_to_file=False  # write stdout and stderr to file
 )
 
 # InSEEDS run --------------------------------------------------------------- #
@@ -96,12 +95,17 @@ for year in world.lpjml.get_sim_years():
     world.update(year)
 
 
-with open('/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/input.pkl', 'wb') as outp:
+with open(
+    "/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/input.pkl", "wb"
+) as outp:
     pickle.dump(world.input, outp, pickle.HIGHEST_PROTOCOL)
 
-with open('/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/output.pkl', 'wb') as outp:
+with open(
+    "/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/output.pkl", "wb"
+) as outp:
     pickle.dump(world.output, outp, pickle.HIGHEST_PROTOCOL)
 
-with open('/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/lpjml.pkl', 'wb') as outp:
+with open(
+    "/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/lpjml.pkl", "wb"
+) as outp:
     pickle.dump(world.lpjml.config, outp, pickle.HIGHEST_PROTOCOL)
-
