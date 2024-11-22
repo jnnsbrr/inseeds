@@ -130,7 +130,9 @@ class World(I.World):
                             for attr in getattr(self, f"{core_class}s")
                         ]
 
-                variable = [eval(f"self.model.{copan_interface}.{var}.name")] * len( # noqa
+                variable = [
+                    eval(f"self.model.{copan_interface}.{var}.name")
+                ] * len(  # noqa
                     getattr(self, f"{core_class}s")
                 )
 
@@ -145,7 +147,8 @@ class World(I.World):
                     )
                     df_data["variable"] = variable
                     df_data["value"] = [
-                        eval(f"attr.{var}") for attr in getattr(self, f"{core_class}s") # noqa
+                        eval(f"attr.{var}")
+                        for attr in getattr(self, f"{core_class}s")  # noqa
                     ]
 
                 if hasattr(
@@ -156,7 +159,7 @@ class World(I.World):
                     ] * len(getattr(self, f"{core_class}s"))
 
                 if "df" in locals():
-                    df = pd.concat([df, pd.DataFrame(df_data)]) # noqa
+                    df = pd.concat([df, pd.DataFrame(df_data)])  # noqa
                 else:
                     df = pd.DataFrame(df_data)
 
@@ -182,7 +185,7 @@ class World(I.World):
 
     def write_output_parquet(self, df, init=False):
         """Write output data to Parquet file"""
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.parquet" # noqa
+        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.parquet"  # noqa
 
         # Append mode: write new data without rewriting the file.
         if not os.path.isfile(file_name) or (
