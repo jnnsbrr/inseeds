@@ -26,7 +26,7 @@ also the model development tutorial.
 #
 import pycopancore.model_components.base as base
 import pycopancore.model_components.lpjml as lpjml
-import inseeds.model_components.farmer_management as farmer_management
+import inseeds.components.farmer_management as farmer_management
 
 
 # TODO: list all mixin classes needed:

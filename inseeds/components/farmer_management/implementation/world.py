@@ -175,7 +175,7 @@ class World (I.World):
         ) else "a"
 
         # define the file name and header row
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/copan_core_data.csv"  # noqa
+        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.csv"  # noqa
 
         if not os.path.isfile(file_name) or mode == "w":
             header = True
@@ -190,7 +190,7 @@ class World (I.World):
 
     def write_output_parquet(self, df, init=False):
         """Write output data to Parquet file"""
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/copan_core_data.parquet"
+        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.parquet"
 
         # Append mode: write new data without rewriting the file.
         if not os.path.isfile(file_name) or (

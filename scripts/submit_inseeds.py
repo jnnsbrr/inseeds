@@ -7,7 +7,7 @@ from pycoupler.run import check_lpjml, submit_lpjml
 # Settings ================================================================== #
 
 # paths
-sim_path = "./global_runs"
+sim_path = "./simulations"
 model_path = "./LPJmL"
 inseeds_config_file = "./inseeds/inseeds/models/config.yaml"  # noqa"
 
@@ -20,7 +20,7 @@ config_coupled = read_config(model_path=model_path,
 
 # set coupled run configuration
 config_coupled.set_coupled(sim_path,
-                           sim_name="coupled_global_100",
+                           sim_name="coupled_global",
                            dependency="historic_run",
                            start_year=2001, end_year=2050,
                            coupled_year=2023,
