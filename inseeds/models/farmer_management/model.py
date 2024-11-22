@@ -14,6 +14,7 @@ flag. Pay attention to those variables and object written in capital letters.
 These are placeholders and must be adjusted as needed. For further details see
 also the model development tutorial.
 """
+
 # This file is part of pycopancore.
 #
 # Copyright (C) 2017 by COPAN team at Potsdam Institute for Climate
@@ -30,27 +31,25 @@ import inseeds.components.farmer_management as farmer_management
 
 
 # TODO: list all mixin classes needed:
-class World(base.World,
-            lpjml.World,
-            farmer_management.World):
+class World(base.World, lpjml.World, farmer_management.World):
     """World entity type."""
+
     pass
 
 
-class Cell(base.Cell,
-           lpjml.Cell):
+class Cell(base.Cell, lpjml.Cell):
     """Cell entity type."""
+
     pass
 
 
 class Individual(farmer_management.Individual):
     """Individual entity type."""
+
     pass
 
 
-class Model(lpjml.Model,
-            farmer_management.Model,
-            base.Model):
+class Model(lpjml.Model, farmer_management.Model, base.Model):
     """Class representing the whole model."""
 
     name = "InSEEDS Social"

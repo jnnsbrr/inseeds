@@ -1,4 +1,5 @@
 """Run script for InSEEDS with LPJmL coupling"""
+
 import os
 import numpy as np  # which is usually needed
 
@@ -23,9 +24,9 @@ country_code = "NLD"
 # Configuration ============================================================= #
 
 # create config for spinup run
-config_spinup = read_config(file_name="lpjml_config.cjson",
-                            model_path=model_path,
-                            spin_up=True)
+config_spinup = read_config(
+    file_name="lpjml_config.cjson", model_path=model_path, spin_up=True
+)
 
 # set spinup run configuration
 config_spinup.set_spinup(sim_path)
@@ -40,15 +41,16 @@ config_spinup.regrid(sim_path, country_code=country_code, overwrite_input=False)
 config_spinup_fn = config_spinup.to_json()
 
 # create config for historic run
-config_historic = read_config(file_name="lpjml_config.cjson",
-                                model_path=model_path)
+config_historic = read_config(file_name="lpjml_config.cjson", model_path=model_path)
 
 # set historic run configuration
-config_historic.set_transient(sim_path,
-                                sim_name="historic_run",
-                                dependency="spinup",
-                                start_year=1901,
-                                end_year=2000)
+config_historic.set_transient(
+    sim_path,
+    sim_name="historic_run",
+    dependency="spinup",
+    start_year=1901,
+    end_year=2000,
+)
 
 # only for global runs = TRUE
 config_historic.river_routing = False
@@ -70,14 +72,10 @@ config_historic_fn = config_historic.to_json()
 check_lpjml(config_file=config_spinup_fn)
 
 # run spinup job
-run_lpjml(
-    config_file=config_spinup_fn
-)
+run_lpjml(config_file=config_spinup_fn)
 
 # check if everything is set correct
 check_lpjml(config_historic_fn)
 
 # run spinup job
-run_lpjml(
-    config_file=config_historic_fn
-)
+run_lpjml(config_file=config_historic_fn)

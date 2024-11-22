@@ -29,7 +29,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12"
 ]
 dependencies = [
-    "pycoupler>=1.0.0",
     "numpy>=1.20.3",
     "netCDF4>=1.5.8",
     "xarray>=0.21.1",

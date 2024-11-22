@@ -15,23 +15,27 @@ inseeds_config_file = "./inseeds/inseeds/models/config.yaml"  # noqa"
 # Configuration ============================================================= #
 
 # create config for coupled run
-config_coupled = read_config(model_path=model_path,
-                             file_name="lpjml_config.cjson")
+config_coupled = read_config(model_path=model_path, file_name="lpjml_config.cjson")
 
 # set coupled run configuration
-config_coupled.set_coupled(sim_path,
-                           sim_name="coupled_global",
-                           dependency="historic_run",
-                           start_year=2001, end_year=2050,
-                           coupled_year=2023,
-                           coupled_input=["with_tillage"],
-                           coupled_output=["soilc_agr_layer_fast",
-                                           "cftfrac",
-                                           "pft_harvestc",
-                                           "hdate",
-                                           "country",
-                                           "region",
-                                           "terr_area"])
+config_coupled.set_coupled(
+    sim_path,
+    sim_name="coupled_global",
+    dependency="historic_run",
+    start_year=2001,
+    end_year=2050,
+    coupled_year=2023,
+    coupled_input=["with_tillage"],
+    coupled_output=[
+        "soilc_agr_layer_fast",
+        "cftfrac",
+        "pft_harvestc",
+        "hdate",
+        "country",
+        "region",
+        "terr_area",
+    ],
+)
 
 # only for single cells runs
 config_coupled.outputyear = 2022
@@ -63,5 +67,5 @@ check_lpjml(config_coupled_fn)
 submit_lpjml(
     config_file=config_coupled_fn,
     couple_to="./inseeds/models/farmer_management/main.py",
-    wtime = "5:00:00"
+    wtime="5:00:00",
 )
