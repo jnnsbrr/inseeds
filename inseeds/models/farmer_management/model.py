@@ -1,12 +1,12 @@
 """
 Social sub-component of the InSEEDS model.
-This does not inlude any communication to LPJmL via the pycoupler, but can be 
+This does not inlude any communication to LPJmL via the pycoupler, but can be
 regarded as a first step towards coupled runs.
 
 Based on the exploit model, inluding novel decision-making dynamics
 on tha basis of the Theory of Planned behaviour (TPB)
 
-Conceptualization by Luana Schwarz, implementation based on Ronja Hotz' 
+Conceptualization by Luana Schwarz, implementation based on Ronja Hotz'
 Exploit model MOL CC SN, with adjustments by Luana Schwarz.
 
 TODO: Go through the file and adjust all parts of the code marked with the TODO

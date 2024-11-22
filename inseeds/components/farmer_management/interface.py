@@ -22,8 +22,8 @@ class Model(object):
     name = "..."
     """regenerative agriculture decisions"""
     description = "..."
-    """this model component shall serve for the purpose of farmer 
-    decision-making on the basis of the theory of planned behaviour (TPB). 
+    """this model component shall serve for the purpose of farmer
+    decision-making on the basis of the theory of planned behaviour (TPB).
     It uses biophysical data from LPJmL"""
     requires = []
     """list of other model components required for this model component to

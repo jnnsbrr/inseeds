@@ -93,19 +93,3 @@ farmers, cells = world.init_individuals()
 
 for year in world.lpjml.get_sim_years():
     world.update(year)
-
-
-with open(
-    "/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/input.pkl", "wb"
-) as outp:
-    pickle.dump(world.input, outp, pickle.HIGHEST_PROTOCOL)
-
-with open(
-    "/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/output.pkl", "wb"
-) as outp:
-    pickle.dump(world.output, outp, pickle.HIGHEST_PROTOCOL)
-
-with open(
-    "/p/projects/copan/users/jannesbr/repos/inseeds/tests/data/lpjml.pkl", "wb"
-) as outp:
-    pickle.dump(world.lpjml.config, outp, pickle.HIGHEST_PROTOCOL)
