@@ -16,7 +16,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from . import model_documentation as doc
+from . import documentation as doc
 
 
 class World(doc.World):

@@ -16,7 +16,7 @@ from pycopancore.process_types import Step
 from pycopancore.model_components.base import interface as B
 import pycopancore.model_components.base as base
 
-from . import model_documentation as doc
+from . import documentation as doc
 
 
 class AFT(Enum):
