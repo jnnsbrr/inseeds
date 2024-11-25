@@ -15,8 +15,8 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
 )
 
 
-class Model(object):
-    """Interface for Model mixin."""
+class ModelComponent:
+    """Interface for model component mixin."""
 
     # metadata:
     name = "..."
@@ -35,13 +35,13 @@ class Model(object):
     # - implementation.Model lists these entity-types and process taxons
 
 
-class World(object):
+class World:
     """Define Interface for World."""
 
     pass
 
 
-class Individual(object):
+class Individual:
     """Interface for Individual entity type mixin."""
 
     aft_id = Variable("AFT ID", "unique identifier for agent")

@@ -16,7 +16,7 @@ from pycopancore.process_types import Step
 from pycopancore.model_components.base import interface as B
 import pycopancore.model_components.base as base
 
-from .. import interface as I
+from . import model_documentation as doc
 
 
 class AFT(Enum):
@@ -32,7 +32,7 @@ class AFT(Enum):
         )
 
 
-class Individual(I.Individual, base.Individual):
+class Individual(doc.Individual, base.Individual):
     """Individual entity type mixin implementation class."""
 
     # standard methods:

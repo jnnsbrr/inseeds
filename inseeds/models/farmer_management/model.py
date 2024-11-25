@@ -49,7 +49,7 @@ class Individual(farmer_management.Individual):
     pass
 
 
-class Model(lpjml.Model, farmer_management.Model, base.Model):
+class Model(lpjml.Model, farmer_management.ModelComponent, base.Model):
     """Class representing the whole model."""
 
     name = "InSEEDS Social"

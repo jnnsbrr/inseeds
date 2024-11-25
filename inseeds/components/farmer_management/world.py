@@ -16,10 +16,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .. import interface as I
+from . import model_documentation as doc
 
 
-class World(I.World):
+class World(doc.World):
     """Define properties.
     Inherits from I.World as the interface with all necessary variables
     and parameters.
