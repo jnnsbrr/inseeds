@@ -15,7 +15,7 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
 )
 
 
-class ModelComponent:
+class Component:
     """Interface for model component mixin."""
 
     # metadata:

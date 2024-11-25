@@ -10,13 +10,13 @@
 # Contact: core@pik-potsdam.de
 # License: BSD 2-clause license
 
-from . import model_documentation as doc
+from . import documentation as doc
 
 # import all needed entity type implementation classes:
 from . import World, Individual
 
 
-class ModelComponent(doc.ModelComponent):
+class Component(doc.Component):
     """Model mixin class."""
 
     # mixins provided by this model component:
