@@ -1,3 +1,3 @@
 from .world import World
-from .individual import Individual
+from .farmer import Farmer
 from .component import Component

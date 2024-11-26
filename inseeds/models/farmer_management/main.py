@@ -16,8 +16,8 @@ def run_inseeds(config_file):
     # initialize (LPJmL) world
     world = M.World(model=M, lpjml=lpjml)
 
-    # initialize (cells and) individuals
-    farmers, cells = world.init_individuals()
+    # initialize (cells and) farmers
+    farmers, cells = world.init_farmers()
 
     for year in world.lpjml.get_sim_years():
         world.update(year)

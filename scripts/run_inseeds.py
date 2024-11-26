@@ -89,7 +89,7 @@ lpjml = LPJmLCoupler(config_file=config_coupled_fn)
 world = M.World(model=M, lpjml=lpjml)
 
 # initialize (cells and) individuals
-farmers, cells = world.init_individuals()
+farmers, cells = world.init_farmers()
 
 for year in world.lpjml.get_sim_years():
     world.update(year)
