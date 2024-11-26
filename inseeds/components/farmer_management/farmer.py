@@ -1,4 +1,4 @@
-"""Individual entity type class of inseeds_farmer_management
+"""Farmer entity type class of inseeds_farmer_management
 """
 
 # This file is part of pycopancore.
@@ -32,12 +32,12 @@ class AFT(Enum):
         )
 
 
-class Individual(doc.Individual, base.Individual):
-    """Individual entity type mixin implementation class."""
+class Farmer(doc.Farmer, base.Individual):
+    """Farmer/Individual entity type mixin implementation class."""
 
     # standard methods:
     def __init__(self, *, config=None, **kwargs):
-        """Initialize an instance of Individual."""
+        """Initialize an instance of Farmer."""
         super().__init__(**kwargs)  # must be the first line
 
         self.aft = AFT.random(config.pioneer_share)
@@ -75,6 +75,11 @@ class Individual(doc.Individual, base.Individual):
             if len(cell_neighbours.individuals) > 0
             for neighbour in cell_neighbours.individuals
         ]
+
+    @property
+    def farmers(self):
+        """Return the set of all farmers in the neighbourhood."""
+        return self.individuals
 
     @property
     def cell_cropyield(self):

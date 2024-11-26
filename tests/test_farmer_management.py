@@ -26,7 +26,7 @@ def test_run_model(test_path):
     )
 
     # initialize (cells and) individuals
-    farmers, cells = world.init_individuals()
+    farmers, cells = world.init_farmers()
 
     for year in world.lpjml.get_sim_years():
         world.update(year)

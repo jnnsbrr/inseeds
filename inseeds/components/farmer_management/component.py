@@ -13,14 +13,14 @@
 from . import documentation as doc
 
 # import all needed entity type implementation classes:
-from . import World, Individual
+from . import World, Farmer
 
 
 class Component(doc.Component):
     """Model mixin class."""
 
     # mixins provided by this model component:
-    entity_types = [World, Individual]
+    entity_types = [World, Farmer]
     """list of entity types augmented by this component"""
     process_taxa = []
     """list of process taxa augmented by this component"""

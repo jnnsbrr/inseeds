@@ -25,41 +25,38 @@ also the model development tutorial.
 #
 # TODO: import all other needed model components (adjust as needed):
 #
-import pycopancore.model_components.base as base
+import pycopancore.model_components.base as core
 import pycopancore.model_components.lpjml as lpjml
+
 import inseeds.components.farmer_management as farmer_management
+import inseeds.components.base as base
 
 
-# TODO: list all mixin classes needed:
-class World(base.World, lpjml.World, farmer_management.World):
-    """World entity type."""
+class Farmer(farmer_management.Farmer):
+    """Farmer entity type."""
 
     pass
 
 
-class Cell(base.Cell, lpjml.Cell):
+class Cell(core.Cell, lpjml.Cell):
     """Cell entity type."""
 
     pass
 
 
-class Individual(farmer_management.Individual):
-    """Individual entity type."""
+# TODO: list all mixin classes needed:
+class World(core.World, lpjml.World, farmer_management.World, base.World):
+    """World entity type."""
 
     pass
 
 
-class Model(lpjml.Model, farmer_management.Component, base.Model):
+class Model(core.Model, lpjml.Model, farmer_management.Component):
     """Class representing the whole model."""
 
     name = "InSEEDS Social"
     description = "Subcomponent of the InSEEDS model representing only social \
     dynamics and decision-making on the basis of the TPB"
 
-    # TODO: list all entity types you composed above:
-    entity_types = [World, Cell, Individual]
+    entity_types = [World, Cell, Farmer]
     """List of entity types used in the model"""
-
-    # TODO: list all entity types you composed above:
-    process_taxa = []
-    """List of process taxa used in the model"""

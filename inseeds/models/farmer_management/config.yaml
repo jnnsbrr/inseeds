@@ -6,7 +6,7 @@ lpjml_settings:
 
 # Variables to be written to copan_core_data table file 
 output:
-    individual:
+    farmer:
         - "aft_id"
         - "behaviour"
         - "tpb"
@@ -23,7 +23,7 @@ output_settings:
     write_lon_lat: true
     format: "csv"
 
-# Define which individual variables map with coupled LPJmL input variables
+# Define which farmer variables map with coupled LPJmL input variables
 coupling_map:
     behaviour: ["with_tillage"]  # "residue_on_field"
 

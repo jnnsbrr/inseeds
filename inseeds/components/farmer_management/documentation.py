@@ -41,8 +41,8 @@ class World:
     pass
 
 
-class Individual:
-    """Interface for Individual entity type mixin."""
+class Farmer:
+    """Interface for Farmer entity type mixin."""
 
     aft_id = Variable("AFT ID", "unique identifier for agent")
     behaviour = Variable(

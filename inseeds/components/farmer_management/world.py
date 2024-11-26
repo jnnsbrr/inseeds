@@ -10,11 +10,6 @@
 # URL: <http://www.pik-potsdam.de/copan/software>
 # Contact: core@pik-potsdam.de
 # License: BSD 2-clause license
-import os
-import sys
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from . import documentation as doc
 
@@ -29,8 +24,8 @@ class World(doc.World):
         """Initialize an instance of World."""
         super(World, self).__init__(**kwargs)
 
-    def init_individuals(self, **kwargs):
-        """Initialize individuals."""
+    def init_farmers(self, **kwargs):
+        """Initialize farmers."""
         cells = self.init_cells(**kwargs)
         farmers = []
 
@@ -38,7 +33,7 @@ class World(doc.World):
             if cell.output.cftfrac.sum("band") == 0:
                 continue
 
-            farmer = self.model.Individual(
+            farmer = self.model.Farmer(
                 cell=cell, config=self.lpjml.config.coupled_config
             )
             farmers.append(farmer)
@@ -51,155 +46,23 @@ class World(doc.World):
 
         return farmers_sorted, cells
 
-    def update_individuals(self, t):
-        farmers_sorted = sorted(self.individuals, key=lambda farmer: farmer.avg_hdate)
+    @property
+    def farmers(self):
+        """Return the set of all farmers."""
+        farmers = {
+            farmer
+            for farmer in self.individuals
+            if farmer.__class__.__name__ == "Farmer"  # noqa
+        }
+        return farmers
+
+    def update_farmers(self, t):
+        farmers_sorted = sorted(self.farmers, key=lambda farmer: farmer.avg_hdate)
         for farmer in farmers_sorted:
             farmer.update_behaviour(t)
 
     def update(self, t):
-        self.update_individuals(t)
+        self.update_farmers(t)
         self.update_output_table(t)
 
         self.update_lpjml(t)
-
-    def update_output_table(self, t, init=False):
-        df = self.create_output_table(t)
-        if not hasattr(sys, "_called_from_test"):
-            self.write_output_parquet(df, init)
-            self.write_output_csv(df, init)
-
-    def create_output_table(self, t):
-        """Initialize output data"""
-        # create sample time and cell data
-
-        entities = {
-            "World": "world",
-            "Cell": "cell",
-            "Individual": "individual",
-            "SocialSystem": "social_system",
-        }
-        taxa = {
-            "Environment": "environment",
-            "Metabolism": "metabolism",
-            "Culture": "culture",
-        }
-        core_classes = {
-            key: value
-            for key, value in {**entities, **taxa}.items()
-            if hasattr(self.model, key)
-            and hasattr(self.lpjml.config.coupled_config.output, value)
-        }
-        for copan_interface, core_class in core_classes.items():
-
-            for var in getattr(self.lpjml.config.coupled_config.output, core_class):
-                df_data = {
-                    "year": [t] * len(getattr(self, f"{core_class}s")),
-                }
-
-                if core_class in ["cell", "individual"]:
-                    if core_class == "individual":
-                        call = ".cell"
-                    else:
-                        call = ""
-
-                    df_data["cell"] = [
-                        eval(f"attr{call}.grid.cell.item()")
-                        for attr in getattr(self, f"{core_class}s")
-                    ]
-
-                    if (
-                        self.lpjml.config.coupled_config.output_settings.write_lon_lat
-                    ):  # noqa
-                        df_data["lon"] = [
-                            eval(f"attr{call}.grid.lon.item()")
-                            for attr in getattr(self, f"{core_class}s")
-                        ]
-                        df_data["lat"] = [
-                            eval(f"attr{call}.grid.lat.item()")
-                            for attr in getattr(self, f"{core_class}s")
-                        ]
-
-                    if hasattr(self.lpjml, "country"):
-                        df_data["country"] = [
-                            eval(f"attr{call}.country.item()")
-                            for attr in getattr(self, f"{core_class}s")
-                        ]
-                    if hasattr(self.lpjml, "terr_area"):
-                        df_data["area [km2]"] = [
-                            eval(f"attr{call}.area.item()") * 1e-6
-                            for attr in getattr(self, f"{core_class}s")
-                        ]
-
-                variable = [
-                    eval(f"self.model.{copan_interface}.{var}.name")
-                ] * len(  # noqa
-                    getattr(self, f"{core_class}s")
-                )
-
-                if core_class == "world":
-                    df_data["class"] = [core_class]
-                    df_data["variable"] = variable
-                    df_data["value"] = [eval(f"self.{var}")]
-
-                else:
-                    df_data["class"] = [core_class] * len(
-                        getattr(self, f"{core_class}s")
-                    )
-                    df_data["variable"] = variable
-                    df_data["value"] = [
-                        eval(f"attr.{var}")
-                        for attr in getattr(self, f"{core_class}s")  # noqa
-                    ]
-
-                if hasattr(
-                    eval(f"self.model.{copan_interface}.{var}.unit"), "symbol"
-                ):  # noqa
-                    df_data["unit"] = [
-                        eval(f"self.model.{copan_interface}.{var}.unit.symbol")  # noqa
-                    ] * len(getattr(self, f"{core_class}s"))
-
-                if "df" in locals():
-                    df = pd.concat([df, pd.DataFrame(df_data)])  # noqa
-                else:
-                    df = pd.DataFrame(df_data)
-
-        return df
-
-    def write_output_csv(self, df, init=False):
-        """Write output data"""
-        mode = (
-            "w"
-            if (self.lpjml.sim_year == self.lpjml.config.start_coupling and init)
-            else "a"
-        )
-
-        # define the file name and header row
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.csv"  # noqa
-
-        if not os.path.isfile(file_name) or mode == "w":
-            header = True
-        else:
-            header = False
-
-        df.to_csv(file_name, mode=mode, header=header, index=False)
-
-    def write_output_parquet(self, df, init=False):
-        """Write output data to Parquet file"""
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.parquet"  # noqa
-
-        # Append mode: write new data without rewriting the file.
-        if not os.path.isfile(file_name) or (
-            self.lpjml.sim_year == self.lpjml.config.start_coupling and init
-        ):
-            df.to_parquet(file_name, engine="pyarrow", index=False)
-        else:
-            # Read the existing data
-            existing_data = pd.read_parquet(file_name)
-
-            # Concatenate the existing data with the new data
-            combined_data = pd.concat([existing_data, df], ignore_index=True)
-
-            # Write the combined data back
-            combined_data.to_parquet(file_name, engine="pyarrow", index=False)
-
-    processes = []
