@@ -4,8 +4,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from . import Entity
 
-class World:
+
+class World(Entity):
     """Define properties.
     Inherits from I.World as the interface with all necessary variables
     and parameters.
@@ -13,13 +15,17 @@ class World:
 
     def __init__(self, **kwargs):
         """Initialize an instance of World."""
-        super(World, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
-    def update_output_table(self, t, init=False):
+    def write_output_table(self, t, init=False, file_format="parquet"):
         df = self.create_output_table(t)
-        if not hasattr(sys, "_called_from_test"):
+
+        if file_format == "parquet":
             self.write_output_parquet(df, init)
+        elif file_format == "csv":
             self.write_output_csv(df, init)
+        else:
+            raise ValueError(f"Output file format {file_format} not supported")
 
     def create_output_table(self, t):
         """Initialize output data"""
@@ -40,14 +46,14 @@ class World:
         core_classes = {
             key: value
             for key, value in {**entities, **taxa}.items()
-            if hasattr(self.model, key)
-            and hasattr(self.lpjml.config.coupled_config.output, value)
+            if hasattr(self.model, f"{value}s")
+            and hasattr(self.model.config.coupled_config.output, value)
         }
 
         df = pd.DataFrame()
 
         for copan_interface, core_class in core_classes.items():
-            for var in getattr(self.lpjml.config.coupled_config.output, core_class):
+            for var in getattr(self.model.config.coupled_config.output, core_class):
                 df_data = {
                     "year": [t] * len(getattr(self, f"{core_class}s")),
                 }
@@ -64,7 +70,7 @@ class World:
                     ]
 
                     if (
-                        self.lpjml.config.coupled_config.output_settings.write_lon_lat  # noqa
+                        self.model.config.coupled_config.output_settings.write_lon_lat  # noqa
                     ):  # noqa
                         df_data["lon"] = [
                             eval(f"attr{call}.grid.lon.item()")
@@ -75,12 +81,12 @@ class World:
                             for attr in getattr(self, f"{core_class}s")
                         ]
 
-                    if hasattr(self.lpjml, "country"):
+                    if hasattr(self.model.lpjml, "country"):
                         df_data["country"] = [
                             eval(f"attr{call}.country.item()")
                             for attr in getattr(self, f"{core_class}s")
                         ]
-                    if hasattr(self.lpjml, "terr_area"):
+                    if hasattr(self.model.lpjml, "terr_area"):
                         df_data["area [km2]"] = [
                             eval(f"attr{call}.area.item()") * 1e-6
                             for attr in getattr(self, f"{core_class}s")
@@ -123,13 +129,13 @@ class World:
         mode = (
             "w"
             if (
-                self.lpjml.sim_year == self.lpjml.config.start_coupling and init
+                self.model.lpjml.sim_year == self.model.config.start_coupling and init
             )  # noqa
             else "a"
         )
 
         # define the file name and header row
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.csv"  # noqa
+        file_name = f"{self.model.config.sim_path}/output/{self.model.config.sim_name}/inseeds_data.csv"  # noqa
 
         if not os.path.isfile(file_name) or mode == "w":
             header = True
@@ -140,11 +146,11 @@ class World:
 
     def write_output_parquet(self, df, init=False):
         """Write output data to Parquet file"""
-        file_name = f"{self.lpjml.config.sim_path}/output/{self.lpjml.config.sim_name}/inseeds_data.parquet"  # noqa
+        file_name = f"{self.model.config.sim_path}/output/{self.model.config.sim_name}/inseeds_data.parquet"  # noqa
 
         # Append mode: write new data without rewriting the file.
         if not os.path.isfile(file_name) or (
-            self.lpjml.sim_year == self.lpjml.config.start_coupling and init
+            self.model.lpjml.sim_year == self.model.config.start_coupling and init
         ):
             df.to_parquet(file_name, engine="pyarrow", index=False)
         else:

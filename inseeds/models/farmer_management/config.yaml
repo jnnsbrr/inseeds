@@ -21,7 +21,7 @@ output:
 # Define how copan_core_data table file should be written
 output_settings:
     write_lon_lat: true
-    format: "csv"
+    file_format: "parquet" # "csv"
 
 # Define which farmer variables map with coupled LPJmL input variables
 coupling_map:

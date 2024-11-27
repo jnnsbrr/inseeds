@@ -12,10 +12,10 @@
 import numpy as np
 from enum import Enum
 
-from pycopancore.process_types import Step
 from pycopancore.model_components.base import interface as B
-import pycopancore.model_components.base as base
+import pycopancore.model_components.base as core
 
+import inseeds.components.base as base
 from . import documentation as doc
 
 
@@ -32,19 +32,23 @@ class AFT(Enum):
         )
 
 
-class Farmer(doc.Farmer, base.Individual):
+class Farmer(doc.Farmer, core.Individual, base.Individual):
     """Farmer/Individual entity type mixin implementation class."""
 
     # standard methods:
-    def __init__(self, *, config=None, **kwargs):
+    def __init__(self, **kwargs):
         """Initialize an instance of Farmer."""
         super().__init__(**kwargs)  # must be the first line
 
-        self.aft = AFT.random(config.pioneer_share)
+        self.aft = AFT.random(self.model.config.coupled_config.pioneer_share)
         self.aft_id = self.aft.value
-        self.coupling_map = config.coupling_map.to_dict()
-        self.__dict__.update(getattr(config.aftpar, self.aft.name).to_dict())
-        self.control_run = config.control_run
+        self.coupling_map = (
+            self.model.config.coupled_config.coupling_map.to_dict()
+        )  # noqa
+        self.__dict__.update(
+            getattr(self.model.config.coupled_config.aftpar, self.aft.name).to_dict()
+        )
+        self.control_run = self.model.config.coupled_config.control_run
 
         self.init_coupled_vars()
 
@@ -107,7 +111,7 @@ class Farmer(doc.Farmer, base.Individual):
         crop_idx = [
             i
             for i, item in enumerate(self.cell.output.hdate.band.values)
-            if any(x in item for x in self.cell.world.lpjml.config.cftmap)
+            if any(x in item for x in self.model.config.cftmap)
         ]
         if np.sum(self.cell.output.cftfrac.isel(band=crop_idx).values) == 0:
             return 365
@@ -302,8 +306,6 @@ class Farmer(doc.Farmer, base.Individual):
                 if len(self.cell.input[single_var].values.flatten()) > 1:
                     continue
                 setattr(self, attribute, self.cell.input[single_var].item())
-
-    processes = []
 
 
 def sigmoid(x):
