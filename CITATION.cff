@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: If you use this software, please cite it using the metadata from this file.
 type: software
 title: 'Model of integrated social-ecological resilient land systems (InSEEDS)'
-version: 0.0.1
+version: 0.1.0
 date-released: '2024-07-04'
 abstract: x
 authors:
@@ -24,6 +24,6 @@ authors:
   orcid: 0000-0003-3425-268X
 
 license: AGPL-3.0
-repository-code: https://github.com/pikc-copan/InSEEDS
+repository-code: https://github.com/pik-copan/inseeds
 doi: x
 

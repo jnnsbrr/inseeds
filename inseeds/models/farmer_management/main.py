@@ -2,7 +2,7 @@ import os
 import argparse
 
 from pycoupler.coupler import LPJmLCoupler
-from inseeds.models.farmer_management import model as M
+from inseeds.models.farmer_management import Model
 
 
 def run_inseeds(config_file):
@@ -10,17 +10,10 @@ def run_inseeds(config_file):
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"{config_file} does not exist")
 
-    # establish coupler connection to LPJmL
-    lpjml = LPJmLCoupler(config_file)
+    model = Model(config_file=config_file)
 
-    # initialize (LPJmL) world
-    world = M.World(model=M, lpjml=lpjml)
-
-    # initialize (cells and) farmers
-    farmers, cells = world.init_farmers()
-
-    for year in world.lpjml.get_sim_years():
-        world.update(year)
+    for year in model.lpjml.get_sim_years():
+        model.update(year)
 
 
 if __name__ == "__main__":

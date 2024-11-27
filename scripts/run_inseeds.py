@@ -5,7 +5,7 @@ from pycoupler.run import run_lpjml, check_lpjml
 from pycoupler.coupler import LPJmLCoupler
 from pycoupler.utils import search_country
 
-from inseeds.models.farmer_management import model as M  # noqa
+from inseeds.models.farmer_management import Model  # noqa
 
 # Settings ================================================================== #
 
@@ -21,7 +21,9 @@ country_code = "NLD"
 # Configuration ============================================================= #
 
 # create config for coupled run
-config_coupled = read_config(model_path=model_path, file_name="lpjml_config.cjson")
+config_coupled = read_config(
+    model_path=model_path, file_name="lpjml_config.cjson"
+)  # noqa
 
 # set coupled run configuration
 config_coupled.set_coupled(
@@ -82,14 +84,8 @@ run_lpjml(
 
 # InSEEDS run --------------------------------------------------------------- #
 
-# establish coupler connection to LPJmL
-lpjml = LPJmLCoupler(config_file=config_coupled_fn)
 
-# initialize (LPJmL) world
-world = M.World(model=M, lpjml=lpjml)
+model = Model(config_file=config_coupled_fn)
 
-# initialize (cells and) individuals
-farmers, cells = world.init_farmers()
-
-for year in world.lpjml.get_sim_years():
-    world.update(year)
+for year in model.lpjml.get_sim_years():
+    model.update(year)

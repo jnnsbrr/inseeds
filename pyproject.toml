@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inseeds"
-version = "0.0.1"
+version = "0.1.0"
 description = "Model of integrated social-ecological resilient land systems based on the copan:CORE modeling framework using LPJmL"
 readme = "README.md"
 license = {file = "LICENSE.md"}
@@ -38,7 +38,8 @@ dependencies = [
     "Levenshtein>=0.12.2",
     "pyarrow>17.0.0",
     "pycopancore @ git+https://github.com/jnnsbrr/pycopancore.git",
-    "pycoupler @ git+https://github.com/PIK-LPJmL/pycoupler.git"
+    "pycoupler @ git+https://github.com/PIK-LPJmL/pycoupler.git",
+    "pycopanlpjml @ git+https://github.com/PIK-LPJmL/pycopanlpjml.git"
 ]
 
 [project.optional-dependencies]
