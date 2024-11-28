@@ -17,10 +17,7 @@ import inseeds.components.base as base
 
 
 class World(base.World, doc.World):
-    """Define properties.
-    Inherits from I.World as the interface with all necessary variables
-    and parameters.
-    """
+    """World entity type mixin class."""
 
     def __init__(self, **kwargs):
         """Initialize an instance of World."""

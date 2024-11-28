@@ -6,7 +6,7 @@ from inseeds.models.farmer_management import Model
 
 
 def run_inseeds(config_file):
-
+    """Run the INSEEDS model with the given configuration file"""
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"{config_file} does not exist")
 
