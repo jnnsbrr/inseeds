@@ -1,16 +1,3 @@
-"""
-Social sub-component of the InSEEDS model.
-This does not inlude any communication to LPJmL via the pycoupler, but can be
-regarded as a first step towards coupled runs.
-
-Based on the exploit model, inluding novel decision-making dynamics
-on tha basis of the Theory of Planned behaviour (TPB)
-
-Conceptualization by Luana Schwarz, implementation based on Ronja Hotz'
-Exploit model MOL CC SN, with adjustments by Luana Schwarz.
-
-"""
-
 import pycopancore.model_components.base as core
 import pycopanlpjml as lpjml
 
@@ -37,14 +24,15 @@ class World(lpjml.World, farmer_management.World):
 
 
 class Model(lpjml.Component, farmer_management.Component):
-    """Class representing the whole model."""
+    """Model class for the InSEEDS Social model integrating the LPJmL model and
+    coupling component as well as the farmer management component.
+    """
 
-    name = "InSEEDS Social"
-    description = "Subcomponent of the InSEEDS model representing only social \
+    name = "InSEEDS farmer management"
+    description = "InSEEDS farmer management model representing only social \
     dynamics and decision-making on the basis of the TPB"
 
     entity_types = [World, Cell, Farmer]
-    """List of entity types used in the model"""
 
     def __init__(self, **kwargs):
         """Initialize an instance of World."""

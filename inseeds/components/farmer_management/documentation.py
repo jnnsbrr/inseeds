@@ -16,33 +16,25 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
 
 
 class Component:
-    """Interface for model component mixin."""
+    """Documentation mixin class."""
 
     # metadata:
-    name = "..."
-    """regenerative agriculture decisions"""
-    description = "..."
-    """this model component shall serve for the purpose of farmer
+    name = """farmer management"""
+    description = """
+    this model component shall serve for the purpose of farmer
     decision-making on the basis of the theory of planned behaviour (TPB).
-    It uses biophysical data from LPJmL"""
-    requires = []
-    """list of other model components required for this model component to
-    make sense"""
-
-    # Notes:
-    # - Model does NOT define variables or parameters, only entity types
-    #   and process taxons do!
-    # - implementation.Model lists these entity-types and process taxons
+    It uses biophysical data from LPJmL
+    """
 
 
 class World:
-    """Define Interface for World."""
+    """Documentation mixin for World."""
 
     pass
 
 
 class Farmer:
-    """Interface for Farmer entity type mixin."""
+    """Documentation mixin for Farmer. Used for output writing."""
 
     aft_id = Variable("AFT ID", "unique identifier for agent")
     behaviour = Variable(

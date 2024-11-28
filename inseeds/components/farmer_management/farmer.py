@@ -20,7 +20,7 @@ from . import documentation as doc
 
 
 class AFT(Enum):
-    """Available Inputs"""
+    """AFT types for the farmers."""
 
     traditionalist: int = 0
     pioneer: int = 1
@@ -33,7 +33,7 @@ class AFT(Enum):
 
 
 class Farmer(doc.Farmer, core.Individual, base.Individual):
-    """Farmer/Individual entity type mixin implementation class."""
+    """Farmer (Individual) entity type mixin class."""
 
     # standard methods:
     def __init__(self, **kwargs):

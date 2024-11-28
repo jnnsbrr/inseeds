@@ -1,15 +1,3 @@
-"""Model mixing class for inseeds_farmer_management
-"""
-
-# This file is part of pycopancore.
-#
-# Copyright (C) 2016-2017 by COPAN team at Potsdam Institute for Climate
-# Impact Research
-#
-# URL: <http://www.pik-potsdam.de/copan/software>
-# Contact: core@pik-potsdam.de
-# License: BSD 2-clause license
-
 from . import documentation as doc
 
 # import all needed entity type implementation classes:
@@ -17,9 +5,14 @@ from . import World, Farmer
 
 
 class Component(doc.Component):
-    """Model mixin class."""
+    """Model mixing class for farmer_management.
+    This component initializes farmers in the model to make decisions
+    on which management practices to apply to their fields.
+    Two practices are available: conventional and conservation tillage.
+    The theory of planned behaviour is used to model farmer decision-making.
+    Two farmer AFTs are implemented, the traditionalist and the pioneer.
+    """
 
-    # list of entity types augmented by this component
     entity_types = [World, Farmer]
 
     def init_farmers(self, **kwargs):
