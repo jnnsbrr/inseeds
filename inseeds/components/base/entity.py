@@ -16,7 +16,7 @@ class Entity:
 
     @property
     def output_table(self):
-        variables = self.__class__.output_variables.names
+        variables = self.get_defined_outputs()
         if not variables:
             return pd.DataFrame()
         else:
@@ -47,6 +47,16 @@ class Entity:
                     ],
                 }
             )
+
+    def get_defined_outputs(self):
+        return [
+            var
+            for var in self.__class__.output_variables.names
+            if var
+            in self.model.config.coupled_config.output.to_dict()[
+                self.__class__.__name__.lower()
+            ]
+        ]
 
     def update(self, t):
         pass

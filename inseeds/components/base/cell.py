@@ -11,9 +11,10 @@ class Cell(Entity):
     and parameters.
     """
 
+    # property to get output variables
     @property
     def output_table(self):
-        variables = self.__class__.output_variables.names
+        variables = self.get_defined_outputs()
 
         if not variables:
             return pd.DataFrame()
