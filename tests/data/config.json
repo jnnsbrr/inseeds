@@ -16056,9 +16056,9 @@
       "iso_country_code": true
     },
     "output": {
-      "farmers": [
+      "farmer": [
         "aft_id",
-        "behaviour",
+        "tillage",
         "tpb",
         "pbc",
         "social_norm",
@@ -16071,10 +16071,10 @@
     },
     "output_settings": {
       "write_lon_lat": true,
-      "format": "csv"
+      "file_format": "parquet"
     },
     "coupling_map": {
-      "behaviour": [
+      "tillage": [
         "with_tillage"
       ]
     },

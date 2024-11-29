@@ -8,7 +8,7 @@ lpjml_settings:
 output:
     farmer:
         - "aft_id"
-        - "behaviour"
+        - "tillage"
         - "tpb"
         - "pbc"
         - "social_norm"
@@ -21,11 +21,12 @@ output:
 # Define how copan_core_data table file should be written
 output_settings:
     write_lon_lat: true
-    file_format: "parquet" # "csv"
+    file_format: "csv" # "parquet" "csv"
 
 # Define which farmer variables map with coupled LPJmL input variables
 coupling_map:
-    behaviour: ["with_tillage"]  # "residue_on_field"
+    tillage: ["with_tillage"]
+    # residues: ["residue_on_field"]
 
 control_run: False
 pioneer_share: 0.25

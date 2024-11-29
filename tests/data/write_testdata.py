@@ -7,19 +7,14 @@ from pycoupler.run import run_lpjml, check_lpjml
 from pycoupler.coupler import LPJmLCoupler
 from pycoupler.utils import search_country
 
-import os
-
-os.chdir("/p/projects/copan/users/jannesbr/repos/inseeds")
-
-# from pycopancore.runners.runner import Runner
-from inseeds.models.farmer_management import model as M  # noqa
+from inseeds.models.regenerative_tillage import Model  # noqa
 
 # Settings ================================================================== #
 
 # paths
-sim_path = "./test"
+sim_path = "./simulations"
 model_path = "./LPJmL"
-inseeds_config_file = "./inseeds/models/farmer_management/config.yaml"  # noqa"
+inseeds_config_file = "./inseeds/models/regenerative_tillage/config.yaml"  # noqa"
 
 # search for country code by supplying country name
 # search_country("netherlands")
@@ -89,21 +84,17 @@ run_lpjml(
 
 # InSEEDS run --------------------------------------------------------------- #
 
-# establish coupler connection to LPJmL
-lpjml = LPJmLCoupler(config_file=config_coupled_fn)
-
-# initialize (LPJmL) world
-world = M.World(model=M, lpjml=lpjml)
+model = Model(config_file=config_coupled_fn)
 
 # write config as json
-world.lpjml.config.to_json("./inseeds/tests/data/config.json")
+model.lpjml.config.to_json("./inseeds/tests/data/config.json")
 
 # write input and output data to pickle files
 with open("./inseeds/tests/data/lpjml_input.pkl", "wb") as outp:
-    pickle.dump(world.input, outp, pickle.HIGHEST_PROTOCOL)
+    pickle.dump(model.world.input, outp, pickle.HIGHEST_PROTOCOL)
 
 with open("./inseeds/tests/data/output.pkl", "wb") as outp:
-    pickle.dump(world.output, outp, pickle.HIGHEST_PROTOCOL)
+    pickle.dump(model.world.output, outp, pickle.HIGHEST_PROTOCOL)
 
-with open("./inseeds/tests/data/lpjml.pkl", "wb") as outp:
-    pickle.dump(world.lpjml, outp, pickle.HIGHEST_PROTOCOL)
+with open("./inseeds/tests/data/lpjml.pkl", "wb") as lpj:
+    pickle.dump(model.lpjml, lpj, pickle.HIGHEST_PROTOCOL)

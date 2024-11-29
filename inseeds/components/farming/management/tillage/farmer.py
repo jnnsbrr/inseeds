@@ -12,114 +12,28 @@
 import numpy as np
 from enum import Enum
 
-from pycopancore.model_components.base import interface as B
-import pycopancore.model_components.base as core
-
-import inseeds.components.base as base
-from . import documentation as doc
+from inseeds.components import farming
 
 
-class AFT(Enum):
-    """AFT types for the farmers."""
-
-    traditionalist: int = 0
-    pioneer: int = 1
-
-    @staticmethod
-    def random(pioneer_share=0.5):
-        return np.random.choice(
-            [AFT.pioneer, AFT.traditionalist], p=[pioneer_share, 1 - pioneer_share]
-        )
-
-
-class Farmer(doc.Farmer, core.Individual, base.Individual):
+class Farmer(farming.Farmer):
     """Farmer (Individual) entity type mixin class."""
 
-    # standard methods:
     def __init__(self, **kwargs):
         """Initialize an instance of Farmer."""
         super().__init__(**kwargs)  # must be the first line
 
-        self.aft = AFT.random(self.model.config.coupled_config.pioneer_share)
-        self.aft_id = self.aft.value
-        self.coupling_map = (
-            self.model.config.coupled_config.coupling_map.to_dict()
-        )  # noqa
-        self.__dict__.update(
-            getattr(self.model.config.coupled_config.aftpar, self.aft.name).to_dict()
-        )
-        self.control_run = self.model.config.coupled_config.control_run
-
-        self.init_coupled_vars()
-
-        # average harvest date of the cell is used as a proxy for the order
-        # of the agents making decisions in time through the year
-        self.avg_hdate = self.cell_avg_hdate
-
-        # soilc is the last "measured" soilc value of the farmer whereas the
-        #   cell_soilc value is the actual status of soilc of the cell
-        self.soilc = self.cell_soilc
+        # initialize previous soilc
         self.soilc_previous = self.soilc
 
-        # Same applies for cropyield (as for soilc)
-        self.cropyield = self.cell_cropyield
+        # initialize previous cropyield
         self.cropyield_previous = self.cropyield
 
         # Randomize switch time at beginning of simulation to avoid
         #   synchronization of agents
         self.strategy_switch_time = np.random.randint(0, self.strategy_switch_duration)
+
         # initialize tbp for meaningful output
         self.tpb = 0
-
-    def init_neighbourhood(self):
-        """Initialize the neighbourhood of the agent."""
-        self.neighbourhood = [
-            neighbour
-            for cell_neighbours in self.cell.neighbourhood
-            if len(cell_neighbours.individuals) > 0
-            for neighbour in cell_neighbours.individuals
-        ]
-
-    @property
-    def farmers(self):
-        """Return the set of all farmers in the neighbourhood."""
-        return self.individuals
-
-    @property
-    def cell_cropyield(self):
-        """Return the average crop yield of the cell."""
-        if self.cell.output.harvestc.values.mean() == 0:
-            return 1e-3
-        else:
-            if self.behaviour == 0:
-                return self.cell.output.harvestc.values.mean() * 2
-            else:
-                return self.cell.output.harvestc.values.mean()
-
-    @property
-    def cell_soilc(self):
-        """Return the average soil carbon of the cell."""
-        if self.cell.output.soilc_agr_layer.values[0].item() == 0:
-            return 1e-3
-        else:
-            return self.cell.output.soilc_agr_layer.values[0].item()
-
-    @property
-    def cell_avg_hdate(self):
-        """Return the average harvest date of the cell."""
-        check = self.cell.output.hdate.band.values
-        crop_idx = [
-            i
-            for i, item in enumerate(self.cell.output.hdate.band.values)
-            if any(x in item for x in self.model.config.cftmap)
-        ]
-        if np.sum(self.cell.output.cftfrac.isel(band=crop_idx).values) == 0:
-            return 365
-        else:
-            return np.average(
-                self.cell.output.hdate,
-                weights=self.cell.output.cftfrac.isel(band=crop_idx),
-            )
 
     @property
     def attitude(self):
@@ -153,8 +67,8 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
 
         # select the average of the neighbours that are using a different
         #   strategy
-        yields_diff = average_cropyields[not self.behaviour]
-        soils_diff = average_soilcs[not self.behaviour]
+        yields_diff = average_cropyields[not self.tillage]
+        soils_diff = average_soilcs[not self.tillage]
 
         # calculate the difference between the own status and the average
         #   status of the neighbours
@@ -179,17 +93,17 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
         behaviour of the neighbours"""
         social_norm = 0
         if self.neighbourhood:
-            social_norm = sum(n.behaviour for n in self.neighbourhood) / len(
+            social_norm = sum(n.tillage for n in self.neighbourhood) / len(
                 self.neighbourhood
             )
-        if self.behaviour == 1:
+        if self.tillage == 1:
             return sigmoid(0.5 - social_norm)
         else:
             return sigmoid(social_norm - 0.5)
 
     def split_neighbourhood(self, attribute):
         """split the neighbourhood of farmers after a defined boolean attribute
-        (e.g. behaviour)
+        (e.g. tillage)
         """
         # init split into two neighbourhood lists
         first_nb = []
@@ -206,10 +120,10 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
 
     def split_neighbourhood_status(self, variable):
         """split the neighbourhood of farmers after a defined attribute
-        (behaviour) and calculate the average of each group
+        (tillage) and calculate the average of each group
         """
         # split the neighbourhood into two groups based on the behaviour
-        first_nb, second_nb = self.split_neighbourhood("behaviour")
+        first_nb, second_nb = self.split_neighbourhood("tillage")
 
         # calculate the average of the variable for first group
         if first_nb:
@@ -229,7 +143,10 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
 
         return first_var, second_var
 
-    def update_behaviour(self, t):
+    def update(self, t):
+        # call the base class update method
+        super().update(t)
+
         """Update the behaviour of the farmer based on the TPB"""
         # update the average harvest date of the cell
         self.avg_hdate = self.cell_avg_hdate
@@ -258,7 +175,7 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
 
             if self.tpb > 0.5:
                 # switch strategy
-                self.behaviour = int(not self.behaviour)
+                self.tillage = int(not self.tillage)
 
                 # decrease pbc after strategy switch
                 self.pbc = max(self.pbc - 0.25, 0.5)
@@ -276,7 +193,7 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
                 self.soilc_previous = self.soilc
 
                 # set the values of the farmers attributes to the LPJmL variables
-                self.set_lpjml_var(map_attribute="behaviour")
+                self.set_lpjml(attribute="tillage")
 
             # increase pbc if tpb is near 0.5 to learn from own experience
             elif self.tpb <= 0.5 and self.tpb > 0.4:
@@ -285,27 +202,6 @@ class Farmer(doc.Farmer, core.Individual, base.Individual):
         else:
             # decrease the counter for strategy switch time each year
             self.strategy_switch_time -= 1
-
-    def set_lpjml_var(self, map_attribute):
-        """Set the mapped variables from the farmers to the LPJmL input"""
-        lpjml_var = self.coupling_map[map_attribute]
-
-        if not isinstance(lpjml_var, list):
-            lpjml_var = [lpjml_var]
-
-        for single_var in lpjml_var:
-            self.cell.input[single_var][:] = getattr(self, map_attribute)
-
-    def init_coupled_vars(self):
-        """Initialize the mapped variables from the LPJmL output to the farmers"""
-        for attribute, lpjml_var in self.coupling_map.items():
-            if not isinstance(lpjml_var, list):
-                lpjml_var = [lpjml_var]
-
-            for single_var in lpjml_var:
-                if len(self.cell.input[single_var].values.flatten()) > 1:
-                    continue
-                setattr(self, attribute, self.cell.input[single_var].item())
 
 
 def sigmoid(x):

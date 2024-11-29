@@ -11,12 +11,10 @@
 # Contact: core@pik-potsdam.de
 # License: BSD 2-clause license
 
-from . import documentation as doc
-
 import inseeds.components.base as base
 
 
-class World(base.World, doc.World):
+class World(base.World):
     """World entity type mixin class."""
 
     def __init__(self, **kwargs):
