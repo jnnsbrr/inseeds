@@ -10,8 +10,8 @@ The InSEEDS model is designed to simulate the interactions between human
 societies and ecosystems modeled by LPJmL in a spatially explicit manner.  
 The model is codeveloped at the Potsdam Institute for Climate Impact Research
 (PIK) and the Max Planck Institute of Geoanthropology in Jena.
-InSEEDS builds on the copan:LPJmL modeling framework that inherits the
-entity and taxonomy system introduced for the
+InSEEDS builds on the [copan:LPJmL] world-earth modeling framework that
+inherits the entity and taxonomy system introduced for the
 [copan:CORE framework](https://doi.org/10.5194/esd-11-395-2020).
 
 
