@@ -9,7 +9,9 @@ from pycoupler.run import check_lpjml, submit_lpjml
 # paths
 sim_path = "./simulations"
 model_path = "./LPJmL"
-inseeds_config_file = "./inseeds/inseeds/models/config.yaml"  # noqa"
+inseeds_config_file = (
+    "./inseeds/inseeds/models/regenerative_tillage/config.yaml"  # noqa"
+)
 
 
 # Configuration ============================================================= #

@@ -9,18 +9,18 @@ import os
 
 os.chdir("/p/projects/copan/users/jannesbr/repos/inseeds")
 
-from inseeds.models.farmer_management import Model  # noqa
+from inseeds.models.regenerative_tillage import Model  # noqa
 
 # Settings ================================================================== #
 
 # paths
 sim_path = "./simulations"
 model_path = "./LPJmL"
-inseeds_config_file = "./inseeds/models/farmer_management/config.yaml"  # noqa"
+inseeds_config_file = "./inseeds/models/regenerative_tillage/config.yaml"  # noqa"
 
 sim_path = "/p/projects/open/Jannes/copan_core/test"
 model_path = "/p/projects/open/Jannes/copan_core/lpjml/LPJmL"
-inseeds_config_file = "/p/projects/copan/users/jannesbr/repos/inseeds/inseeds/models/farmer_management/config.yaml"  # noqa
+inseeds_config_file = "/p/projects/copan/users/jannesbr/repos/inseeds/inseeds/models/regenerative_tillage/config.yaml"  # noqa
 
 # search for country code by supplying country name
 # search_country("netherlands")

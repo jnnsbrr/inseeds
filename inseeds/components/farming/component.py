@@ -1,10 +1,7 @@
-from . import documentation as doc
-
-# import all needed entity type implementation classes:
-from . import World, Farmer
+from inseeds.components import base
 
 
-class Component(doc.Component):
+class Component(base.Component):
     """Model mixing class for farmer_management.
     This component initializes farmers in the model to make decisions
     on which management practices to apply to their fields.
@@ -13,9 +10,7 @@ class Component(doc.Component):
     Two farmer AFTs are implemented, the traditionalist and the pioneer.
     """
 
-    entity_types = [World, Farmer]
-
-    def init_farmers(self, **kwargs):
+    def init_farmers(self, farmer_class, **kwargs):
         """Initialize farmers."""
         farmers = []
 
@@ -23,7 +18,7 @@ class Component(doc.Component):
             if cell.output.cftfrac.sum("band") == 0:
                 continue
 
-            farmer = Farmer(cell=cell, model=self)
+            farmer = farmer_class(cell=cell, model=self)
             farmers.append(farmer)
 
         farmers_sorted = sorted(farmers, key=lambda farmer: farmer.avg_hdate)
@@ -32,7 +27,9 @@ class Component(doc.Component):
 
         # self.world.farmers = set(farmers_sorted
 
-    def update_farmers(self, t):
+    def update(self, t):
+        super().update(t)
+
         farmers_sorted = sorted(self.world.farmers, key=lambda farmer: farmer.avg_hdate)
         for farmer in farmers_sorted:
-            farmer.update_behaviour(t)
+            farmer.update(t)

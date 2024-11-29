@@ -2,20 +2,14 @@ import os
 import pytest
 import pickle
 
-import pycopancore.model_components.base as core
 import pycopanlpjml as lpjml
 
-import inseeds.components.farmer_management as farmer_management
 import inseeds.components.base as base
+import inseeds.components.farming as farming
+from inseeds.models.regenerative_tillage import Cell, Farmer, World
 
 
-class World(lpjml.World, farmer_management.World):
-    """Test world entity type."""
-
-    pass
-
-
-class Model(lpjml.Component, farmer_management.Component):
+class Model(lpjml.Component, farming.Component):
     """Test class representing the model."""
 
     name = "Test InSEEDS farmer mananagement"
@@ -48,13 +42,14 @@ class Model(lpjml.Component, farmer_management.Component):
         )
 
         # initialize cells
-        self.init_cells()
+        self.init_cells(cell_class=Cell)
 
         # initialize farmers
-        self.init_farmers()
+        self.init_farmers(farmer_class=Farmer)
 
     def update(self, t):
-        self.update_farmers(t)
+        super().update(t)
+
         self.update_lpjml(t)
 
 
