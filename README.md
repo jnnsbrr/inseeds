@@ -3,7 +3,7 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14265856.svg)](https://doi.org/10.5281/zenodo.14265856) [![CI](https://github.com/pik-copan/inseeds/actions/workflows/check.yml/badge.svg)](https://github.com/pik-copan/inseeds/actions) [![codecov](https://codecov.io/gh/pik-copan/inseeds/graph/badge.svg?token=JU73NURPI0)](https://codecov.io/gh/pik-copan/inseeds)
 
 
-*Model of integrated social-ecological resilient land systems based on the copan:CORE modeling framework using LPJmL*
+*Model of integrated social-ecological resilient land systems based on the [copan:LPJmL](https://github.com/pik-copan/pycopanlpjml) modeling framework*
 
 ## Overview
 
@@ -11,7 +11,7 @@ The InSEEDS model is designed to simulate the interactions between human
 societies and ecosystems modeled by LPJmL in a spatially explicit manner.  
 The model is codeveloped at the Potsdam Institute for Climate Impact Research
 (PIK) and the Max Planck Institute of Geoanthropology in Jena.
-InSEEDS builds on the [copan:LPJmL] world-earth modeling framework that
+InSEEDS builds on the [copan:LPJmL](https://github.com/pik-copan/pycopanlpjml) world-earth modeling framework that
 inherits the entity and taxonomy system introduced for the
 [copan:CORE framework](https://doi.org/10.5194/esd-11-395-2020).
 
