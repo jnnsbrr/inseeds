@@ -9,8 +9,7 @@ from inseeds.models.regenerative_tillage import Cell, Farmer, World, Model
 
 
 def test_run_model(test_path):
-    """Test running the model until end of simulation.
-    """
+    """Test running the model until end of simulation."""
 
     with open(f"{test_path}/data/lpjml.pkl", "rb") as lpj:
         lpjml = pickle.load(lpj)
@@ -30,8 +29,7 @@ def test_run_model(test_path):
 
 
 def test_model_output(test_path):
-    """ Test getting the output table of the model.
-    """
+    """Test getting the output table of the model."""
     with open(f"{test_path}/data/lpjml.pkl", "rb") as lpj:
         lpjml = pickle.load(lpj)
 
