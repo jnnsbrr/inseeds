@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/pik-copan/inseeds/actions/workflows/check.yml/badge.svg)](https://github.com/pik-copan/inseeds/actions) [![codecov](https://codecov.io/gh/jnnsbrr/inseeds/graph/badge.svg?token=JU73NURPI0)](https://codecov.io/gh/jnnsbrr/inseeds)
 
+
 *Model of integrated social-ecological resilient land systems based on the copan:CORE modeling framework using LPJmL*
 
 ## Overview
