@@ -144,4 +144,18 @@ class Farmer(core.Individual, base.Individual):
 
     def update(self, t):
         super().update(t)
-        pass
+
+        # update the average harvest date of the cell
+        self.avg_hdate = self.cell_avg_hdate
+
+        # running average over strategy_switch_duration years to avoid rapid
+        #    switching by weather fluctuations
+        self.cropyield = (
+            1 - 1 / self.strategy_switch_duration
+        ) * self.cropyield + 1 / self.strategy_switch_duration * self.cell_cropyield
+        self.soilc = (
+            1 - 1 / self.strategy_switch_duration
+        ) * self.soilc + 1 / self.strategy_switch_duration * self.cell_soilc
+
+        if self.control_run:
+            return
