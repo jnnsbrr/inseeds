@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: If you use this software, please cite it using the metadata from this file.
 type: software
 title: 'Model of integrated social-ecological resilient land systems (InSEEDS)'
-version: 0.2.3
-date-released: '2024-07-04'
+version: 0.2.4
+date-released: '2024-12-03'
 abstract: x
 authors:
 - family-names: Breier
@@ -18,6 +18,10 @@ authors:
   given-names: Hannah
   email: prawitz@pik-potsdam.de
   orcid: 0009-0001-7381-887X
+- family-names: Bechthold
+  given-names: Max
+  email: maxbecht@pik-potsdam.de
+  orcid: 0009-0007-7113-4814
 - family-names: Hotz
   given-names: Ronja
   email: ronja.hotz@kit.edu
@@ -25,5 +29,5 @@ authors:
 
 license: AGPL-3.0
 repository-code: https://github.com/pik-copan/inseeds
-doi: x
+doi: 10.5281/zenodo.14265856
 

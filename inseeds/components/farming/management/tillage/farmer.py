@@ -148,22 +148,6 @@ class Farmer(farming.Farmer):
         super().update(t)
 
         """Update the behaviour of the farmer based on the TPB"""
-        # update the average harvest date of the cell
-        self.avg_hdate = self.cell_avg_hdate
-
-        # running average over strategy_switch_duration years to avoid rapid
-        #    switching by weather fluctuations
-        self.cropyield = (
-            1 - 1 / self.strategy_switch_duration
-        ) * self.cropyield + 1 / self.strategy_switch_duration * self.cell_cropyield
-        self.soilc = (
-            1 - 1 / self.strategy_switch_duration
-        ) * self.soilc + 1 / self.strategy_switch_duration * self.cell_soilc
-        # self.cropyield = self.cell_cropyield
-        # self.soilc = self.cell_soilc
-
-        if self.control_run:
-            return
 
         # If strategy switch time is down to 0 calculate TPB-based strategy
         # switch probability value

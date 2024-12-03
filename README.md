@@ -1,6 +1,7 @@
 # InSEEDS
 
-[![CI](https://github.com/pik-copan/inseeds/actions/workflows/check.yml/badge.svg)](https://github.com/pik-copan/inseeds/actions)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14265856.svg)](https://doi.org/10.5281/zenodo.14265856) [![CI](https://github.com/pik-copan/inseeds/actions/workflows/check.yml/badge.svg)](https://github.com/pik-copan/inseeds/actions) [![codecov](https://codecov.io/gh/pik-copan/inseeds/graph/badge.svg?token=JU73NURPI0)](https://codecov.io/gh/pik-copan/inseeds)
+
 
 *Model of integrated social-ecological resilient land systems based on the copan:CORE modeling framework using LPJmL*
 
