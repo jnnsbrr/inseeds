@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inseeds"
-version = "0.2.4"
+version = "0.2.5"
 description = "Model of integrated social-ecological resilient land systems based on the copan:CORE modeling framework using LPJmL"
 readme = "README.md"
 license = {file = "LICENSE.md"}
