@@ -4,11 +4,10 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
     DimensionsAndUnits as DAU,
 )
 
-import pycopanlpjml as lpjml
-
 from inseeds.components import base
 from inseeds.components import farming
 from inseeds.components.farming.management import tillage
+from inseeds.components import lpjml
 
 
 class Farmer(tillage.Farmer):

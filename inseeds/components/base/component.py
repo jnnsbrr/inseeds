@@ -30,6 +30,8 @@ class Component:
         return df
 
     def write_output_table(self, init=False, file_format="parquet"):
+        if hasattr(sys, "_called_from_test"):
+            return
         if file_format == "parquet":
             self.write_output_parquet(self.output_table, init)
         elif file_format == "csv":
