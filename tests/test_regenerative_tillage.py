@@ -44,9 +44,9 @@ def test_model_output(test_path):
         f"{test_path}/data/test_output_table.csv",
     )
     test_output = test_output.where(test_output.notna(), None)
-    sort_columns = ["year", "cell", "entity", "variable"]
-    # Sort the dataframes by the same columns
 
+    # Sort the dataframes by the same columns
+    sort_columns = ["year", "cell", "entity", "variable"]
     test_output = test_output.sort_values(by=sort_columns)
     output = output.sort_values(by=sort_columns)
 
