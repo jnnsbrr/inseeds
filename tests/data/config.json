@@ -11731,6 +11731,7 @@
       "name": "/p/projects/open/Jannes/copan_core/test/input/sdate_netherlands.clm"
     },
     "crop_phu": {
+      "id": 45,
       "fmt": "clm",
       "name": "/p/projects/open/Jannes/copan_core/test/input/crop_phu_netherlands.clm"
     },
@@ -15325,22 +15326,6 @@
       }
     },
     {
-      "id": "rd",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/rd.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "fapar",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/fapar.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "transp",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/transp.nc4",
@@ -15389,14 +15374,6 @@
       }
     },
     {
-      "id": "firef",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/firef.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "vegc",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/vegc.nc4",
@@ -15437,62 +15414,6 @@
       }
     },
     {
-      "id": "phen_tmin",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/phen_tmin.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "phen_tmax",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/phen_tmax.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "phen_light",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/phen_light.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "phen_water",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/phen_water.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "vegn",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/vegn.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "soiln",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soiln.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "litn",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/litn.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "soiln_layer",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soiln_layer.nc4",
@@ -15517,41 +15438,9 @@
       }
     },
     {
-      "id": "soiln_slow",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soiln_slow.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "soilnh4",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soilnh4.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "soilno3",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soilno3.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "pft_nuptake",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_nuptake.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "nuptake",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/nuptake.nc4",
         "timestep": "annual",
         "fmt": "cdf"
       }
@@ -15621,14 +15510,6 @@
       }
     },
     {
-      "id": "firen",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/firen.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "n_mineralization",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/n_mineralization.nc4",
@@ -15669,89 +15550,9 @@
       }
     },
     {
-      "id": "pft_cleaf",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_cleaf.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_nleaf",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_nleaf.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_laimax",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_laimax.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_croot",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_croot.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_nroot",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_nroot.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_csapw",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_csapw.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_nsapw",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_nsapw.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_chawo",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_chawo.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "pft_nhawo",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_nhawo.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "pft_water_demand",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/pft_water_demand.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "firec",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/firec.nc4",
         "timestep": "annual",
         "fmt": "cdf"
       }
@@ -15831,41 +15632,9 @@
       }
     },
     {
-      "id": "maxthaw_depth",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/maxthaw_depth.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
       "id": "perc",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/perc.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "soiltemp1",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soiltemp1.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "soiltemp2",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soiltemp2.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "soiltemp3",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/soiltemp3.nc4",
         "timestep": "annual",
         "fmt": "cdf"
       }
@@ -15893,22 +15662,6 @@
         "fmt": "cdf",
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/rootmoist_agr.nc4",
         "timestep": "annual"
-      }
-    },
-    {
-      "id": "agb",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/agb.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "agb_tree",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/agb_tree.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
       }
     },
     {
@@ -15947,30 +15700,6 @@
       "id": "prod_turnover",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/prod_turnover.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "deforest_emis",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/deforest_emis.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "conv_loss_evap",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/conv_loss_evap.nc4",
-        "timestep": "annual",
-        "fmt": "cdf"
-      }
-    },
-    {
-      "id": "conv_loss_drain",
-      "file": {
-        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/conv_loss_drain.nc4",
         "timestep": "annual",
         "fmt": "cdf"
       }
@@ -16071,7 +15800,7 @@
     },
     "output_settings": {
       "write_lon_lat": true,
-      "file_format": "parquet"
+      "file_format": "csv"
     },
     "coupling_map": {
       "tillage": [

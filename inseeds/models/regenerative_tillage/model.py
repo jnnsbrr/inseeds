@@ -120,5 +120,4 @@ class Model(lpjml.Component, farming.Component):
         self.write_output_table(
             file_format=self.config.coupled_config.output_settings.file_format
         )
-
         self.update_lpjml(t)

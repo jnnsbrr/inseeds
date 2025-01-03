@@ -5,10 +5,6 @@ from pycoupler.run import run_lpjml, check_lpjml
 from pycoupler.coupler import LPJmLCoupler
 from pycoupler.utils import search_country
 
-import os
-
-os.chdir("/p/projects/copan/users/jannesbr/repos/inseeds")
-
 from inseeds.models.regenerative_tillage import Model  # noqa
 
 # Settings ================================================================== #
@@ -17,10 +13,6 @@ from inseeds.models.regenerative_tillage import Model  # noqa
 sim_path = "./simulations"
 model_path = "./LPJmL"
 inseeds_config_file = "./inseeds/models/regenerative_tillage/config.yaml"  # noqa"
-
-sim_path = "/p/projects/open/Jannes/copan_core/test"
-model_path = "/p/projects/open/Jannes/copan_core/lpjml/LPJmL"
-inseeds_config_file = "/p/projects/copan/users/jannesbr/repos/inseeds/inseeds/models/regenerative_tillage/config.yaml"  # noqa
 
 # search for country code by supplying country name
 # search_country("netherlands")
