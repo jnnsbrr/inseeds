@@ -6,7 +6,7 @@ import pycopanlpjml as lpjml
 # mixin for testing
 class Component(lpjml.Component):
 
-    def __init__(self, test_path, **kwargs):
+    def __init__(self, test_path=None, **kwargs):
         """Initialize an instance of LPJmLComponent."""
         super().__init__(**kwargs)
 

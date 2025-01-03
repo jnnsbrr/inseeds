@@ -93,7 +93,7 @@ model.lpjml.config.to_json("./inseeds/tests/data/config.json")
 with open("./inseeds/tests/data/lpjml_input.pkl", "wb") as outp:
     pickle.dump(model.world.input, outp, pickle.HIGHEST_PROTOCOL)
 
-with open("./inseeds/tests/data/output.pkl", "wb") as outp:
+with open("./inseeds/tests/data/lpjml_output.pkl", "wb") as outp:
     pickle.dump(model.world.output, outp, pickle.HIGHEST_PROTOCOL)
 
 with open("./inseeds/tests/data/lpjml.pkl", "wb") as lpj:
