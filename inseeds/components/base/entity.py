@@ -26,7 +26,9 @@ class Entity:
                     "entity": [self.__class__.__name__] * len(variables),
                     "variable": [
                         getattr(
-                            getattr(self.__class__.output_variables, var, None),
+                            getattr(
+                                self.__class__.output_variables, var, None
+                            ),
                             "name",
                             None,
                         )
@@ -36,7 +38,9 @@ class Entity:
                     "unit": [
                         getattr(
                             getattr(
-                                getattr(self.__class__.output_variables, var, None),
+                                getattr(
+                                    self.__class__.output_variables, var, None
+                                ),
                                 "unit",
                                 None,
                             ),

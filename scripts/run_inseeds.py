@@ -12,7 +12,9 @@ from inseeds.models.regenerative_tillage import Model  # noqa
 # paths
 sim_path = "./simulations"
 model_path = "./LPJmL"
-inseeds_config_file = "./inseeds/models/regenerative_tillage/config.yaml"  # noqa"
+inseeds_config_file = (
+    "./inseeds/models/regenerative_tillage/config.yaml"  # noqa"
+)
 
 # search for country code by supplying country name
 # search_country("netherlands")
@@ -61,7 +63,9 @@ config_coupled.residue_treatment = "read_residue_data"
 config_coupled.double_harvest = False
 
 # regrid by country - create new (extracted) input files and update config file
-config_coupled.regrid(sim_path, country_code=country_code, overwrite_input=False)
+config_coupled.regrid(
+    sim_path, country_code=country_code, overwrite_input=False
+)
 
 config_coupled.add_config(inseeds_config_file)
 
@@ -79,7 +83,8 @@ check_lpjml(config_coupled_fn)
 
 # run lpjml simulation for coupling in the background
 run_lpjml(
-    config_file=config_coupled_fn, std_to_file=False  # write stdout and stderr to file
+    config_file=config_coupled_fn,
+    std_to_file=False,  # write stdout and stderr to file
 )
 
 # InSEEDS run --------------------------------------------------------------- #

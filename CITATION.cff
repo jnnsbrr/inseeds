@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: If you use this software, please cite it using the metadata from this file.
 type: software
 title: 'Model of integrated social-ecological resilient land systems (InSEEDS)'
-version: 0.2.6
-date-released: '2025-01-03'
+version: 0.2.7
+date-released: '2025-02-27'
 abstract: x
 authors:
 - family-names: Breier

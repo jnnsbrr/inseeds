@@ -1,16 +1,6 @@
-"""Farmer entity type class of inseeds_farmer_management
-"""
+"""Farmer entity type class of inseeds_farmer_management"""
 
-# This file is part of pycopancore.
-#
-# Copyright (C) 2016-2017 by COPAN team at Potsdam Institute for Climate
-# Impact Research
-#
-# URL: <http://www.pik-potsdam.de/copan/software>
-# Contact: core@pik-potsdam.de
-# License: BSD 2-clause license
 import numpy as np
-from enum import Enum
 
 from inseeds.components import farming
 
@@ -30,7 +20,9 @@ class Farmer(farming.Farmer):
 
         # Randomize switch time at beginning of simulation to avoid
         #   synchronization of agents
-        self.strategy_switch_time = np.random.randint(0, self.strategy_switch_duration)
+        self.strategy_switch_time = np.random.randint(
+            0, self.strategy_switch_duration
+        )
 
         # initialize tbp for meaningful output
         self.tpb = 0
@@ -84,7 +76,8 @@ class Farmer(farming.Farmer):
 
         # calculate the attitude of social learning based on the comparison
         return sigmoid(
-            self.weight_yield * yield_comparison + self.weight_soil * soil_comparison
+            self.weight_yield * yield_comparison
+            + self.weight_soil * soil_comparison
         )
 
     @property
@@ -127,7 +120,9 @@ class Farmer(farming.Farmer):
 
         # calculate the average of the variable for first group
         if first_nb:
-            first_var = sum(getattr(n, variable) for n in first_nb) / len(first_nb)
+            first_var = sum(getattr(n, variable) for n in first_nb) / len(
+                first_nb
+            )
         # if there are no neighbours of the same strategy, set the average
         #   to 0
         else:
@@ -135,7 +130,9 @@ class Farmer(farming.Farmer):
 
         # calculate the average of the variable for second group
         if second_nb:
-            second_var = sum(getattr(n, variable) for n in second_nb) / len(second_nb)
+            second_var = sum(getattr(n, variable) for n in second_nb) / len(
+                second_nb
+            )
         # if there are no neighbours of the same strategy, set the average
         #   to 0
         else:
@@ -170,18 +167,21 @@ class Farmer(farming.Farmer):
                     round(self.strategy_switch_duration / 2),
                 )
 
-                # freeze the current soilc and cropyield values that were used for
-                #   the decision making in the next evaluation after
+                # freeze the current soilc and cropyield values that were used
+                #   for the decision making in the next evaluation after
                 #   self.strategy_switch_duration
                 self.cropyield_previous = self.cropyield
                 self.soilc_previous = self.soilc
 
-                # set the values of the farmers attributes to the LPJmL variables
+                # set the values of the farmers attributes to the LPJmL
+                #   variables
                 self.set_lpjml(attribute="tillage")
 
             # increase pbc if tpb is near 0.5 to learn from own experience
             elif self.tpb <= 0.5 and self.tpb > 0.4:
-                self.pbc = min(self.pbc + 0.25 / self.strategy_switch_duration, 1)
+                self.pbc = min(
+                    self.pbc + 0.25 / self.strategy_switch_duration, 1
+                )
 
         else:
             # decrease the counter for strategy switch time each year
