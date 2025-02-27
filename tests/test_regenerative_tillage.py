@@ -20,7 +20,10 @@ def test_run_model(test_path):
         model.update(year)
 
     last_year = (
-        model.world.output.time.values[0].astype("datetime64[Y]").astype(int).item()
+        model.world.output.time.values[0]
+        .astype("datetime64[Y]")
+        .astype(int)
+        .item()
         + 1970
     )
 

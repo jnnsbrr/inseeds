@@ -30,6 +30,8 @@ class Component(base.Component):
     def update(self, t):
         super().update(t)
 
-        farmers_sorted = sorted(self.world.farmers, key=lambda farmer: farmer.avg_hdate)
+        farmers_sorted = sorted(
+            self.world.farmers, key=lambda farmer: farmer.avg_hdate
+        )
         for farmer in farmers_sorted:
             farmer.update(t)

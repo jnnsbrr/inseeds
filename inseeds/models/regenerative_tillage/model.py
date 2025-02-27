@@ -31,7 +31,9 @@ class Farmer(tillage.Farmer):
             unit=DAU.gC_per_m2,
         ),
         tillage=Variable(
-            "agent tillage behaviour", "conventional=1, conservation=0", datatype=bool
+            "agent tillage behaviour",
+            "conventional=1, conservation=0",
+            datatype=bool,
         ),
         pbc=Variable(
             "perceived behavioural control",

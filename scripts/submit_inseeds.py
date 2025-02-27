@@ -17,7 +17,9 @@ inseeds_config_file = (
 # Configuration ============================================================= #
 
 # create config for coupled run
-config_coupled = read_config(model_path=model_path, file_name="lpjml_config.cjson")
+config_coupled = read_config(
+    model_path=model_path, file_name="lpjml_config.cjson"
+)
 
 # set coupled run configuration
 config_coupled.set_coupled(

@@ -1,5 +1,4 @@
-"""Farmer entity type class of inseeds_farmer_management
-"""
+"""Farmer entity type class of inseeds_farmer_management"""
 
 # This file is part of pycopancore.
 #
@@ -25,7 +24,8 @@ class AFT(Enum):
     @staticmethod
     def random(pioneer_share=0.5):
         return np.random.choice(
-            [AFT.pioneer, AFT.traditionalist], p=[pioneer_share, 1 - pioneer_share]
+            [AFT.pioneer, AFT.traditionalist],
+            p=[pioneer_share, 1 - pioneer_share],
         )
 
 
@@ -63,14 +63,20 @@ class Farmer(core.Individual, base.Individual):
 
         # assign configuration to aft specific farmer
         self.__dict__.update(
-            getattr(self.model.config.coupled_config.aftpar, self.aft.name).to_dict()
+            getattr(
+                self.model.config.coupled_config.aftpar, self.aft.name
+            ).to_dict()
         )
 
     def init_coupled_attributes(self):
-        """Initialize the mapped variables from the LPJmL output to the farmers"""
+        """Initialize the mapped variables from the LPJmL output to the
+        farmers
+        """
 
         # get the coupling map (inseeds to lpjml names) from the configuration
-        self.coupling_map = self.model.config.coupled_config.coupling_map.to_dict()
+        self.coupling_map = (
+            self.model.config.coupled_config.coupling_map.to_dict()
+        )
 
         # set control run argument
         self.control_run = self.model.config.coupled_config.control_run
@@ -151,11 +157,13 @@ class Farmer(core.Individual, base.Individual):
         # running average over strategy_switch_duration years to avoid rapid
         #    switching by weather fluctuations
         self.cropyield = (
-            1 - 1 / self.strategy_switch_duration
-        ) * self.cropyield + 1 / self.strategy_switch_duration * self.cell_cropyield
+            (1 - 1 / self.strategy_switch_duration) * self.cropyield
+            + 1 / self.strategy_switch_duration * self.cell_cropyield
+        )
         self.soilc = (
-            1 - 1 / self.strategy_switch_duration
-        ) * self.soilc + 1 / self.strategy_switch_duration * self.cell_soilc
+            (1 - 1 / self.strategy_switch_duration) * self.soilc
+            + 1 / self.strategy_switch_duration * self.cell_soilc
+        )
 
         if self.control_run:
             return

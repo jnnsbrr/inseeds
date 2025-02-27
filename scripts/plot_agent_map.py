@@ -40,7 +40,9 @@ lu_cells = all_output["cell"].unique()
 # lu_cells.sort()
 
 # Filter out NaN values from 'cell' variable
-na_check = np.where(grid["cellid"].values == -999999, np.nan, grid["cellid"].values)
+na_check = np.where(
+    grid["cellid"].values == -999999, np.nan, grid["cellid"].values
+)
 
 # Check if each value is in lu_cells
 valid_cells = np.isin(na_check, lu_cells)
@@ -75,7 +77,9 @@ for variable in variables:
 
     # replace values with those for variable of mapping
     out_sub.values[all_valid_cells] = mapping_df.values
-    output[variable].values = out_sub.transpose("time", "latitude", "longitude").values
+    output[variable].values = out_sub.transpose(
+        "time", "latitude", "longitude"
+    ).values
     output[variable].values = np.where(
         output[variable].values == -1e32, np.nan, output[variable].values
     )
@@ -102,10 +106,15 @@ for year in range(2023, 2051):
     )
 
     # Reduce the whitespace between the plots
-    fig.subplots_adjust(left=0.05, right=0.95, bottom=0.05, hspace=0.05, wspace=0.1)
+    fig.subplots_adjust(
+        left=0.05, right=0.95, bottom=0.05, hspace=0.05, wspace=0.1
+    )
 
     fig.suptitle(
-        f"Socio-biophysical dynamics for year {year}", fontsize=12, va="bottom", y=0.92
+        f"Socio-biophysical dynamics for year {year}",
+        fontsize=12,
+        va="bottom",
+        y=0.92,
     )
 
     cc = rr = 0
@@ -140,7 +149,9 @@ for year in range(2023, 2051):
                 loc="lower right",
                 fontsize=6,
             )
-            axis[cc, rr].set_title(f"{output[variable].attrs['long_name']}", fontsize=8)
+            axis[cc, rr].set_title(
+                f"{output[variable].attrs['long_name']}", fontsize=8
+            )
         else:
             # Set vmin and vmax based on the variable
             if variable == "average crop yield":
@@ -170,7 +181,9 @@ for year in range(2023, 2051):
                 )
             )
             # Make the colorbar smaller
-            cb = plt.colorbar(im, orientation="vertical", shrink=0.5, aspect=20)
+            cb = plt.colorbar(
+                im, orientation="vertical", shrink=0.5, aspect=20
+            )
             # cb.set_label(label=output[variable].attrs['units'], size='small')
             cb.ax.tick_params(labelsize="small")
 
@@ -190,7 +203,9 @@ for year in range(2023, 2051):
     plt.close()
 
 year_images = glob.glob(f"{plot_dir}/all_maps/raster_*")
-year_images = sorted(year_images, key=lambda x: int(x.split("_")[-1].split(".")[0]))
+year_images = sorted(
+    year_images, key=lambda x: int(x.split("_")[-1].split(".")[0])
+)
 
 var = [imageio.imread(file) for file in year_images]
 
