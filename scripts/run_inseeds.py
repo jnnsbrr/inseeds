@@ -64,7 +64,7 @@ config_coupled.double_harvest = False
 
 # regrid by country - create new (extracted) input files and update config file
 config_coupled.regrid(
-    sim_path, country_code=country_code, overwrite_input=False
+    sim_path, country_code=country_code, overwrite=False
 )
 
 config_coupled.add_config(inseeds_config_file)
