@@ -35,9 +35,7 @@ config_spinup.set_spinup(sim_path)
 config_spinup.river_routing = False
 
 # regrid by country - create new (extracted) input files and update config
-config_spinup.regrid(
-    sim_path, country_code=country_code, overwrite=False
-)
+config_spinup.regrid(sim_path, country_code=country_code, overwrite=False)
 
 # write config (Config object) as json file
 config_spinup_fn = config_spinup.to_json()
@@ -64,9 +62,7 @@ config_historic.residue_treatment = "read_residue_data"
 config_historic.separate_harvests = False
 
 # regrid by country - create new (extracted) input files and update config
-config_historic.regrid(
-    sim_path, country_code=country_code, overwrite=False
-)
+config_historic.regrid(sim_path, country_code=country_code, overwrite=False)
 
 # write config (Config object) as json file
 config_historic_fn = config_historic.to_json()
