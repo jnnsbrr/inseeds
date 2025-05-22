@@ -61,7 +61,7 @@ config_historic.river_routing = False
 config_historic.tillage_type = "read"
 config_historic.residue_treatment = "read_residue_data"
 
-config_historic.double_harvest = False
+config_historic.separate_harvests = False
 
 # regrid by country - create new (extracted) input files and update config
 config_historic.regrid(
