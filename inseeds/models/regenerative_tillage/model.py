@@ -66,7 +66,7 @@ class Farmer(tillage.Farmer):
     )
 
 
-class Cell(lpjml.Cell, base.Cell):
+class Cell(lpjml.Cell, farming.Cell):
     """Cell entity type."""
 
     pass
