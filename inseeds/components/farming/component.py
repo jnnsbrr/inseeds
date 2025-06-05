@@ -27,11 +27,3 @@ class Component(base.Component):
 
         # self.world.farmers = set(farmers_sorted
 
-    def update(self, t):
-        super().update(t)
-
-        farmers_sorted = sorted(
-            self.world.farmers, key=lambda farmer: farmer.avg_hdate
-        )
-        for farmer in farmers_sorted:
-            farmer.update(t)

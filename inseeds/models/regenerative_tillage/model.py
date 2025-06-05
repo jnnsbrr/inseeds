@@ -72,6 +72,12 @@ class Cell(lpjml.Cell, farming.Cell):
     pass
 
 
+class Country(lpjml.Country, base.Country):
+    """Country entity type."""
+
+    pass
+
+
 class World(lpjml.World, farming.World):
     """World entity type."""
 
@@ -106,6 +112,10 @@ class Model(lpjml.Component, farming.Component):
             area=self.lpjml.terr_area,
         )
 
+        self.init_countries(
+            country_class=Country
+        )
+
         # initialize cells
         self.init_cells(cell_class=Cell)
 
@@ -118,7 +128,7 @@ class Model(lpjml.Component, farming.Component):
         )
 
     def update(self, t):
-        super().update(t)
+        self.update_countries(t)
         self.write_output_table(
             file_format=self.config.coupled_config.output_settings.file_format
         )

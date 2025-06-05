@@ -100,10 +100,10 @@ class Farmer(core.Individual, base.Individual):
             for neighbour in cell_neighbours.individuals
         ]
 
-    @property
-    def farmers(self):
-        """Return the set of all farmers in the neighbourhood."""
-        return self.individuals
+    # @property
+    # def farmers(self):
+    #     """Return the set of all farmers in the neighbourhood."""
+    #     return self.individuals
 
     @property
     def cell_cropyield(self):
