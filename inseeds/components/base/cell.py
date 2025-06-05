@@ -26,7 +26,7 @@ class Cell(Entity):
             df.insert(3, "lat", [self.grid.cell.lat.item()] * len(variables))
 
             if hasattr(self, "country"):
-                df.insert(4, "country", [self.country.item()] * len(variables))
+                df.insert(4, "country", [self.country.name] * len(variables))
             if hasattr(self, "area"):
                 df.insert(
                     5,

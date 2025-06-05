@@ -30,7 +30,7 @@ class Individual(Entity):
 
             if hasattr(self.cell, "country"):
                 df.insert(
-                    4, "country", [self.cell.country.item()] * len(variables)
+                    4, "country", [self.cell.country.name] * len(variables)
                 )
             if hasattr(self.cell, "area"):
                 df.insert(
