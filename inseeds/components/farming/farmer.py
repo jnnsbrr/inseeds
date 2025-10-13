@@ -164,6 +164,3 @@ class Farmer(core.Individual, base.Individual):
             (1 - 1 / self.strategy_switch_duration) * self.soilc
             + 1 / self.strategy_switch_duration * self.cell_soilc
         )
-
-        if self.control_run:
-            return
