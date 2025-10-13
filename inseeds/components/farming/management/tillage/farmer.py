@@ -141,10 +141,14 @@ class Farmer(farming.Farmer):
         return first_var, second_var
 
     def update(self, t):
+        """Update the behaviour of the farmer based on the TPB"""
+
         # call the base class update method
         super().update(t)
 
-        """Update the behaviour of the farmer based on the TPB"""
+        # no farmer actions in the control run
+        if self.control_run:
+            return
 
         # If strategy switch time is down to 0 calculate TPB-based strategy
         # switch probability value
