@@ -70,6 +70,7 @@ class Cell(lpjml.Cell, farming.Cell):
 
     pass
 
+
 class World(lpjml.World, farming.World):
     """World entity type."""
 
@@ -100,7 +101,7 @@ class Model(lpjml.Component, farming.Component):
             input=self.lpjml.read_input(),
             output=self.lpjml.read_historic_output().isel(time=[-1]),
             grid=self.lpjml.grid,
-            country=self.lpjml.country,
+            country_code=self.lpjml.country,  # country_code is the array of country codes
             area=self.lpjml.terr_area,
         )
 

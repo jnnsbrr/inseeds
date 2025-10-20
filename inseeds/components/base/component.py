@@ -88,11 +88,13 @@ class Component:
         except Exception:
             pass
 
-        df.to_csv(file_name,
-                  mode=mode,
-                  header=header,
-                  index=False,
-                  compression=csv_compression)
+        df.to_csv(
+            file_name,
+            mode=mode,
+            header=header,
+            index=False,
+            compression=csv_compression,
+        )
 
     def write_output_parquet(self, df, init=False):
         """Write output data to a Parquet dataset with partitioning.
@@ -123,7 +125,8 @@ class Component:
         # If this is the initial write at start year, reset the dataset dir
         try:
             if (
-                self.lpjml.sim_year == self.config.start_coupling and init
+                self.lpjml.sim_year == self.config.start_coupling
+                and init
                 and os.path.isdir(base_dir)
             ):
                 shutil.rmtree(base_dir)
@@ -201,15 +204,13 @@ class Component:
             optimized[col] = optimized[col].astype("category")
 
         if "year" in optimized.columns:
-            optimized["year"] = (
-                pd.to_numeric(optimized["year"], errors="coerce")
-                .astype("Int32")
-            )
+            optimized["year"] = pd.to_numeric(
+                optimized["year"], errors="coerce"
+            ).astype("Int32")
         if "cell" in optimized.columns:
-            optimized["cell"] = (
-                pd.to_numeric(optimized["cell"], errors="coerce")
-                .astype("Int32")
-            )
+            optimized["cell"] = pd.to_numeric(
+                optimized["cell"], errors="coerce"
+            ).astype("Int32")
 
         # Optional float downcast
         float_precision = None

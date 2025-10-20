@@ -26,4 +26,3 @@ class Component(base.Component):
             farmer.init_neighbourhood()
 
         # self.world.farmers = set(farmers_sorted
-

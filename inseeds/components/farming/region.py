@@ -11,7 +11,6 @@ class Region(base.World):
         super().__init__(**kwargs)
 
 
-
 class Country(Region):
     """Country entity type mixin class."""
 

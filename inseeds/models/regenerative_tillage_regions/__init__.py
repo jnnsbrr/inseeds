@@ -1,1 +1,1 @@
-from .model import Cell, Farmer, World, Model
+from .model import Cell, Farmer, Country, World, Model

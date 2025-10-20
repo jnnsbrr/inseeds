@@ -8,8 +8,10 @@ from . import Entity
 class Region(Entity):
     pass
 
+
 class Country(Region):
     pass
+
 
 class WorldRegion(Region):
     pass
