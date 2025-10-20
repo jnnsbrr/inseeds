@@ -108,13 +108,23 @@ class Model(lpjml.Component, farming.Component):
             input=self.lpjml.read_input(),
             output=self.lpjml.read_historic_output().isel(time=[-1]),
             grid=self.lpjml.grid,
-            country=self.lpjml.country,
+            country_code=self.lpjml.country,  # country_code is the array of country codes
             area=self.lpjml.terr_area,
         )
 
-        self.init_countries(
-            country_class=Country
-        )
+        # Initialize countries if country data is available
+        if (
+            self.lpjml.country is not None
+            and hasattr(self.world, "country_code")
+            and self.world.country_code is not None
+        ):
+            self.init_countries(country_class=Country)
+        else:
+            # No country data available - create an empty list
+            self.countries = []
+            print(
+                "Warning: No country data available. Running without country-level structure."
+            )
 
         # initialize cells
         self.init_cells(cell_class=Cell)
