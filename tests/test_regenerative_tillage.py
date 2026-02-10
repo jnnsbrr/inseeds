@@ -5,12 +5,18 @@ import pandas as pd
 
 import inseeds.components.base as base
 import inseeds.components.farming as farming
-from inseeds.realisations.regenerative_tillage import Cell, Farmer, World, Model
+from inseeds.realisations.regenerative_tillage import (
+    Cell,
+    Farmer,
+    World,
+    Model,
+)
 
 
 def test_run_model(run_regular_model_instance):
     """Test running the model until end of simulation - lightweight version."""
-    # Instead of running full simulation, just check that the model completed successfully
+    # Instead of running full simulation, just check that the model completed
+    # successfully
     assert hasattr(
         run_regular_model_instance, "world"
     ), "Model should have world"
@@ -59,8 +65,10 @@ def test_model_output(cached_regular_output_table, cached_test_output_table):
             out_vals = merged[out_col].astype(float)
             test_vals = merged[test_col].astype(float)
             match = np.isclose(out_vals, test_vals, equal_nan=True)
-            assert np.mean(match).item() > 0.6, "Value column match rate too low"
+            assert (
+                np.mean(match).item() > 0.6
+            ), "Value column match rate too low"
         else:
-            assert all(merged[out_col].values == merged[test_col].values), (
-                f"Column '{name}' mismatch"
-            )
+            assert all(
+                merged[out_col].values == merged[test_col].values
+            ), f"Column '{name}' mismatch"

@@ -115,7 +115,9 @@ class Farmer(core.Individual, base.Individual):
     @property
     def cell_soilc(self):
         """Return the average soil carbon of the cell."""
-        top_soilc_data = self.cell.from_earth.soilc_agr_layer.isel(band=0).item()
+        top_soilc_data = self.cell.from_earth.soilc_agr_layer.isel(
+            band=0
+        ).item()
         if top_soilc_data == 0:
             return 1e-3
         else:
@@ -157,8 +159,7 @@ class Farmer(core.Individual, base.Individual):
             return 365
         else:
             return np.average(
-                hdate_selected.values,
-                weights=cftfrac_selected.values
+                hdate_selected.values, weights=cftfrac_selected.values
             )
 
     def set_lpjml(self, attribute):
@@ -169,7 +170,7 @@ class Farmer(core.Individual, base.Individual):
             lpjml_attribute = [lpjml_attribute]
 
         for single_var in lpjml_attribute:
-                self.cell.to_earth[single_var][:] = getattr(self, attribute)
+            self.cell.to_earth[single_var][:] = getattr(self, attribute)
 
     def update(self, t):
         super().update(t)
