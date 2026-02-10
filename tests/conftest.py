@@ -1,7 +1,8 @@
 import os
-import pytest
-import sys
 import pickle
+import sys
+
+import pytest
 
 # Fix for Intel OneAPI causing pandas import hangs on HPC
 # Set single-threaded Intel libraries to prevent hanging
@@ -15,27 +16,49 @@ def test_path():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _patch_lpjml_for_testing(lpjml_obj, test_path):
+    """Patch lpjml object with read_input/read_output that read from pickle files."""
+    if hasattr(lpjml_obj, "config") and lpjml_obj.config is not None:
+        from pycoupler.data import LPJmLInputType
+
+        LPJmLInputType.load_config(lpjml_obj.config)
+
+    def read_input():
+        with open(f"{test_path}/data/lpjml_input.pkl", "rb") as inp:
+            return pickle.load(inp)
+
+    def read_output():
+        with open(f"{test_path}/data/lpjml_output.pkl", "rb") as out:
+            return pickle.load(out)
+
+    lpjml_obj.read_input = read_input
+    lpjml_obj.read_output = read_output
+    lpjml_obj.read_historic_output = read_output
+    return lpjml_obj
+
+
 @pytest.fixture(scope="session")
 def lpjml_data(test_path):
-    """Load LPJmL data once for all tests."""
+    """Load LPJmL data once for all tests and patch for pickle-based testing."""
     with open(f"{test_path}/data/lpjml.pkl", "rb") as lpj:
-        return pickle.load(lpj)
+        data = pickle.load(lpj)
+    return _patch_lpjml_for_testing(data, test_path)
 
 
 @pytest.fixture(scope="session")
-def regions_model_instance(lpjml_data, test_path):
+def regions_model_instance(lpjml_data):
     """Create regions model instance once for all tests."""
-    from inseeds.models.regenerative_tillage_regions import Model
+    from inseeds.realisations.regenerative_tillage_regions import Model
 
-    return Model(lpjml=lpjml_data, test_path=test_path)
+    return Model(lpjml=lpjml_data)
 
 
 @pytest.fixture(scope="session")
-def regular_model_instance(lpjml_data, test_path):
+def regular_model_instance(lpjml_data):
     """Create regular model instance once for all tests."""
-    from inseeds.models.regenerative_tillage import Model
+    from inseeds.realisations.regenerative_tillage import Model
 
-    return Model(lpjml=lpjml_data, test_path=test_path)
+    return Model(lpjml=lpjml_data)
 
 
 @pytest.fixture(scope="session")
@@ -47,19 +70,19 @@ def run_regions_model_instance(regions_model_instance):
 
 
 @pytest.fixture(scope="session")
-def quick_model_instance(lpjml_data, test_path):
+def quick_model_instance(lpjml_data):
     """Create a model instance without running simulation - for quick tests."""
-    from inseeds.models.regenerative_tillage_regions import Model
+    from inseeds.realisations.regenerative_tillage_regions import Model
 
-    return Model(lpjml=lpjml_data, test_path=test_path)
+    return Model(lpjml=lpjml_data)
 
 
 @pytest.fixture(scope="session")
-def quick_regular_model_instance(lpjml_data, test_path):
+def quick_regular_model_instance(lpjml_data):
     """Create a regular model instance without running simulation - for quick tests."""
-    from inseeds.models.regenerative_tillage import Model
+    from inseeds.realisations.regenerative_tillage import Model
 
-    return Model(lpjml=lpjml_data, test_path=test_path)
+    return Model(lpjml=lpjml_data)
 
 
 @pytest.fixture(scope="session")
@@ -100,18 +123,21 @@ def cached_test_output_table(test_path):
 
 
 @pytest.fixture(scope="session")
-def minimal_model_instance(lpjml_data, test_path):
+def minimal_model_instance(lpjml_data):
     """Create minimal model instance with minimal data for structure tests."""
-    from inseeds.models.regenerative_tillage_regions import Model
+    from inseeds.realisations.regenerative_tillage_regions import Model
 
     # Create model but don't initialize expensive components
-    model = Model(lpjml=lpjml_data, test_path=test_path)
+    model = Model(lpjml=lpjml_data)
     return model
 
 
 def pytest_configure(config):
+    """Mark that we're running from pytest so pycopanlpjml uses test mode."""
     sys._called_from_test = True
 
 
 def pytest_unconfigure(config):
-    del sys._called_from_test
+    """Clean up test marker after pytest exits."""
+    if hasattr(sys, "_called_from_test"):
+        del sys._called_from_test

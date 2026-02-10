@@ -6,11 +6,11 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
 
 from inseeds.components import base
 from inseeds.components import farming
-from inseeds.components.farming.management import tillage
+from inseeds.components.farming import TillageFarmer
 from inseeds.components import lpjml
 
 
-class Farmer(tillage.Farmer):
+class Farmer(TillageFarmer):
     """Farmer entity type."""
 
     output_variables = base.Output(
@@ -72,7 +72,7 @@ class Cell(lpjml.Cell, farming.Cell):
     pass
 
 
-class Country(lpjml.Country, base.Country):
+class Country(lpjml.Country, farming.Country, base.Country):
     """Country entity type."""
 
     pass
@@ -84,7 +84,7 @@ class World(lpjml.World, farming.World):
     pass
 
 
-class Model(lpjml.Component, farming.Component):
+class Model(lpjml.Model):
     """Model class for the InSEEDS Social model integrating the LPJmL model and
     coupling component as well as the farmer management component.
     """
@@ -108,7 +108,8 @@ class Model(lpjml.Component, farming.Component):
             input=self.lpjml.read_input(),
             output=self.lpjml.read_historic_output().isel(time=[-1]),
             grid=self.lpjml.grid,
-            country_code=self.lpjml.country,  # country_code is the array of country codes
+            # country_code is the array of country codes
+            country_code=self.lpjml.country,
             area=self.lpjml.terr_area,
         )
 
@@ -123,7 +124,8 @@ class Model(lpjml.Component, farming.Component):
             # No country data available - create an empty list
             self.countries = []
             print(
-                "Warning: No country data available. Running without country-level structure."
+                "Warning: No country data available. "
+                "Running without country-level structure."
             )
 
         # initialize cells
@@ -132,14 +134,26 @@ class Model(lpjml.Component, farming.Component):
         # initialize farmers
         self.init_farmers(farmer_class=Farmer)
 
-        self.write_output_table(
-            init=True,
-            file_format=self.config.coupled_config.output_settings.file_format,
-        )
+    def init_farmers(self, farmer_class, **kwargs):
+        """Initialize farmers for cells with crops, sorted by harvest date."""
+        farmers = []
+        for cell in self.world.cells:
+            has_crops = cell.from_earth.cftfrac.sum("band") > 0
+            if not has_crops:
+                continue
+            farmer = farmer_class(cell=cell, model=self)
+            farmers.append(farmer)
+        farmers_sorted = sorted(farmers, key=lambda farmer: farmer.avg_hdate)
+        for farmer in farmers_sorted:
+            farmer.init_neighbourhood()
+        self._farmers = farmers_sorted
+        return farmers_sorted
+        # Note: Output table writing (if enabled) should be done in update()
+        # to avoid double-writing the first year.
 
     def update(self, t):
+        """Update all countries and LPJmL for year ``t``."""
         self.update_countries(t)
-        self.write_output_table(
-            file_format=self.config.coupled_config.output_settings.file_format
-        )
         self.update_lpjml(t)
+        # Collect outputs (if enabled in config)
+        self.collect_outputs(t)
