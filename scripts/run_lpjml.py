@@ -3,7 +3,6 @@
 from pycoupler.config import read_config
 from pycoupler.run import start_lpjml, check_lpjml
 
-
 # Settings ================================================================== #
 
 # paths

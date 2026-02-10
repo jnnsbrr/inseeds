@@ -58,7 +58,8 @@ class TestAFT:
 
 
 class TestTillageFarmerSplitNeighbourhood:
-    """Tests for TillageFarmer.split_neighbourhood and split_neighbourhood_status."""
+    """Tests for TillageFarmer.split_neighbourhood and
+    split_neighbourhood_status."""
 
     def test_split_neighbourhood_empty(self, quick_model_instance):
         """split_neighbourhood with empty neighbourhood returns empty lists."""
@@ -74,7 +75,9 @@ class TestTillageFarmerSplitNeighbourhood:
         assert first_nb == []
         assert second_nb == []
 
-    def test_split_neighbourhood_splits_by_attribute(self, quick_model_instance):
+    def test_split_neighbourhood_splits_by_attribute(
+        self, quick_model_instance
+    ):
         """split_neighbourhood splits neighbours by tillage (0 vs 1)."""
         farmers = getattr(quick_model_instance, "_farmers", [])
         if len(farmers) < 2:
@@ -89,7 +92,9 @@ class TestTillageFarmerSplitNeighbourhood:
             assert n.tillage == 1
         assert len(first_nb) + len(second_nb) == len(farmer.neighbourhood)
 
-    def test_split_neighbourhood_status_returns_tuple(self, quick_model_instance):
+    def test_split_neighbourhood_status_returns_tuple(
+        self, quick_model_instance
+    ):
         """split_neighbourhood_status returns (first_avg, second_avg)."""
         farmers = getattr(quick_model_instance, "_farmers", [])
         if not farmers:
@@ -108,7 +113,9 @@ class TestTillageFarmerTPBProperties:
     """Tests for TPB-based properties (attitude, social_norm)."""
 
     def test_attitude_is_in_valid_range(self, quick_model_instance):
-        """attitude should be in [0, 1] or NaN (sigmoid output; NaN from edge cases)."""
+        """attitude should be in [0, 1] or NaN (sigmoid output; NaN from edge
+        cases)."""
+
         farmers = getattr(quick_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers in test model")

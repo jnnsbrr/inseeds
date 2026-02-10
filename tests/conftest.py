@@ -17,7 +17,9 @@ def test_path():
 
 
 def _patch_lpjml_for_testing(lpjml_obj, test_path):
-    """Patch lpjml object with read_input/read_output that read from pickle files."""
+    """Patch lpjml object with read_input/read_output that read from pickle
+    files."""
+
     if hasattr(lpjml_obj, "config") and lpjml_obj.config is not None:
         from pycoupler.data import LPJmLInputType
 
@@ -39,7 +41,9 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
 
 @pytest.fixture(scope="session")
 def lpjml_data(test_path):
-    """Load LPJmL data once for all tests and patch for pickle-based testing."""
+    """Load LPJmL data once for all tests and patch for pickle-based
+    testing."""
+
     with open(f"{test_path}/data/lpjml.pkl", "rb") as lpj:
         data = pickle.load(lpj)
     return _patch_lpjml_for_testing(data, test_path)
@@ -79,7 +83,8 @@ def quick_model_instance(lpjml_data):
 
 @pytest.fixture(scope="session")
 def quick_regular_model_instance(lpjml_data):
-    """Create a regular model instance without running simulation - for quick tests."""
+    """Create a regular model instance without running simulation - for quick
+    tests."""
     from inseeds.realisations.regenerative_tillage import Model
 
     return Model(lpjml=lpjml_data)

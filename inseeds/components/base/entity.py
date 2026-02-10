@@ -5,7 +5,7 @@ from pycopanlpjml.output import OutputDefinitionMixin
 
 class Entity(OutputDefinitionMixin):
     """Define properties - functionality migrated to pycopanlpjml.
-    
+
     Inherits from pycopanlpjml's OutputDefinitionMixin to get default
     get_defined_outputs() implementation. The config key is determined
     from the entity class name (e.g., 'Farmer' -> 'farmer',
@@ -18,8 +18,8 @@ class Entity(OutputDefinitionMixin):
     @property
     def model(self):
         """Reference to the Model instance."""
-        return self._model if hasattr(self, '_model') else None
-    
+        return self._model if hasattr(self, "_model") else None
+
     @model.setter
     def model(self, value):
         """Set the model reference."""

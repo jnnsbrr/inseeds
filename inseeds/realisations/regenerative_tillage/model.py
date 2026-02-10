@@ -101,7 +101,8 @@ class Model(lpjml.Model):
             input=self.lpjml.read_input(),
             output=self.lpjml.read_historic_output().isel(time=[-1]),
             grid=self.lpjml.grid,
-            country_code=self.lpjml.country,  # country_code is the array of country codes
+            # country_code is the array of country codes
+            country_code=self.lpjml.country,
             area=self.lpjml.terr_area,
         )
 
