@@ -1,12 +1,12 @@
-"""Farmer entity type class of inseeds_farmer_management"""
+"""Tillage farmer with TPB-based tillage decisions."""
 
 import numpy as np
 
-from inseeds.components import farming
+from inseeds.components.farming.farmer import Farmer
 
 
-class Farmer(farming.Farmer):
-    """Farmer (Individual) entity type mixin class."""
+class TillageFarmer(Farmer):
+    """Farmer with TPB-based tillage/conservation tillage decisions."""
 
     def __init__(self, **kwargs):
         """Initialize an instance of Farmer."""

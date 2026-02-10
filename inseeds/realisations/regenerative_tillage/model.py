@@ -5,11 +5,11 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
 
 from inseeds.components import base
 from inseeds.components import farming
-from inseeds.components.farming.management import tillage
+from inseeds.components.farming import TillageFarmer
 from inseeds.components import lpjml
 
 
-class Farmer(tillage.Farmer):
+class Farmer(TillageFarmer):
     """Farmer entity type."""
 
     output_variables = base.Output(
@@ -77,7 +77,7 @@ class World(lpjml.World, farming.World):
     pass
 
 
-class Model(lpjml.Component, farming.Component):
+class Model(lpjml.Model):
     """Model class for the InSEEDS Social model integrating the LPJmL model and
     coupling component as well as the farmer management component.
     """
@@ -111,14 +111,24 @@ class Model(lpjml.Component, farming.Component):
         # initialize farmers
         self.init_farmers(farmer_class=Farmer)
 
-        self.write_output_table(
-            init=True,
-            file_format=self.config.coupled_config.output_settings.file_format,
-        )
+    def init_farmers(self, farmer_class, **kwargs):
+        """Initialize farmers for cells with crops, sorted by harvest date."""
+        farmers = []
+        for cell in self.world.cells:
+            has_crops = cell.from_earth.cftfrac.sum("band") > 0
+            if not has_crops:
+                continue
+            farmer = farmer_class(cell=cell, model=self)
+            farmers.append(farmer)
+        farmers_sorted = sorted(farmers, key=lambda farmer: farmer.avg_hdate)
+        for farmer in farmers_sorted:
+            farmer.init_neighbourhood()
+        self._farmers = farmers_sorted
+        return farmers_sorted
 
     def update(self, t):
-        super().update(t)
-        self.write_output_table(
-            file_format=self.config.coupled_config.output_settings.file_format
-        )
+        # Update world (which updates all farmers)
+        self.world.update(t)
         self.update_lpjml(t)
+        # Collect outputs (if enabled in config)
+        self.collect_outputs(t)
