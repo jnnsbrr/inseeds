@@ -1,0 +1,205 @@
+model: "InSEEDS"
+
+# Settings for LPJmL specifically for coupling (pycoupler)
+#   (not covered by LPJmL's direct config)
+lpjml_settings:
+    # Convert country codes to readable names (uses ISO country codes)
+    country_code_to_name: true
+
+# Parallelization settings for pycopanlpjml
+parallelization:
+    # Maximum number of workers to use (0 = auto-detect from SLURM_CPUS_ON_NODE or CPU count)
+    max_workers: 0
+    
+    # Enable debug output for parallelization
+    debug: false
+    
+    # Parallelization mode ('auto', 'dask', 'mpi', 'serial')
+    # 'auto' = auto-detect (tries Dask first, then MPI, then serial)
+    # 'dask' = use Dask distributed (for HPC clusters)
+    # 'mpi' = reuse LPJmL's MPI processes (recommended if LPJmL uses MPI)
+    # 'serial' = force serial execution
+    mode: 'dask' # 'auto'
+
+# Profiling settings for pycopanlpjml
+profiling:
+    # Enable PyInstrument profiling for the driver (main) process
+    # Generates HTML profile at: {output_dir}/profiling/profiling_main_{timestamp}.html
+    driver: false
+
+    # Enable worker-side profiling (Dask performance report + PyInstrument plugin)
+    # Generates:
+    # - Dask performance report: {output_dir}/profiling/dask_workers_{timestamp}.html
+    # - Per-worker profiles: {output_dir}/profiling/workers/worker_{name}_{timestamp}.html
+    workers: false
+
+# Output collection settings for pycopanlpjml
+# All settings from pycopanlpjml/config.yaml are explicitly listed here
+output:
+    # Output formats to write (after simulation completes)
+    # If empty list [], no outputs will be written
+    # Options: "netcdf", "parquet", "csv"
+    # - NetCDF: Recommended for scientific analysis (fastest, CF-compliant)
+    # - Parquet: Good for data analysis (columnar, compressed)
+    # - CSV: Human-readable, good for small runs (slowest)
+    format: ["netcdf", "csv"]  # or ["csv"], ["parquet"], ["netcdf"], []
+
+    # Variables to be written to output files
+    # This defines which entity-level variables should be collected and written
+    # Format: {entity_type}: [list of variable names]
+    # Variables must be defined in the entity's output_variables class attribute
+    # Entity types: world, country, cell, farmer (or individual)
+    # Entity type names are derived from class names (lowercased):
+    # - World -> "world"
+    # - Country -> "country"
+    # - Cell -> "cell"
+    # - Farmer -> "farmer" (also accepts "individual" as alias)
+    # Farmer-level variables (Farmer class uses 'farmer' as entity type)
+    # Use dotted paths for nested objects (e.g., behaviour.tpb)
+    farmer:
+        - "aft_id"
+        - "tillage"
+        - "cover_crop"
+        - "residue_on_field"
+        - "behaviour.practice_bundle"   # Current bundle ID (0-7)
+        - "behaviour.proposed_bundle"   # Bundle being evaluated (-1 if none)
+        - "behaviour.tpb"               # TPB value FOR the proposed_bundle
+        - "behaviour.attitude"          # Attitude FOR the proposed_bundle
+        - "behaviour.social_norm"       # Social norm FOR the proposed_bundle
+        - "behaviour.pbc"               # PBC FOR the proposed_bundle
+        - "capital"                     # Farm capital stock (USD, scaled by farm size)
+        - "farm_size"                   # Farm size in hectares
+        - "soilc"
+        - "cropyield"
+        - "root_moisture"
+
+# Define which farmer variables map with coupled LPJmL input variables
+coupling_map:
+    tillage: ["with_tillage"]
+    cover_crop: ["cover_crop"]
+    residue_on_field: ["residue_on_field"]
+
+# Practice dimensions for multi-practice farmer decisions
+practice_dimensions:
+    tillage: { n_options: 2 }  # 0=no tillage, 1=conventional
+    cover_crop:
+        n_options: 3  # 0=none, 1=non-legumes, 2=legumes
+        leaching_high: 5    # mgN/l threshold for non-legume selection
+        fertilizer_high: 5  # gN/m2/yr threshold for non-legume selection
+    residue: { type: flexible }  # TPB > 0.5 -> increase residue_on_field
+
+# Exploration constraints for random bundle exploration
+# Prevents farmers from repeatedly trying unreasonable or failed combinations
+exploration:
+    # Minimum residue opportunity cost ($/ha) to consider notill_cover reasonable
+    # Below this threshold, no-till + cover crops without residue is considered
+    # wasteful since residue is cheap to keep. Above it, cover crops become a
+    # rational alternative for soil coverage when residue is valuable elsewhere.
+    residue_cost_threshold: 30.0
+    # Number of failures (fallbacks) before excluding bundle from exploration
+    # Farmers learn from their mistakes and avoid bundles that have failed twice
+    max_failures: 2
+
+# Residue economics - placeholder for Smerald et al. (2023) data
+# "A global dataset for the production and usage of cereal residues"
+residue_economics:
+    # Opportunity cost by use type ($/ha/yr)
+    use_costs:
+        animal_usage: 80.0    # Value if used as animal feed/bedding
+        left_on_field: 0.0    # Kept on field (CA practice) - no opportunity cost
+        other: 40.0           # Other uses (construction, bioenergy, etc.)
+        burnt: 0.0            # Burned - no economic value
+    # Default use type when residue is removed (determines opportunity cost)
+    # Retention is capital-constrained: retention = min(1.0, capital / opportunity_cost)
+    default_removal_use: "other"
+
+control_run: False
+pioneer_share: 0.25
+
+# Farm economics (USD per hectare)
+# Note: Values are per hectare to match LPJmL spatial resolution
+# Average farm sizes vary: USA ~180 ha, EU median ~5 ha (Our World in Data, 2020)
+# Profit calculation uses FAO producer prices (fao_pft_prices) - see prepare_fao_producer_prices.py
+farm_economics:
+    initial_capital: 1000.0     # $1000/ha starting capital (dummy)
+    min_capital: 100.0          # $100/ha - below this, practices are deselected
+    max_capital: 5000.0         # $5000/ha ceiling
+    maintenance_cost: 200.0     # $200/ha/yr base farm maintenance (dummy)
+
+# Practice costs (USD per hectare)
+# Sources cited after values; to be refined with regional FAO/FAOSTAT data
+# Note: When capital is low, practices are deselected in order of direct cost
+#       (highest first): cover_crop > residue > tillage
+practice_costs:
+    tillage:
+        # No-till planter custom rate ~$67/ha (farmdoc Illinois, 2023)
+        transition: 70.0   # $/ha - no-till planter/drill investment amortized
+        # Fuel savings: ~$42-59/ha (USDA, 2022; No-Till Farmer, 2022)
+        direct: -50.0      # $/ha/yr - fuel SAVINGS with no-till (deselected last)
+    cover_crop:
+        # Seeder attachment minimal, included in planting
+        transition: 25.0   # $/ha - seeder modification
+        # Seed + seeding + termination: $37-93/ha median (SARE, 2023)
+        direct: 75.0       # $/ha/yr - highest cost (deselected first)
+    residue_on_field:
+        # Minimal equipment change for retention vs removal
+        transition: 10.0   # $/ha - equipment adjustment
+        # Foregone straw sale value ~$50-60/ha (Manitoba Agriculture, 2023)
+        direct: 50.0       # $/ha/yr - opportunity cost (deselected second)
+
+# Analogous to LPJmL pftpar, define the AFT parameters for the two different
+#   farmer types
+aftpar:
+    # AFT for conservative/traditional values following farmer tending to stay
+    #   with conventional agriculture
+    traditionalist:
+        pbc_base: 0.75  # base perceived behavioral control
+        weight_attitude: 0.6
+        weight_yield: 0.8
+        weight_soil: 0.4
+        weight_moisture: 0.3  # drought resilience weight
+        weight_norm: 0.4
+        weight_social_learning: 0.4
+        weight_own_land: 0.6
+        # duration for running average smoothing
+        strategy_switch_duration: 10 # years
+        # Learning inertia / hysteresis parameters
+        min_observation_years: 3    # Minimum years before considering switch
+        switch_threshold: 0.5       # TPB threshold to adopt new practice
+        revert_threshold: 0.6       # Higher threshold to revert (hysteresis)
+        # Risk aversion (Chavas & Holt 1996): 0=neutral, 1=very averse
+        risk_aversion: 0.4          # Traditionalists are more risk-averse
+        # Similarity weights for social learning
+        weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
+        weight_crop_similarity: 0.4     # Weight for crop portfolio similarity
+        # Time parameters (unified, AFT-specific)
+        confidence_years: 10        # Years to reach full confidence (linear ramp)
+        memory_decay_years: 30      # When old memories are forgotten
+        fallback_years: 10          # Consecutive decline years to trigger revert
+
+    # AFT for pioneer farmer who more likely tends to switch to new (promising)
+    #   regenerative agriculture practices
+    pioneer:
+        pbc_base: 0.95  # base perceived behavioral control
+        weight_attitude: 0.8
+        weight_yield: 0.4
+        weight_soil: 0.8
+        weight_moisture: 0.5  # pioneers care more about resilience
+        weight_norm: 0.2
+        weight_social_learning: 0.6
+        weight_own_land: 0.4
+        # duration for running average smoothing
+        strategy_switch_duration: 10 # years
+        # Learning inertia / hysteresis parameters
+        min_observation_years: 2    # Pioneers need less observation time
+        switch_threshold: 0.45      # Lower threshold for pioneers
+        revert_threshold: 0.55      # Still higher to revert
+        # Risk aversion (Chavas & Holt 1996): 0=neutral, 1=very averse
+        risk_aversion: 0.1          # Pioneers are less risk-averse
+        # Similarity weights for social learning
+        weight_bundle_similarity: 0.5   # Weight for practice bundle similarity
+        weight_crop_similarity: 0.5     # Weight for crop portfolio similarity
+        # Time parameters (unified, AFT-specific)
+        confidence_years: 8         # Pioneers trust observations sooner
+        memory_decay_years: 25      # Pioneers forget old experiences faster
+        fallback_years: 8           # Pioneers revert sooner if things go badly

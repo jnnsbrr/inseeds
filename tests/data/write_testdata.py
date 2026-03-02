@@ -43,6 +43,7 @@ config_coupled.set_coupled(
         "hdate",
         "country",
         "terr_area",
+        "rootmoist_agr",
     ],
 )
 

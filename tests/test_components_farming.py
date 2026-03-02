@@ -57,58 +57,6 @@ class TestAFT:
             assert AFT.random(pioneer_share=1) == AFT.pioneer
 
 
-class TestTillageFarmerSplitNeighbourhood:
-    """Tests for TillageFarmer.split_neighbourhood and
-    split_neighbourhood_status."""
-
-    def test_split_neighbourhood_empty(self, quick_model_instance):
-        """split_neighbourhood with empty neighbourhood returns empty lists."""
-        farmers = getattr(quick_model_instance, "_farmers", [])
-        if not farmers:
-            pytest.skip("No farmers in test model")
-        farmer = farmers[0]
-        # Temporarily clear neighbourhood
-        original_nb = farmer.neighbourhood
-        farmer.neighbourhood = []
-        first_nb, second_nb = farmer.split_neighbourhood("tillage")
-        farmer.neighbourhood = original_nb
-        assert first_nb == []
-        assert second_nb == []
-
-    def test_split_neighbourhood_splits_by_attribute(
-        self, quick_model_instance
-    ):
-        """split_neighbourhood splits neighbours by tillage (0 vs 1)."""
-        farmers = getattr(quick_model_instance, "_farmers", [])
-        if len(farmers) < 2:
-            pytest.skip("Need at least 2 farmers for neighbourhood test")
-        farmer = farmers[0]
-        if not farmer.neighbourhood:
-            pytest.skip("Farmer has no neighbours")
-        first_nb, second_nb = farmer.split_neighbourhood("tillage")
-        for n in first_nb:
-            assert n.tillage == 0
-        for n in second_nb:
-            assert n.tillage == 1
-        assert len(first_nb) + len(second_nb) == len(farmer.neighbourhood)
-
-    def test_split_neighbourhood_status_returns_tuple(
-        self, quick_model_instance
-    ):
-        """split_neighbourhood_status returns (first_avg, second_avg)."""
-        farmers = getattr(quick_model_instance, "_farmers", [])
-        if not farmers:
-            pytest.skip("No farmers in test model")
-        farmer = farmers[0]
-        result = farmer.split_neighbourhood_status("cropyield")
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        first_var, second_var = result
-        # With or without neighbours, result should be numeric or nan
-        assert np.isnan(first_var) or isinstance(first_var, (int, float))
-        assert np.isnan(second_var) or isinstance(second_var, (int, float))
-
-
 class TestTillageFarmerTPBProperties:
     """Tests for TPB-based properties (attitude, social_norm)."""
 

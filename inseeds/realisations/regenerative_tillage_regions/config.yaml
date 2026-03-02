@@ -70,7 +70,6 @@ output:
 # Define which farmer variables map with coupled LPJmL input variables
 coupling_map:
     tillage: ["with_tillage"]
-    # residues: ["residue_on_field"]
 
 control_run: False
 pioneer_share: 0.25

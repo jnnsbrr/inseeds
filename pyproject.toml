@@ -39,7 +39,8 @@ dependencies = [
     "pyarrow>17.0.0",
     "pycopancore @ git+https://github.com/PIK-copan/pycopancore.git",
     "pycoupler @ git+https://github.com/PIK-LPJmL/pycoupler.git",
-    "pycopanlpjml @ git+https://github.com/PIK-copan/pycopanlpjml.git"
+    "pycopanlpjml @ git+https://github.com/PIK-copan/pycopanlpjml.git",
+    "copan-eval @ git+https://github.com/pik-copan/copan-eval.git"
 ]
 
 [project.optional-dependencies]

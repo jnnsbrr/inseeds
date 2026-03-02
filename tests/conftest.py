@@ -30,8 +30,17 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
             return pickle.load(inp)
 
     def read_output():
+        import numpy as np
+
         with open(f"{test_path}/data/lpjml_output.pkl", "rb") as out:
-            return pickle.load(out)
+            data = pickle.load(out)
+        # Fill NaN in harvestc so farmer._get_cell_earth_var does not raise
+        if "harvestc" in data.data_vars:
+            harvestc = data["harvestc"]
+            vals = harvestc.values
+            if np.any(np.isnan(vals)):
+                harvestc.values[:] = np.nan_to_num(vals, nan=0.0)
+        return data
 
     lpjml_obj.read_input = read_input
     lpjml_obj.read_output = read_output

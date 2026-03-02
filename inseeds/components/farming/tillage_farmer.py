@@ -3,7 +3,7 @@
 import numpy as np
 
 from inseeds.components.farming.farmer import Farmer
-
+from inseeds.components.farming.farmer import sigmoid
 
 class TillageFarmer(Farmer):
     """Farmer with TPB-based tillage/conservation tillage decisions."""
@@ -190,8 +190,3 @@ class TillageFarmer(Farmer):
         else:
             # decrease the counter for strategy switch time each year
             self.strategy_switch_time -= 1
-
-
-def sigmoid(x):
-    """The following part contains helping stuff"""
-    return 0.5 * (np.tanh(x) + 1)
