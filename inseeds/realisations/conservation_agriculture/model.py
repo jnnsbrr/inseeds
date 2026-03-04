@@ -6,6 +6,7 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
 from inseeds.components import base
 from inseeds.components import farming
 from inseeds.components.farming import ConservationAgricultureFarmer
+from inseeds.components.farming.ca_country import CACountry
 from inseeds.components import lpjml
 
 
@@ -65,9 +66,9 @@ class Cell(lpjml.Cell, farming.Cell):
     pass
 
 
-class Country(lpjml.Country, farming.Country, base.Country):
-    """Country entity type with cropland aggregation for CA capital initialization."""
-
+class Country(lpjml.Country, CACountry, base.Country):
+    """Country entity type with FAO data for CA capital initialization.
+    """
     pass
 
 

@@ -27,7 +27,6 @@ import xarray as xr
 
 from inseeds.components.farming.farmer import Farmer
 from inseeds.components.farming.ca_behaviour import TPB
-from inseeds.components.data.fao import FaoProducerPrices, FaoCapitalStock
 
 
 class ConservationAgricultureFarmer(Farmer):
@@ -112,32 +111,36 @@ class ConservationAgricultureFarmer(Farmer):
         # min_capital = n_survival_years × δ × initial_capital
         # This ties the threshold to actual capital dynamics (Jorgenson 1963)
         # and adapts to country-specific depreciation rates from FAO.
-        # Default 2 years is conservative: US farms maintain liquid assets of
-        # ~75% of annual cash expenses (Zulauf & Schnitkey 2024, farmdoc daily),
-        # roughly 0.75-1.4 years of operating buffer. 2 years of depreciation
-        # (a subset of total expenses) provides a reasonable survival threshold.
-        self._n_survival_years = econ.get("n_survival_years", 2)
+        # Default 1 year based on USDA farm financial indicators: farms typically
+        # maintain working capital ratio of 0.3-0.5 (Katchova & Dinterman 2018),
+        # and current ratio ~1.5-2.0 (USDA ERS). One year of depreciation buffer
+        # represents a conservative minimum for operational continuity.
+        self._n_survival_years = econ.get("n_survival_years", 1)
+
+        # Savings rate: fraction of profit reinvested into farm capital
+        # This is a behavioral parameter representing farmer investment decisions.
+        # Literature suggests farm savings rates of 10-30% depending on region
+        # and farm type (Lowder et al. 2016; FAO 2017).
+        # Default 15% is a moderate estimate for smallholder farmers.
+        self._savings_rate = econ.get("savings_rate", 0.15)
 
         # -----------------------------------------------------------------
-        # Load FAO data
+        # Get FAO data from country (loaded once per country, not per farmer)
         # -----------------------------------------------------------------
+        country = self.cell.country
 
-        # FAO producer prices: crop prices by country for profit calculation
-        self._load_fao_pft_prices()
+        # Economic parameters from FAO capital stock
+        self.depreciation_rate = country.depreciation_rate
+        self._investment_rate = country._investment_rate
+        self._initial_capital_per_ha = country.initial_capital_per_ha
 
-        # FAO capital stock: depreciation rate, investment rate, initial capital
-        self._load_fao_capital_stock()
+        # Producer prices for profit calculation
+        self._pft_prices = country.pft_prices
 
         # -----------------------------------------------------------------
         # Capital initialization
         # -----------------------------------------------------------------
-        # Initial capital per ha derived from FAO NCS / agricultural land area
         self.capital = self._initial_capital_per_ha * self.farm_size
-
-        # Track capital history for risk aversion calculation (Chavas & Holt 1996)
-        # Stores last N years of capital values to compute volatility
-        self._capital_history = [self.capital]
-        self._capital_history_max_years = 10  # Keep last 10 years
 
         # -----------------------------------------------------------------
         # Load practice costs
@@ -221,94 +224,6 @@ class ConservationAgricultureFarmer(Farmer):
         return self._residue_opportunity_cost_per_ha
 
     # =========================================================================
-    # FAO DATA LOADING
-    # =========================================================================
-
-    def _load_fao_pft_prices(self):
-        """Load FAO producer prices for profit calculation.
-
-        Prices are used to convert LPJmL harvest (in carbon) to monetary value.
-        Country-specific prices are used when available, otherwise global mean.
-        """
-        sim_path = self.model.config.sim_path
-        prices = FaoProducerPrices()
-        self.fao_pft_prices = xr.open_dataset(prices.ensure(sim_path))
-
-    def _load_fao_capital_stock(self):
-        """Load FAO capital stock and derive capital parameters.
-
-        Derives country-specific values following standard capital accounting
-        (OECD 2009, Jorgenson 1963):
-
-        - Depreciation rate: δ = CFC / NCS
-          Annual rate of capital wear (typically 3-8% for agriculture)
-
-        - Investment rate: i = GFCF / NCS
-          Gross investment as fraction of capital stock (structural)
-
-        - Initial capital per ha: NCS / agricultural_land_area
-          Starting capital endowment based on country's capital stock
-        """
-        sim_path = self.model.config.sim_path
-        capital = FaoCapitalStock()
-        self.fao_capital_stock = xr.open_dataset(capital.ensure(sim_path))
-
-        country_code = self.cell.country_code
-
-        # -----------------------------------------------------------------
-        # Depreciation rate: δ = CFC / NCS
-        # -----------------------------------------------------------------
-        # CFC = Consumption of Fixed Capital (annual capital wear)
-        # NCS = Net Capital Stocks (total capital value)
-        # δ represents the fraction of capital that depreciates each year
-
-        dep_rate = self.fao_capital_stock["depreciation_rate"]
-
-        if country_code in dep_rate.area_code.values:
-            # Use country-specific depreciation rate
-            self.depreciation_rate = float(
-                dep_rate.sel(area_code=country_code).isel(time=-1).values
-            )
-        else:
-            # Fallback to global mean if country not in dataset
-            self.depreciation_rate = float(dep_rate.isel(time=-1).mean().values)
-
-        # -----------------------------------------------------------------
-        # Investment rate: i = GFCF / NCS
-        # -----------------------------------------------------------------
-        # GFCF = Gross Fixed Capital Formation (annual investment)
-        # This represents structural investment behavior: how much of the
-        # capital stock is renewed each year through new investment
-
-        inv_rate = self.fao_capital_stock["investment_rate"]
-
-        if country_code in inv_rate.area_code.values:
-            self._investment_rate = float(
-                inv_rate.sel(area_code=country_code).isel(time=-1).values
-            )
-        else:
-            self._investment_rate = float(inv_rate.isel(time=-1).mean().values)
-
-        # -----------------------------------------------------------------
-        # Initial capital per ha from NCS
-        # -----------------------------------------------------------------
-        # NCS is in million USD; convert to USD/ha using country cropland
-        # Country cropland is computed from LPJmL data (cftfrac * area)
-        # at the country level (see Country.cropland_area property)
-        ncs = self.fao_capital_stock["6186"]  # Net Capital Stocks (million USD)
-        cropland_ha = self.cell.country.cropland_area
-
-        if country_code in ncs.area_code.values:
-            ncs_million_usd = float(
-                ncs.sel(area_code=country_code).isel(time=-1).values
-            )
-        else:
-            ncs_million_usd = float(ncs.isel(time=-1).mean().values)
-
-        # Convert: million USD → USD, then divide by hectares
-        self._initial_capital_per_ha = (ncs_million_usd * 1e6) / cropland_ha
-
-    # =========================================================================
     # COVER CROP TYPE SELECTION
     # =========================================================================
 
@@ -336,10 +251,10 @@ class ConservationAgricultureFarmer(Farmer):
         # Get thresholds from config
         cc = self.model.config.coupled_config.practice_dimensions.cover_crop
         leaching_limit = cc.leaching_high
-        fertilizer_limit = getattr(cc, "fertilizer_high", 5)
+        fertilizer_limit = cc.fertilizer_high
 
         # Calculate leaching rate (normalized by runoff)
-        leaching = leaching_val / runoff if runoff > 0 else 0
+        leaching = leaching_val *1e3 / runoff if runoff > 0 else 0
 
         # -----------------------------------------------------------------
         # Decision logic
@@ -447,14 +362,23 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Step 3: Reinvestment (from profit)
         # -----------------------------------------------------------------
-        # Investment rate from FAO: GFCF / NCS
-        # GFCF = Gross Fixed Capital Formation (annual investment)
-        # This represents the fraction of income farmers typically reinvest.
+        # Savings rate: behavioral parameter representing farmer investment decisions.
+        # This is the fraction of net profit that farmers choose to reinvest.
+        #
+        # Note: FAO investment rate (GFCF/NCS) is used for initialization but NOT
+        # for annual reinvestment, because:
+        # - GFCF/NCS is a national aggregate ratio, not individual behavior
+        # - It conflates new investment with replacement investment
+        # - Individual farmers vary widely in savings behavior
+        #
+        # The savings_rate parameter (default 15%) is configurable and represents
+        # the behavioral choice of how much profit to reinvest vs. consume.
+        # Literature: Lowder et al. (2016); FAO (2017) suggest 10-30% range.
         #
         # Key insight: investment comes FROM profit, not in addition to it.
         # Farmers can only reinvest what they earn.
         # If profit is negative, no reinvestment occurs.
-        reinvestment = self._investment_rate * max(net_profit, 0.0)
+        reinvestment = self._savings_rate * max(net_profit, 0.0)
 
         # -----------------------------------------------------------------
         # Step 4: External financing (TODO)
@@ -495,24 +419,6 @@ class ConservationAgricultureFarmer(Farmer):
         # Capital cannot go negative
         self.capital = max(0.0, self.capital)
 
-        # -----------------------------------------------------------------
-        # Step 6: Track capital history for risk calculation
-        # -----------------------------------------------------------------
-        # Used by _compute_risk_factor() to assess capital volatility
-        self._capital_history.append(self.capital)
-        if len(self._capital_history) > self._capital_history_max_years:
-            self._capital_history.pop(0)  # Remove oldest entry
-
-    @property
-    def capital_history(self):
-        """Recent capital values for volatility calculation.
-
-        Returns
-        -------
-        list
-            Last N years of capital values.
-        """
-        return self._capital_history
 
     # =========================================================================
     # REVENUE CALCULATION
@@ -530,7 +436,7 @@ class ConservationAgricultureFarmer(Farmer):
         Conversion steps
         ----------------
         1. Get harvest in gC/m² from LPJmL
-        2. Multiply by crop fraction and area to get total production
+        2. Multiply by crop fraction and cell area to get total production
         3. Convert gC to tonnes dry matter (using 0.45 C fraction)
         4. Multiply by FAO prices to get revenue
 
@@ -543,8 +449,8 @@ class ConservationAgricultureFarmer(Farmer):
         pft_harvestc = self.cell.from_earth.pft_harvestc  # Harvest in gC/m²
         cftfrac = self.cell.from_earth.cftfrac  # Crop fractions
 
-        # Get country-specific prices
-        prices = self._get_country_prices(self.fao_pft_prices, self.cell.country_code)
+        # Get country-specific prices (already extracted at country level)
+        prices = self._pft_prices
 
         # -----------------------------------------------------------------
         # Align bands (crop types) between harvest and prices
@@ -573,11 +479,10 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Calculate production
         # -----------------------------------------------------------------
-        # Farm size is in hectares; convert to m²
-        area_m2 = self.farm_size * 10000
-
-        # Production in gC = yield (gC/m²) × crop fraction × area (m²)
-        production_gC = pft_harvestc * cftfrac * area_m2
+        # Production in gC = yield (gC/m²) × crop fraction × cell area (m²)
+        # Cell area is in km², convert to m² (1 km² = 1e6 m²)
+        # Note: Use cell.area directly, not farm_size (which already includes cftfrac)
+        production_gC = pft_harvestc * cftfrac * self.cell.area.item() * 1e6
 
         # -----------------------------------------------------------------
         # Convert gC to tonnes dry matter
@@ -593,64 +498,38 @@ class ConservationAgricultureFarmer(Farmer):
         # Revenue = production × price, summed across all crops
         return float(np.nansum((production_tonnes_dm * prices).values))
 
-    def _get_country_prices(self, prices_ds, country_code):
-        """Select prices for a country, with fallback to global mean.
-
-        Parameters
-        ----------
-        prices_ds : xr.Dataset
-            FAO producer prices dataset.
-        country_code : str
-            ISO3 country code.
-
-        Returns
-        -------
-        xr.DataArray
-            Prices for the country (or global mean if country missing).
-            Time dimension is collapsed to most recent year to avoid
-            dtype conflicts with LPJmL datetime coordinates.
-        """
-        var_name = list(prices_ds.data_vars)[0]
-        prices = prices_ds[var_name]
-
-        # Collapse time dimension - use most recent year's prices
-        # This avoids dtype conflicts between FAO int years and LPJmL datetime
-        if "time" in prices.dims:
-            prices = prices.isel(time=-1)
-
-        # Check if dataset has country dimension
-        if "area_code" not in prices.dims:
-            return prices
-
-        # Use country-specific prices if available
-        if country_code in prices.area_code.values:
-            return prices.sel(area_code=country_code)
-
-        # Fallback to global mean
-        return prices.mean(dim="area_code")
-
     # =========================================================================
     # AFFORDABILITY CHECK
     # =========================================================================
 
     def _check_practice_affordability(self):
-        """Deselect practices if capital falls below minimum threshold.
+        """Deselect practices if annual direct costs exceed capital buffer.
 
-        When capital is too low, farmer must abandon costly practices
-        to reduce expenses. Practices are deselected in order of cost
-        (most expensive first).
+        When capital is too low to sustain current practices, farmer must
+        abandon costly practices to reduce expenses. Practices are deselected
+        in order of cost (most expensive first) until direct costs are
+        within the affordable range.
+
+        The affordability criterion is: direct_costs <= capital - min_capital
+        This ensures the farmer retains a survival buffer (min_capital).
 
         Deselection order:
         1. Cover crop (typically highest cost)
         2. Residue retention
-        3. Tillage change (no-till)
+        3. Tillage change (no-till, often has negative cost = savings)
         """
-        # No action needed if capital is sufficient
-        if self.capital >= self.min_capital:
+        # Calculate current annual direct costs
+        current_direct_costs = self._get_current_direct_costs()
+
+        # Available capital for costs (above survival threshold)
+        available_capital = self.capital - self.min_capital
+
+        # No action needed if costs are within budget
+        if current_direct_costs <= available_capital:
             return
 
         # -----------------------------------------------------------------
-        # Deselect practices until affordable
+        # Deselect practices until costs are affordable
         # -----------------------------------------------------------------
         bundle = list(self.behaviour._practice_bundle)
 
@@ -668,8 +547,12 @@ class ConservationAgricultureFarmer(Farmer):
             if direct_cost > 0:
                 bundle[idx] = 0
 
-                # Check if now affordable
-                if self.capital >= self.min_capital:
+                # Recalculate costs with this practice removed
+                # (simplified: subtract the practice's direct cost)
+                current_direct_costs -= direct_cost * self.farm_size
+
+                # Check if costs are now within budget
+                if current_direct_costs <= available_capital:
                     break
 
         # -----------------------------------------------------------------

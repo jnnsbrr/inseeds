@@ -65,10 +65,9 @@ class FaoCapitalStock(FaoDataset):
     @property
     @override
     def elements(self) -> list[str]:
-        # 6184: Gross Fixed Capital Formation (Agriculture, Forestry and Fishing)
-        # 6185: Consumption of Fixed Capital (Agriculture, Forestry and Fishing)
-        # 6186: Net Capital Stocks (Agriculture, Forestry and Fishing)
-        return ["6184", "6185", "6186"]
+        # CS domain uses a single element code for value type
+        # 6110: Value US$ (current prices)
+        return ["6110"]
 
     @property
     @override
@@ -87,66 +86,77 @@ class FaoCapitalStock(FaoDataset):
 
     @override
     def _get_items(self) -> pd.Series:
-        """Return item code for Agriculture, Forestry and Fishing sector."""
-        # Item code 22041 is "Agriculture, Forestry and Fishing"
-        return pd.Series(["22041"])
+        """Return item codes for capital stock types.
+        
+        In CS domain, items represent the capital stock types:
+        - 22030: Gross Fixed Capital Formation (GFCF)
+        - 22031: Consumption of Fixed Capital (CFC)
+        - 22034: Net Capital Stocks (NCS)
+        """
+        return pd.Series(["22030", "22031", "22034"])
 
     @override
     def _post_process(self, ds: xr.Dataset) -> xr.Dataset:
         """Compute depreciation and investment rates from GFCF, CFC, and NCS.
 
+        In CS domain, items represent capital stock types (GFCF, CFC, NCS).
+        The element code (6110) represents "Value US$".
+
         Following standard capital accounting (Jorgenson 1963, OECD 2009):
         - Depreciation rate δ = CFC / NCS: annual capital wear
         - Investment rate i = GFCF / NCS: gross investment relative to stock
-
-        The investment rate serves as a country-specific proxy for the fraction
-        of capital renewed annually, usable as a savings/reinvestment rate.
         """
         print("  Computing depreciation and investment rates...")
 
-        # Add metadata to raw variables
-        if "6184" in ds.data_vars:
-            ds["6184"].attrs["units"] = "million_USD"
-            ds["6184"].attrs["long_name"] = "Gross Fixed Capital Formation"
-            ds["6184"].attrs["source"] = "FAOSTAT CS domain"
-            ds["6184"].attrs["sector"] = "Agriculture, Forestry and Fishing"
-            ds["6184"].attrs["area_code_format"] = "ISO3"
+        # CS domain returns data with item_code dimension containing 22030, 22031, 22034
+        # We need to rename these to meaningful variable names
+        element_code = "6110"  # Value US$
+        
+        if element_code not in ds.data_vars:
+            raise RuntimeError(f"Expected element {element_code} not found in CS dataset")
 
-        if "6185" in ds.data_vars:
-            ds["6185"].attrs["units"] = "million_USD"
-            ds["6185"].attrs["long_name"] = "Consumption of Fixed Capital"
-            ds["6185"].attrs["source"] = "FAOSTAT CS domain"
-            ds["6185"].attrs["sector"] = "Agriculture, Forestry and Fishing"
-            ds["6185"].attrs["area_code_format"] = "ISO3"
+        data = ds[element_code]
+        
+        # Create separate variables for each capital stock type
+        item_map = {
+            "22030": "gfcf",  # Gross Fixed Capital Formation
+            "22031": "cfc",   # Consumption of Fixed Capital
+            "22034": "ncs",   # Net Capital Stocks
+        }
+        
+        result_ds = xr.Dataset()
+        
+        for item_code, var_name in item_map.items():
+            if "item_code" in data.dims and item_code in data.item_code.values:
+                result_ds[var_name] = data.sel(item_code=item_code)
+                result_ds[var_name].attrs["units"] = "million_USD"
+                result_ds[var_name].attrs["source"] = "FAOSTAT CS domain"
+                result_ds[var_name].attrs["area_code_format"] = "ISO3"
+        
+        # Add long names
+        if "gfcf" in result_ds:
+            result_ds["gfcf"].attrs["long_name"] = "Gross Fixed Capital Formation"
+        if "cfc" in result_ds:
+            result_ds["cfc"].attrs["long_name"] = "Consumption of Fixed Capital"
+        if "ncs" in result_ds:
+            result_ds["ncs"].attrs["long_name"] = "Net Capital Stocks"
 
-        if "6186" in ds.data_vars:
-            ds["6186"].attrs["units"] = "million_USD"
-            ds["6186"].attrs["long_name"] = "Net Capital Stocks"
-            ds["6186"].attrs["source"] = "FAOSTAT CS domain"
-            ds["6186"].attrs["sector"] = "Agriculture, Forestry and Fishing"
-            ds["6186"].attrs["area_code_format"] = "ISO3"
+        # Compute derived rates
+        if "cfc" in result_ds and "ncs" in result_ds:
+            result_ds["depreciation_rate"] = result_ds["cfc"] / result_ds["ncs"]
+            result_ds["depreciation_rate"].attrs["units"] = "1/year"
+            result_ds["depreciation_rate"].attrs["long_name"] = "Depreciation rate"
+            result_ds["depreciation_rate"].attrs["formula"] = "CFC / NCS"
+            result_ds["depreciation_rate"].attrs["reference"] = "Jorgenson (1963), OECD (2009)"
 
-        # Depreciation rate: δ = CFC / NCS (Jorgenson 1963)
-        if "6185" in ds.data_vars and "6186" in ds.data_vars:
-            ds["depreciation_rate"] = ds["6185"] / ds["6186"]
-            ds["depreciation_rate"].attrs["units"] = "1/year"
-            ds["depreciation_rate"].attrs["long_name"] = "Depreciation rate"
-            ds["depreciation_rate"].attrs["source"] = "Computed from FAOSTAT CS domain"
-            ds["depreciation_rate"].attrs["formula"] = "CFC / NCS"
-            ds["depreciation_rate"].attrs["reference"] = "Jorgenson (1963), OECD (2009)"
-            ds["depreciation_rate"].attrs["area_code_format"] = "ISO3"
+        if "gfcf" in result_ds and "ncs" in result_ds:
+            result_ds["investment_rate"] = result_ds["gfcf"] / result_ds["ncs"]
+            result_ds["investment_rate"].attrs["units"] = "1/year"
+            result_ds["investment_rate"].attrs["long_name"] = "Investment rate"
+            result_ds["investment_rate"].attrs["formula"] = "GFCF / NCS"
+            result_ds["investment_rate"].attrs["reference"] = "OECD (2009) Measuring Capital"
 
-        # Investment rate: i = GFCF / NCS (gross investment relative to stock)
-        if "6184" in ds.data_vars and "6186" in ds.data_vars:
-            ds["investment_rate"] = ds["6184"] / ds["6186"]
-            ds["investment_rate"].attrs["units"] = "1/year"
-            ds["investment_rate"].attrs["long_name"] = "Investment rate"
-            ds["investment_rate"].attrs["source"] = "Computed from FAOSTAT CS domain"
-            ds["investment_rate"].attrs["formula"] = "GFCF / NCS"
-            ds["investment_rate"].attrs["reference"] = "OECD (2009) Measuring Capital"
-            ds["investment_rate"].attrs["area_code_format"] = "ISO3"
-
-        return ds
+        return result_ds
 
     @override
     def _generate_dummy_fallback(

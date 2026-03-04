@@ -146,6 +146,64 @@ def minimal_model_instance(lpjml_data):
     return model
 
 
+@pytest.fixture(scope="session")
+def ca_model_instance(lpjml_data, test_path):
+    """Create Conservation Agriculture model instance for CA farmer tests.
+    
+    This fixture:
+    1. Loads the CA config.yaml using pycopanlpjml's read_yaml
+    2. Adds dummy coupled input variables (tillage, cover_crop, residue)
+    3. Sets up FAO dummy data
+    4. Creates the model with proper config
+    """
+    from pathlib import Path
+    import xarray as xr
+    import numpy as np
+    from pycoupler.config import read_yaml, CoupledConfig
+    from inseeds.realisations.conservation_agriculture import Model
+    from inseeds.components.data.fao import ensure_dummy_fao_data
+
+    # Path to the CA config.yaml
+    config_path = Path(__file__).parent.parent / "inseeds" / "realisations" / "conservation_agriculture" / "config.yaml"
+    
+    # Use test data directory for FAO data
+    sim_path = Path(test_path) / "data" / "ca_test_sim"
+    ensure_dummy_fao_data(sim_path, years=(2016, 2020))
+    
+    # Load the config using pycopanlpjml's proper config loading
+    coupled_config = read_yaml(str(config_path), CoupledConfig)
+    
+    # Patch lpjml_data.config with the loaded coupled_config BEFORE model creation
+    lpjml_data.config.coupled_config = coupled_config
+    lpjml_data.config.sim_path = sim_path
+    
+    # Add dummy coupled variables to lpjml input data
+    original_read_input = lpjml_data.read_input
+    def patched_read_input():
+        data = original_read_input()
+        ncell = data.sizes['cell']
+        ntime = data.sizes.get('time', 1)
+        # Match the shape of existing variables (cell, time)
+        if 'cover_crop' not in data:
+            data['cover_crop'] = xr.DataArray(
+                np.zeros((ncell, ntime), dtype=np.int32),
+                dims=['cell', 'time']
+            )
+        if 'residue_on_field' not in data:
+            data['residue_on_field'] = xr.DataArray(
+                np.ones((ncell, ntime), dtype=np.float32) * 0.5,
+                dims=['cell', 'time']
+            )
+        return data
+    
+    lpjml_data.read_input = patched_read_input
+    
+    # Create model - config is already set on lpjml_data.config
+    model = Model(lpjml=lpjml_data)
+    
+    return model
+
+
 def pytest_configure(config):
     """Mark that we're running from pytest so pycopanlpjml uses test mode."""
     sys._called_from_test = True

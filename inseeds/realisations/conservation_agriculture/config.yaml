@@ -125,6 +125,12 @@ farm_economics:
     min_capital: 100.0          # $100/ha - below this, practices are deselected
     max_capital: 5000.0         # $5000/ha ceiling
     maintenance_cost: 200.0     # $200/ha/yr base farm maintenance (dummy)
+    # Survival buffer: years of depreciation farmer can sustain before crisis
+    # Based on USDA farm financial indicators (Katchova & Dinterman 2018)
+    n_survival_years: 1
+    # Savings rate: fraction of net profit reinvested into farm capital
+    # Literature: 10-30% range (Lowder et al. 2016; FAO 2017)
+    savings_rate: 0.15
 
 # Practice costs (USD per hectare)
 # Sources cited after values; to be refined with regional FAO/FAOSTAT data
@@ -172,10 +178,18 @@ aftpar:
         # Similarity weights for social learning
         weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
         weight_crop_similarity: 0.4     # Weight for crop portfolio similarity
+        # Conformity pressure (Cialdini et al. 1990)
+        conformity_bonus: 0.2       # Social norm boost for majority bundle
+        conformity_penalty: 0.1     # Social norm penalty for minority bundle
         # Time parameters (unified, AFT-specific)
         confidence_years: 10        # Years to reach full confidence (linear ramp)
         memory_decay_years: 30      # When old memories are forgotten
         fallback_years: 10          # Consecutive decline years to trigger revert
+        # Exploration parameters (Rogers 2003)
+        exploration_base_prob: 0.01 # Base probability of random exploration
+        poor_performance_threshold: 0.3  # Score below which exploration doubles
+        poor_performance_multiplier: 2.0 # Multiplier for poor performers
+        max_exploration_prob: 0.15  # Cap on exploration probability
 
     # AFT for pioneer farmer who more likely tends to switch to new (promising)
     #   regenerative agriculture practices
@@ -199,7 +213,15 @@ aftpar:
         # Similarity weights for social learning
         weight_bundle_similarity: 0.5   # Weight for practice bundle similarity
         weight_crop_similarity: 0.5     # Weight for crop portfolio similarity
+        # Conformity pressure (Cialdini et al. 1990)
+        conformity_bonus: 0.15      # Pioneers less influenced by conformity
+        conformity_penalty: 0.05    # Pioneers less penalized for deviation
         # Time parameters (unified, AFT-specific)
         confidence_years: 8         # Pioneers trust observations sooner
         memory_decay_years: 25      # Pioneers forget old experiences faster
         fallback_years: 8           # Pioneers revert sooner if things go badly
+        # Exploration parameters (Rogers 2003)
+        exploration_base_prob: 0.05 # Pioneers explore more
+        poor_performance_threshold: 0.3  # Score below which exploration doubles
+        poor_performance_multiplier: 2.0 # Multiplier for poor performers
+        max_exploration_prob: 0.20  # Higher cap for pioneers

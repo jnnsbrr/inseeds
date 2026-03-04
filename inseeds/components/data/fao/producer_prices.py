@@ -19,7 +19,7 @@ from typing import override
 import pandas as pd
 import xarray as xr
 
-from copan_eval.fao import fao_definitions
+from copan_eval.fao import fao_definitions, FaoCropTranslator
 
 from .base import FaoDataset
 from .dummy import generate_dummy_producer_prices
@@ -86,8 +86,20 @@ class FaoProducerPrices(FaoDataset):
 
     @override
     def _get_items(self) -> pd.Series:
-        """Return primary crop item codes from FAOSTAT."""
-        return fao_definitions.itemgroup.loc["QC"]["Item Code"]
+        """Return only FAO crop codes that map to LPJmL CFTs.
+        
+        This reduces API calls by only requesting the ~166 crops that
+        are actually used in LPJmL, instead of all ~176 primary crops.
+        """
+        translator = FaoCropTranslator(
+            dim="item_code",
+            new_standard="LPJmL",
+            reducer="mean"
+        )
+        lpjml_mapped = translator.dictionary[
+            translator.dictionary["LPJmL_name"].notna()
+        ]
+        return lpjml_mapped["FAOSTAT_code"].astype(str)
 
     @override
     def _post_process(self, ds: xr.Dataset) -> xr.Dataset:

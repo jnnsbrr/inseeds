@@ -107,6 +107,32 @@ class DecisionModel(ABC):
     Subclasses implement specific decision logic (e.g., TPB).
     """
 
+    def _get_aft_param(self, param_name):
+        """Get AFT parameter from agent, raising error if missing.
+
+        Parameters
+        ----------
+        param_name : str
+            Name of the parameter to retrieve from the agent.
+
+        Returns
+        -------
+        value
+            The parameter value.
+
+        Raises
+        ------
+        AttributeError
+            If the parameter is not defined on the agent (missing from config).
+        """
+        if not hasattr(self.agent, param_name):
+            aft_name = getattr(self.agent.aft, "name", "unknown")
+            raise AttributeError(
+                f"Missing AFT parameter '{param_name}' for AFT '{aft_name}'. "
+                f"Add it to config.yaml under aftpar.{aft_name}.{param_name}"
+            )
+        return getattr(self.agent, param_name)
+
     def __init__(self, agent):
         """Initialize decision model from agent's current practices.
 
@@ -268,12 +294,15 @@ class DecisionModel(ABC):
         self._previous_bundle = self._practice_bundle
 
         # Reset state snapshot for new bundle
+        # Note: baseline_score is set to 0 because we're starting fresh with
+        # the new bundle. The trend will be computed relative to these new
+        # starting values (soilc_start, moisture_start, yield_start).
         self.current_state = {
             "t_start": current_year,
             "soilc_start": self.agent.soilc,
             "moisture_start": self.agent.root_moisture,
             "yield_start": self.agent.cropyield,
-            "baseline_score": self._weighted_score(self.current_trend),
+            "baseline_score": 0.0,
         }
 
         # Switch to new bundle
@@ -289,7 +318,7 @@ class DecisionModel(ABC):
         markets, technology). This implements bounded rationality.
         """
         current_year = self.agent.model.lpjml.sim_year
-        memory_decay = getattr(self.agent, "memory_decay_years", DEFAULT_MEMORY_DECAY_YEARS)
+        memory_decay = self._get_aft_param("memory_decay_years")
 
         for bundle, mem in self.bundle_memory.items():
             if mem["duration"] > 0:
@@ -326,7 +355,7 @@ class DecisionModel(ABC):
             return None
 
         # Memory too old
-        memory_decay = getattr(self.agent, "memory_decay_years", DEFAULT_MEMORY_DECAY_YEARS)
+        memory_decay = self._get_aft_param("memory_decay_years")
         if self.agent.model.lpjml.sim_year - mem.get("last_updated", 0) > memory_decay:
             return None
 
@@ -441,7 +470,7 @@ class TPB(DecisionModel):
         # Avoids noisy decisions based on single-year fluctuations
         # Typical value: 3 years (allows trends to stabilize)
 
-        min_obs = getattr(self.agent, "min_observation_years", 3)
+        min_obs = self._get_aft_param("min_observation_years")
 
         if duration < min_obs:
             self._tpb = 0.0
@@ -516,7 +545,7 @@ class TPB(DecisionModel):
         # Allow grace period for new practices to show effects
         # Grace period = min_observation_years (reuse existing param)
         duration = self.agent.model.lpjml.sim_year - self.current_state["t_start"]
-        grace_period = getattr(self.agent, "min_observation_years", 3)
+        grace_period = self._get_aft_param("min_observation_years")
         if duration < grace_period:
             return False
 
@@ -535,7 +564,7 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Trigger fallback after sustained decline
         # -----------------------------------------------------------------
-        fallback_years = getattr(self.agent, "fallback_years", DEFAULT_FALLBACK_YEARS)
+        fallback_years = self._get_aft_param("fallback_years")
         if self._decline_years >= fallback_years:
             # Mark current bundle as "failed" (reduces future exploration)
             self.bundle_memory[self._practice_bundle]["failure_count"] += 1
@@ -617,26 +646,30 @@ class TPB(DecisionModel):
         # Determine exploration probability
         # -----------------------------------------------------------------
 
-        # Base probability depends on farmer type
+        # Base probability depends on farmer type (from config)
         # Pioneers (innovators) are more willing to experiment
-        base_prob = 0.05 if self.agent.aft.name == "pioneer" else 0.01
+        base_prob = self._get_aft_param("exploration_base_prob")
 
         # Poor performers explore more (searching for better options)
+        # Threshold and multiplier are configurable
         current_score = self._weighted_score(self.current_trend)
         normalized = self._normalize_score(current_score)
-        if normalized < 0.3:
-            base_prob *= 2.0
+        poor_performance_threshold = self._get_aft_param("poor_performance_threshold")
+        poor_performance_multiplier = self._get_aft_param("poor_performance_multiplier")
+        if normalized < poor_performance_threshold:
+            base_prob *= poor_performance_multiplier
 
         # Experience affects willingness to explore (smooth ramp based on confidence_years)
         # Early: 0.5x exploration (cautious), Experienced: 1.5x exploration (confident)
         duration = self.agent.model.lpjml.sim_year - self.current_state["t_start"]
-        confidence_years = getattr(self.agent, "confidence_years", DEFAULT_CONFIDENCE_YEARS)
+        confidence_years = self._get_aft_param("confidence_years")
         experience_factor = min(1.0, duration / confidence_years)
         exploration_modifier = 0.5 + experience_factor * 1.0  # Ramps from 0.5 to 1.5
         base_prob *= exploration_modifier
 
-        # Cap exploration probability
-        explore_prob = min(base_prob, 0.15)
+        # Cap exploration probability (configurable)
+        max_exploration_prob = self._get_aft_param("max_exploration_prob")
+        explore_prob = min(base_prob, max_exploration_prob)
 
         # -----------------------------------------------------------------
         # Random draw: explore or not?
@@ -687,9 +720,9 @@ class TPB(DecisionModel):
         """
         # Higher threshold for reverting (avoid flip-flopping)
         if self._proposed_bundle == self._previous_bundle:
-            threshold = getattr(self.agent, "revert_threshold", 0.6)
+            threshold = self._get_aft_param("revert_threshold")
         else:
-            threshold = getattr(self.agent, "switch_threshold", 0.5)
+            threshold = self._get_aft_param("switch_threshold")
 
         return self._tpb > threshold
 
@@ -970,8 +1003,8 @@ class TPB(DecisionModel):
         crop_sim = self._crop_similarity(neighbour)
 
         # Weights from config (default: 60% bundle, 40% crop)
-        w_bundle = getattr(self.agent, "weight_bundle_similarity", 0.6)
-        w_crop = getattr(self.agent, "weight_crop_similarity", 0.4)
+        w_bundle = self._get_aft_param("weight_bundle_similarity")
+        w_crop = self._get_aft_param("weight_crop_similarity")
 
         return w_bundle * bundle_sim + w_crop * crop_sim
 
@@ -1004,7 +1037,7 @@ class TPB(DecisionModel):
         total_weight = 0.0
 
         # Get confidence_years from config (default 10)
-        confidence_years = getattr(self.agent, "confidence_years", 10)
+        confidence_years = self._get_aft_param("confidence_years")
 
         for neighbour in self.agent.neighbourhood:
             # How similar is neighbour? (bundle + crop similarity)
@@ -1084,10 +1117,15 @@ class TPB(DecisionModel):
         most_common = max(set(neighbour_bundles), key=neighbour_bundles.count)
 
         # Boost if adopting majority bundle; penalize if adopting minority
+        # Asymmetry reflects that social approval is stronger than disapproval
+        # (Cialdini et al. 1990). Values are configurable per AFT.
+        conformity_bonus = self._get_aft_param("conformity_bonus")
+        conformity_penalty = self._get_aft_param("conformity_penalty")
+
         if new_bundle == most_common:
-            boost = homogeneity * 0.2  # Conformity bonus
+            boost = homogeneity * conformity_bonus
         else:
-            boost = -homogeneity * 0.1  # Non-conformity penalty
+            boost = -homogeneity * conformity_penalty
 
         return max(0.0, min(1.0, base_norm + boost))
 
@@ -1217,16 +1255,14 @@ class TPB(DecisionModel):
     # =========================================================================
 
     def _compute_risk_factor(self):
-        """Compute risk factor from AFT type and capital volatility.
+        """Compute risk factor from AFT type.
 
         Risk aversion (Chavas & Holt 1996): farmers weight potential losses
         more heavily than equivalent gains. Higher risk factor means more
         cautious behavior and lower PBC.
 
-        Components
-        ----------
-        1. Base risk aversion: AFT parameter (traditionalist > pioneer)
-        2. Capital volatility: coefficient of variation over recent years
+        Currently uses only AFT base risk aversion. Traditionalists are more
+        risk-averse than pioneers.
 
         Returns
         -------
@@ -1236,24 +1272,27 @@ class TPB(DecisionModel):
         References
         ----------
         Chavas, J.P. & Holt, M.T. (1996). Economic behavior under uncertainty.
+
+        TODO: Optional extension - add capital volatility component
+        --------------------------------------------------------------
+        Could combine base risk with capital volatility (CV over recent years):
+
+            capital_history = self.agent.capital_history  # needs tracking
+            if len(capital_history) >= 3:
+                cv = np.std(capital_history) / max(np.mean(capital_history), 1e-6)
+                volatility_risk = min(cv, 1.0)
+            else:
+                volatility_risk = 0.0
+
+            weight_base = self._get_aft_param("weight_risk_base")
+            weight_volatility = self._get_aft_param("weight_risk_volatility")
+            risk_factor = weight_base * base_risk + weight_volatility * volatility_risk
+
+        This would require:
+        - Adding capital_history tracking in ca_farmer.py
+        - Adding weight_risk_base, weight_risk_volatility to config.yaml
         """
-        # AFT base risk aversion (0 = risk-neutral, 1 = very risk-averse)
-        base_risk = getattr(self.agent, "risk_aversion", 0.2)
-
-        # Capital volatility: CV = std / mean over recent years
-        capital_history = getattr(self.agent, "capital_history", [])
-
-        if len(capital_history) >= 3:
-            mean_capital = np.mean(capital_history)
-            std_capital = np.std(capital_history)
-            cv = std_capital / max(mean_capital, 1e-6)
-            volatility_risk = min(cv, 1.0)  # Cap at 1.0
-        else:
-            volatility_risk = 0.0  # Not enough data
-
-        # Combine: base risk + volatility contribution (weighted by 0.5)
-        # Volatility can add up to 50% more risk on top of base
-        return min(1.0, base_risk + (1 - base_risk) * volatility_risk * 0.5)
+        return self._get_aft_param("risk_aversion")
 
     def _pbc_for_bundle(self, new_bundle):
         """Compute Perceived Behavioral Control for a bundle.
@@ -1332,7 +1371,7 @@ class TPB(DecisionModel):
         own_memory = self._get_valid_memory(new_bundle)
 
         # Get confidence_years from config
-        confidence_years = getattr(self.agent, "confidence_years", DEFAULT_CONFIDENCE_YEARS)
+        confidence_years = self._get_aft_param("confidence_years")
 
         if own_memory:
             # Own experience: confidence grows with duration

@@ -42,15 +42,18 @@ class TestFaoEnsureDummyFallback:
     def test_producer_prices_ensure_creates_dummy_when_api_fails(self):
         """FaoProducerPrices.ensure() creates _DUMMY.nc when prepare raises."""
         prices = FaoProducerPrices()
-        years = (2010, 2012)
-
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
             input_dir = sim_path / "input"
             input_dir.mkdir(parents=True)
 
             with patch.object(prices, "prepare", side_effect=RuntimeError("API unavailable")):
-                path = prices.ensure(sim_path, years=years, use_dummy_on_failure=True)
+                path = prices.ensure(
+                    sim_path,
+                    reference_year=2012,
+                    years_before=2,
+                    use_dummy_on_failure=True,
+                )
 
             assert path == prices.get_dummy_path(sim_path)
             assert path.exists()
@@ -65,7 +68,6 @@ class TestFaoEnsureDummyFallback:
     def test_capital_stock_ensure_creates_dummy_when_api_fails(self):
         """FaoCapitalStock.ensure() creates _DUMMY.nc when prepare raises."""
         capital = FaoCapitalStock()
-        years = (2010, 2012)
 
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
@@ -73,14 +75,21 @@ class TestFaoEnsureDummyFallback:
             input_dir.mkdir(parents=True)
 
             with patch.object(capital, "prepare", side_effect=RuntimeError("API unavailable")):
-                path = capital.ensure(sim_path, years=years, use_dummy_on_failure=True)
+                path = capital.ensure(
+                    sim_path,
+                    reference_year=2012,
+                    years_before=2,
+                    use_dummy_on_failure=True,
+                )
 
             assert path == capital.get_dummy_path(sim_path)
             assert path.exists()
             assert "_DUMMY" in path.name
 
             ds = xr.open_dataset(path)
-            assert "6186" in ds.data_vars  # Net Capital Stocks
+            assert "ncs" in ds.data_vars  # Net Capital Stocks
+            assert "gfcf" in ds.data_vars  # Gross Fixed Capital Formation
+            assert "cfc" in ds.data_vars  # Consumption of Fixed Capital
             assert "depreciation_rate" in ds.data_vars
             assert "investment_rate" in ds.data_vars
             assert "area_code" in ds.dims
@@ -107,8 +116,8 @@ class TestFaoEnsureUsesExistingFiles:
             mock_prepare.assert_not_called()
             assert path == full_real
 
-    def test_ensure_uses_existing_dummy_file(self):
-        """When dummy data exists, ensure() returns it without calling prepare."""
+    def test_ensure_tries_download_when_only_dummy_exists(self):
+        """When only dummy data exists, ensure() tries to download real data first."""
         prices = FaoProducerPrices()
         dummy_path = Path("input") / "fao_pft_prices_DUMMY.nc"
 
@@ -118,11 +127,13 @@ class TestFaoEnsureUsesExistingFiles:
             full_dummy.parent.mkdir(parents=True)
             full_dummy.touch()
 
-            with patch.object(prices, "prepare") as mock_prepare:
+            # Mock prepare to fail (simulating API unavailable)
+            with patch.object(prices, "prepare", side_effect=RuntimeError("API unavailable")):
                 path = prices.ensure(sim_path)
 
-            mock_prepare.assert_not_called()
+            # Should fall back to existing dummy
             assert path == full_dummy
+            assert path.exists()
 
 
 class TestFaoIsAvailable:
@@ -174,42 +185,50 @@ class TestEnsureDummyFaoData:
             assert "_DUMMY" in paths["capital_stock"].name
 
 
-class TestConservationAgricultureFarmerFaoLoading:
-    """Test that ConservationAgricultureFarmer loads FAO data correctly."""
+class TestCACountryFaoLoading:
+    """Test that CACountry loads FAO data correctly at country level."""
 
-    def test_ca_farmer_loads_fao_data_with_dummy(self):
-        """ConservationAgricultureFarmer._load_fao_* loads dummy FAO data."""
-        from inseeds.components.farming import ConservationAgricultureFarmer
+    def test_ca_country_loads_fao_data_with_dummy(self):
+        """CACountry loads dummy FAO data once per country."""
+        from inseeds.components.farming.ca_country import CACountry
 
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
-            ensure_dummy_fao_data(sim_path, data_type="both", years=(2010, 2015))
+            # Create dummy FAO data files
+            dummy_paths = ensure_dummy_fao_data(sim_path, data_type="both", years=(2010, 2015))
 
             # Create minimal mock model with config
             model = MagicMock()
             model.config.sim_path = str(sim_path)
-            model.config.coupled_config.farm_economics = {"n_survival_years": 2}
-            model.config.coupled_config.practice_costs = {
-                "tillage": {"transition": 70.0, "direct": -50.0},
-                "cover_crop": {"transition": 25.0, "direct": 75.0},
-                "residue_on_field": {"transition": 10.0, "direct": 50.0},
-            }
 
-            # Create mock cell with country_code
-            cell = MagicMock()
-            cell.country_code = "NLD"
+            # Create country instance (skip full super().__init__)
+            country = object.__new__(CACountry)
+            country.model = model
+            country.country_code = "NLD"
+            country._cropland_area = 5000.0  # Pre-set cropland area in ha
 
-            # Create farmer instance (skip full super().__init__ to avoid complex deps)
-            farmer = object.__new__(ConservationAgricultureFarmer)
-            farmer.model = model
-            farmer._cell = cell
+            # Clear class-level cache to ensure fresh load
+            CACountry._fao_prices_ds = None
+            CACountry._fao_capital_ds = None
 
-            # Call the FAO loading methods directly
-            farmer._load_fao_pft_prices()
-            farmer._load_fao_capital_stock()
+            # Pre-load the datasets into class cache to avoid API calls
+            CACountry._fao_prices_ds = xr.open_dataset(dummy_paths["producer_prices"])
+            CACountry._fao_capital_ds = xr.open_dataset(dummy_paths["capital_stock"])
 
-            assert farmer.fao_pft_prices is not None
-            assert farmer.fao_capital_stock is not None
-            assert "5532" in farmer.fao_pft_prices.data_vars
-            assert "6186" in farmer.fao_capital_stock.data_vars
-            assert "depreciation_rate" in farmer.fao_capital_stock.data_vars
+            # Call the extraction methods directly (bypassing ensure())
+            country._extract_capital_parameters("NLD")
+            country._extract_prices("NLD")
+
+            # Verify country has FAO-derived attributes (internal attributes)
+            assert hasattr(country, "_depreciation_rate")
+            assert hasattr(country, "_initial_capital_per_ha")
+            assert hasattr(country, "_pft_prices")
+            assert country._depreciation_rate > 0
+            assert country._initial_capital_per_ha > 0
+            assert country._pft_prices is not None
+
+            # Clean up
+            CACountry._fao_prices_ds.close()
+            CACountry._fao_capital_ds.close()
+            CACountry._fao_prices_ds = None
+            CACountry._fao_capital_ds = None

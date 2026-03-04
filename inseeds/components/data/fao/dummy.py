@@ -234,12 +234,12 @@ def generate_dummy_capital_stock(
             cfc[j, i] = dep_rate[j, i] * ncs[j, i]
             gfcf[j, i] = inv_rate[j, i] * ncs[j, i]
 
-    # Create xarray Dataset
+    # Create xarray Dataset with new variable names
     ds = xr.Dataset(
         {
-            "6184": (["time", "area_code"], gfcf),
-            "6185": (["time", "area_code"], cfc),
-            "6186": (["time", "area_code"], ncs),
+            "gfcf": (["time", "area_code"], gfcf),
+            "cfc": (["time", "area_code"], cfc),
+            "ncs": (["time", "area_code"], ncs),
             "depreciation_rate": (["time", "area_code"], dep_rate),
             "investment_rate": (["time", "area_code"], inv_rate),
         },
@@ -250,17 +250,17 @@ def generate_dummy_capital_stock(
     )
 
     # Add metadata
-    ds["6184"].attrs = {
+    ds["gfcf"].attrs = {
         "units": "million_USD",
         "long_name": "Gross Fixed Capital Formation (DUMMY DATA)",
         "source": "Generated dummy data - NOT real FAOSTAT",
     }
-    ds["6185"].attrs = {
+    ds["cfc"].attrs = {
         "units": "million_USD",
         "long_name": "Consumption of Fixed Capital (DUMMY DATA)",
         "source": "Generated dummy data - NOT real FAOSTAT",
     }
-    ds["6186"].attrs = {
+    ds["ncs"].attrs = {
         "units": "million_USD",
         "long_name": "Net Capital Stocks (DUMMY DATA)",
         "source": "Generated dummy data - NOT real FAOSTAT",

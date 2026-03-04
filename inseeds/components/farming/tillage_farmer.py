@@ -24,7 +24,11 @@ class TillageFarmer(Farmer):
             0, self.strategy_switch_duration
         )
 
-        # initialize tbp for meaningful output
+        # initialize pbc (Perceived Behavioral Control) for TPB calculation
+        # starts at 1.0 (full control), decreases after each switch (min 0.5)
+        self.pbc = 1.0
+
+        # initialize tpb for meaningful output
         self.tpb = 0
 
     @property

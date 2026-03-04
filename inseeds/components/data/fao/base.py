@@ -38,6 +38,25 @@ def check_fao_api_available(timeout: float = 5.0) -> bool:
         return False
 
 
+def get_fao_country_code(iso3_code: str) -> str | None:
+    """Convert ISO3 country code to FAO country code.
+
+    Parameters
+    ----------
+    iso3_code : str
+        ISO3 country code (e.g., "NLD" for Netherlands).
+
+    Returns
+    -------
+    str | None
+        FAO country code, or None if not found.
+    """
+    iso3_to_fao = fao_definitions.get_area_code_dict(
+        code_standard_out="FAO", code_standard_in="ISO3"
+    )
+    return iso3_to_fao.get(iso3_code)
+
+
 class FaoDataset(ABC):
     """Abstract base class for FAO dataset handlers.
 
@@ -165,7 +184,7 @@ class FaoDataset(ABC):
         years : list[str]
             List of years to download.
         countries : pd.Series
-            Country codes to download.
+            Country codes to download (FAO format).
 
         Returns
         -------
@@ -173,63 +192,70 @@ class FaoDataset(ABC):
             Downloaded data from FAOSTAT.
         """
         items = self._get_items()
-
-        year_chunk_size = 1
-        country_chunk_size = 2
+        item_list = list(items)
 
         country_list = list(countries)
-        year_chunks = [
-            years[i : i + year_chunk_size]
-            for i in range(0, len(years), year_chunk_size)
-        ]
-        country_chunks = [
-            country_list[i : i + country_chunk_size]
-            for i in range(0, len(country_list), country_chunk_size)
-        ]
-
-        total_chunks = len(year_chunks) * len(country_chunks) * len(self.elements)
-        print(
-            f"Downloading {self.name} from FAOSTAT ({self.domain} domain)..."
-        )
-        print(
-            f"  {total_chunks} chunks "
-            f"({len(year_chunks)} years × {len(country_chunks)} countries "
-            f"× {len(self.elements)} elements)"
-        )
+        n_years = len(years)
+        n_countries = len(country_list)
+        n_elements = len(self.elements)
+        n_items = len(item_list)
+        
+        # CS domain requires separate calls per item (GFCF, CFC, NCS are different data types)
+        # Other domains can batch all items AND countries together
+        is_cs_domain = self.domain == "CS"
+        
+        if is_cs_domain:
+            total_chunks = n_years * n_elements * n_items
+            print(f"Downloading {self.name} from FAOSTAT ({self.domain} domain)...")
+            print(f"  {total_chunks} API calls ({n_years} years × {n_elements} elements × {n_items} items)")
+            print(f"  Downloading {n_countries} countries per call")
+        else:
+            total_chunks = n_years * n_elements
+            print(f"Downloading {self.name} from FAOSTAT ({self.domain} domain)...")
+            print(f"  {total_chunks} API calls ({n_years} years × {n_elements} elements)")
+            print(f"  Downloading {n_items} items × {n_countries} countries per call")
 
         dfs = []
-        chunk_count = 0
         for element in self.elements:
-            for year_chunk in year_chunks:
-                for country_chunk in country_chunks:
-                    chunk_count += 1
-                    if chunk_count % 50 == 0:
-                        print(f"  Progress: {chunk_count}/{total_chunks} chunks...")
+            for year in years:
+                if is_cs_domain:
+                    # CS domain: separate call per item, all countries batched
+                    for item in item_list:
+                        try:
+                            df = adapter.download_data(
+                                domain=self.domain,
+                                element=element,
+                                year=[year],
+                                items=[item],
+                                areas=countries,  # All countries at once
+                                item_code_format="FAO",
+                                area_code_format="FAO",
+                            )
+                            if len(df) > 0:
+                                dfs.append(df)
+                        except Exception as e:
+                            print(f"  Warning: Failed {element}/{year}/{item}: {e}")
+                else:
+                    # Other domains: batch all items AND all countries together
                     try:
                         df = adapter.download_data(
                             domain=self.domain,
                             element=element,
-                            year=year_chunk,
-                            items=items,
-                            areas=country_chunk,
+                            year=[year],
+                            items=items,  # All items at once
+                            areas=countries,  # All countries at once
                             item_code_format="FAO",
                             area_code_format="FAO",
                         )
                         if len(df) > 0:
                             dfs.append(df)
                     except Exception as e:
-                        print(
-                            f"Warning: Failed chunk {element}/{year_chunk}/"
-                            f"{country_chunk}: {e}"
-                        )
+                        print(f"  Warning: Failed {element}/{year}: {e}")
 
         if not dfs:
             raise RuntimeError(f"No data downloaded for {self.name}")
 
-        print(
-            f"Downloaded {len(dfs)} chunks with data, "
-            f"total {sum(len(df) for df in dfs)} records"
-        )
+        print(f"  Downloaded {sum(len(df) for df in dfs)} records")
         return pd.concat(dfs, ignore_index=True)
 
     def transform(self, df: pd.DataFrame) -> xr.Dataset:
@@ -334,6 +360,7 @@ class FaoDataset(ABC):
         cache_path: str | Path | None = None,
         output_path: str | Path | None = None,
         years: tuple[int, int] = (1990, 2020),
+        country_codes: list[str] | None = None,
     ) -> xr.Dataset:
         """Prepare FAO data: download, transform, and optionally save.
 
@@ -345,6 +372,8 @@ class FaoDataset(ABC):
             Path to save output NetCDF. If None, returns dataset without saving.
         years : tuple[int, int]
             Year range (start, end) inclusive.
+        country_codes : list[str] | None
+            Specific ISO3 country codes to download. If None, downloads all.
 
         Returns
         -------
@@ -371,9 +400,23 @@ class FaoDataset(ABC):
                     "Use dummy data fallback or provide cached data."
                 )
 
-            all_countries = fao_definitions.get_all_country_codes()
+            # Get country codes in FAO format
+            if country_codes:
+                fao_codes = []
+                for iso3 in country_codes:
+                    fao_code = get_fao_country_code(iso3)
+                    if fao_code:
+                        fao_codes.append(fao_code)
+                    else:
+                        print(f"  Warning: Unknown country code {iso3}, skipping")
+                if not fao_codes:
+                    raise RuntimeError(f"No valid country codes found in {country_codes}")
+                countries = pd.Series(fao_codes)
+            else:
+                countries = fao_definitions.get_all_country_codes()
+
             adapter = FaoApiAdapter()
-            df = self.download(adapter, year_list, all_countries)
+            df = self.download(adapter, year_list, countries)
             if cache_path:
                 print(f"Saving to cache: {cache_path}")
                 Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
@@ -396,30 +439,39 @@ class FaoDataset(ABC):
     def ensure(
         self,
         sim_path: str | Path,
-        years: tuple[int, int] = (1990, 2020),
+        country_codes: list[str] | None = None,
+        reference_year: int | None = None,
+        years_before: int = 5,
         force_download: bool = False,
         use_dummy_on_failure: bool = True,
     ) -> Path:
         """Ensure FAO data is available in simulation input folder.
 
+        Downloads only the data needed: specific countries and a few years
+        around the reference year for robust averaging.
+
         Priority order:
         1. Real data file exists → use silently
-        2. Dummy data file exists → use with warning
-        3. Download from FAO API → save as real data
-        4. API fails + use_dummy_on_failure → generate dummy data
+        2. Try to download from FAO API → save as real data
+        3. API fails + dummy exists → use existing dummy with warning
+        4. API fails + no dummy + use_dummy_on_failure → generate dummy data
 
         Parameters
         ----------
         sim_path : str | Path
             Simulation path (pycoupler sim_path).
-        years : tuple[int, int]
-            Year range for FAO data (start, end) inclusive.
+        country_codes : list[str] | None
+            ISO3 country codes to download (e.g., ["NLD"]). If None, downloads all.
+        reference_year : int | None
+            Reference year for data (e.g., simulation start year). Downloads
+            this year plus years_before previous years. If None, uses 2020.
+        years_before : int
+            Number of years before reference_year to include (default 5).
+            This provides data for robust averaging.
         force_download : bool
             If True, re-download even if file exists.
         use_dummy_on_failure : bool
-            If True (default), generate dummy data when FAO API fails.
-            This allows the model to run for testing/development even
-            without FAO API access.
+            If True (default), use/generate dummy data when FAO API fails.
 
         Returns
         -------
@@ -438,12 +490,17 @@ class FaoDataset(ABC):
         if output_path.exists() and not force_download:
             return output_path
 
-        # Priority 2: Dummy data exists - use with warning (once per session)
-        if dummy_path.exists() and not force_download:
-            return dummy_path
+        # Compute year range
+        if reference_year is None:
+            reference_year = 2020
+        year_start = reference_year - years_before
+        years = (year_start, reference_year)
 
-        # Priority 3 & 4: Download or generate
-        print(f"Downloading {self.name} from FAOSTAT...")
+        # Priority 2: Try to download from FAO API
+        if country_codes:
+            print(f"Downloading {self.name} for {country_codes} ({years[0]}-{years[1]})...")
+        else:
+            print(f"Downloading {self.name} for all countries ({years[0]}-{years[1]})...")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path = output_path.parent / f"{self.name}_cache.parquet"
 
@@ -452,11 +509,21 @@ class FaoDataset(ABC):
                 cache_path=cache_path,
                 output_path=output_path,
                 years=years,
+                country_codes=country_codes,
             )
+            # Success - delete any existing dummy file
+            if dummy_path.exists():
+                dummy_path.unlink()
+                print(f"  Removed obsolete dummy file: {dummy_path.name}")
             return output_path
         except Exception as e:
             if use_dummy_on_failure:
                 print(f"WARNING: FAO API failed: {e}")
+                # Priority 3: Use existing dummy if available
+                if dummy_path.exists():
+                    print(f"Using existing DUMMY data: {dummy_path.name}")
+                    return dummy_path
+                # Priority 4: Generate new dummy
                 print(f"Generating DUMMY data for {self.name}...")
                 self._generate_dummy_fallback(dummy_path, years)
                 return dummy_path
