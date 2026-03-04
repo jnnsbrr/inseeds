@@ -9,16 +9,15 @@ from pathlib import Path
 from typing import Self
 
 import pandas as pd
-import requests
 import xarray as xr
 
 from copan_eval.fao import FaoData, fao_definitions, FaoApiAdapter, FaoCropTranslator
 
 
 def check_fao_api_available(timeout: float = 5.0) -> bool:
-    """Check if FAO API is available and accessible.
+    """Check if FAO API is available and accessible with authentication.
 
-    Performs a quick test request to the FAO API definitions endpoint.
+    Uses the FaoApiAdapter.ping() method which includes authentication headers.
     This fails fast if the API requires authentication or is down.
 
     Parameters
@@ -29,14 +28,12 @@ def check_fao_api_available(timeout: float = 5.0) -> bool:
     Returns
     -------
     bool
-        True if API is accessible, False otherwise.
+        True if API is accessible with valid authentication, False otherwise.
     """
     try:
-        response = requests.get(
-            "https://faostatservices.fao.org/api/v1/en/definitions/types/area",
-            timeout=timeout,
-        )
-        return response.status_code == 200
+        from copan_eval.fao import FaoApiAdapter
+        adapter = FaoApiAdapter()
+        return adapter.ping()
     except Exception:
         return False
 

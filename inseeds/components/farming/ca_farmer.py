@@ -129,9 +129,8 @@ class ConservationAgricultureFarmer(Farmer):
         self._load_fao_capital_stock()
 
         # -----------------------------------------------------------------
-        # Initialize capital
+        # Capital initialization
         # -----------------------------------------------------------------
-        # Capital = initial capital per ha × farm size
         # Initial capital per ha derived from FAO NCS / agricultural land area
         self.capital = self._initial_capital_per_ha * self.farm_size
 
@@ -293,11 +292,11 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Initial capital per ha from NCS
         # -----------------------------------------------------------------
-        # NCS is in million USD; convert to USD/ha using agricultural land area
-        # This gives a per-hectare capital endowment for the farmer
-
+        # NCS is in million USD; convert to USD/ha using country cropland
+        # Country cropland is computed from LPJmL data (cftfrac * area)
+        # at the country level (see Country.cropland_area property)
         ncs = self.fao_capital_stock["6186"]  # Net Capital Stocks (million USD)
-        agri_land_ha = self._get_fao_agricultural_land_ha(country_code)
+        cropland_ha = self.cell.country.cropland_area
 
         if country_code in ncs.area_code.values:
             ncs_million_usd = float(
@@ -307,32 +306,7 @@ class ConservationAgricultureFarmer(Farmer):
             ncs_million_usd = float(ncs.isel(time=-1).mean().values)
 
         # Convert: million USD → USD, then divide by hectares
-        self._initial_capital_per_ha = (ncs_million_usd * 1e6) / agri_land_ha
-
-    def _get_fao_agricultural_land_ha(self, country_code):
-        """Get agricultural land area in hectares for a country.
-
-        Used to convert FAO NCS (total capital) to per-hectare values.
-
-        Note: Currently uses config fallback. Could be extended to use
-        FAO Land Use dataset (RL domain) for country-specific values.
-
-        Parameters
-        ----------
-        country_code : str
-            ISO3 country code.
-
-        Returns
-        -------
-        float
-            Agricultural land area in hectares.
-        """
-        econ = self.model.config.coupled_config.farm_economics
-        econ = econ.to_dict() if hasattr(econ, "to_dict") else dict(econ)
-
-        # Fallback: use config value if FAO land use not integrated
-        # Default ~500M ha is roughly global agricultural land / number of countries
-        return econ.get("agricultural_land_ha", 500_000_000)
+        self._initial_capital_per_ha = (ncs_million_usd * 1e6) / cropland_ha
 
     # =========================================================================
     # COVER CROP TYPE SELECTION

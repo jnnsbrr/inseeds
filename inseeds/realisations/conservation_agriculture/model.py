@@ -66,7 +66,7 @@ class Cell(lpjml.Cell, farming.Cell):
 
 
 class Country(lpjml.Country, farming.Country, base.Country):
-    """Country entity type."""
+    """Country entity type with cropland aggregation for CA capital initialization."""
 
     pass
 
@@ -137,12 +137,13 @@ class Model(lpjml.Model):
             farmer = farmer_class(cell=cell, model=self)
             farmers.append(farmer)
         farmers_sorted = sorted(farmers, key=lambda farmer: farmer.avg_hdate)
+        self._farmers = farmers_sorted
+
+        # Initialize neighbourhoods
         for farmer in farmers_sorted:
             farmer.init_neighbourhood()
-        self._farmers = farmers_sorted
+
         return farmers_sorted
-        # Note: Output table writing (if enabled) should be done in update()
-        # to avoid double-writing the first year.
 
     def update(self, t):
         """Update all countries and LPJmL for year ``t``."""
