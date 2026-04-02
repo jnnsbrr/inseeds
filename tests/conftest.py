@@ -34,7 +34,7 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
 
         with open(f"{test_path}/data/lpjml_output.pkl", "rb") as out:
             data = pickle.load(out)
-        # Fill NaN in harvestc so farmer._get_cell_earth_var does not raise
+        # Fill NaN in harvestc so farmer._get_from_earth does not raise
         if "harvestc" in data.data_vars:
             harvestc = data["harvestc"]
             vals = harvestc.values

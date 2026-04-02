@@ -128,27 +128,37 @@ class Farmer(core.Individual, base.Individual):
             for neighbour in cell_neighbours.individuals
         ]
 
-    def _get_cell_earth_var(self, var_name, band=None):
-        """Get scalar from cell.from_earth variable. Raise if missing or invalid.
+    def _get_from_earth(self, var_name, as_scalar=False, band=None, time_idx=-1):
+        """Get variable from cell.from_earth, handling multi-year data.
+
+        This is the single entry point for accessing from_earth data.
+        By default selects the most recent time step if multiple exist.
 
         Parameters
         ----------
         var_name : str
-            Name of the variable in cell.from_earth (e.g. harvestc, rootmoist_agr).
+            Name of the variable in cell.from_earth (e.g. harvestc, cftfrac).
+        as_scalar : bool, default False
+            If True, return a scalar value (mean or band-specific).
+            If False, return the DataArray (with time dimension removed if multi-year).
         band : int, optional
-            If given, use isel(band=band).item() instead of mean() (for banded data).
+            If given with as_scalar=True, return value at specific band index.
+            If given with as_scalar=False, select that band from the DataArray.
+        time_idx : int, default -1
+            Which time step to select if multiple exist.
+            -1 = most recent (default), 0 = first (for initialization with history).
 
         Returns
         -------
-        float
-            The scalar value.
+        float or xarray.DataArray
+            Scalar value if as_scalar=True, DataArray otherwise.
 
         Raises
         ------
         AttributeError
             If var_name is not in cell.from_earth.
         ValueError
-            If the value cannot be parsed or is NaN.
+            If as_scalar=True and value cannot be parsed.
         """
         data = getattr(self.cell.from_earth, var_name, None)
         if data is None:
@@ -156,16 +166,30 @@ class Farmer(core.Individual, base.Individual):
                 f"{var_name} not in cell.from_earth; "
                 f"ensure LPJmL output includes {var_name}"
             )
+
+        # If data has multiple time steps, select the specified one
+        if hasattr(data, 'time') and len(data.time) > 1:
+            data = data.isel(time=time_idx)
+
+        # Select band if specified
+        if band is not None:
+            data = data.isel(band=band)
+
+        # Return DataArray or convert to scalar
+        if not as_scalar:
+            return data
+
+        # Convert to scalar
         try:
-            if band is not None:
-                val = float(data.isel(band=band).item())
+            if data.size == 1:
+                val = float(data.item())
             else:
-                vals = np.asarray(data.values)
-                val = float(np.nanmean(vals))
+                val = float(np.nanmean(data.values))
         except (TypeError, ValueError) as e:
             raise ValueError(
                 f"Cannot parse {var_name} from cell.from_earth: {e}"
             ) from e
+
         if np.isnan(val):
             val = 0.0  # Fallback for test data or missing values
         return val
@@ -173,44 +197,43 @@ class Farmer(core.Individual, base.Individual):
     @property
     def cell_cropyield(self):
         """Return the average crop yield of the cell."""
-        return self._get_cell_earth_var("harvestc")
+        return self._get_from_earth("harvestc", as_scalar=True)
 
     @property
     def cell_pft_yield(self):
         """Return the average crop yield of the cell."""
-        return self._get_cell_earth_var("pft_harvestc")
+        return self._get_from_earth("pft_harvestc", as_scalar=True)
 
     @property
     def cell_pft_production(self):
         """Return the average crop yield of the cell."""
-        return self._get_cell_earth_var("pft_harvestc") *\
-            self._get_cell_earth_var("cftfrac") * self.farm_size
-
+        return self._get_from_earth("pft_harvestc", as_scalar=True) * \
+            self._get_from_earth("cftfrac", as_scalar=True) * self.farm_size
 
     @property
     def cell_soilc(self):
         """Return the top-layer soil carbon of the cell (gC/m2)."""
-        return self._get_cell_earth_var("soilc_agr_layer", band=0)
+        return self._get_from_earth("soilc_agr_layer", as_scalar=True, band=0)
 
     @property
     def cell_root_moisture(self):
         """Return the average rootzone soil moisture of the cells."""
-        return self._get_cell_earth_var("rootmoist_agr")
+        return self._get_from_earth("rootmoist_agr", as_scalar=True)
 
     @property
     def cell_runoff(self):
         """Return runoff of cell (mm/yr) from LPJmL."""
-        return self._get_cell_earth_var("runoff")
+        return self._get_from_earth("runoff", as_scalar=True)
 
     @property
     def cell_leaching(self):
         """Return N leaching (gN/m2/yr) from LPJmL (whole cell)."""
-        return self._get_cell_earth_var("leaching")
+        return self._get_from_earth("leaching", as_scalar=True)
 
     @property
     def cell_fertilizer(self):
         """Return N fertilizer input (gN/m2/yr) from LPJmL."""
-        return self._get_cell_earth_var("nfert_agr")
+        return self._get_from_earth("nfert_agr", as_scalar=True)
 
     @property
     def cell_irrig(self):
@@ -221,7 +244,7 @@ class Farmer(core.Individual, base.Individual):
         This happens automatically in LPJmL; tracking here enables
         connecting irrigation savings to profit/capital.
         """
-        return self._get_cell_earth_var("irrig")
+        return self._get_from_earth("irrig", as_scalar=True)
 
     @property
     def farm_size(self):
@@ -236,34 +259,31 @@ class Farmer(core.Individual, base.Individual):
         Returns
         -------
         float
-            Farm size in hectares (ha). Cell area from pycopanlpjml is in km²,
-            converted to ha (1 km² = 100 ha).
+            Farm size in hectares (ha). Cell area from pycopanlpjml is in m²,
+            converted to ha (1 ha = 10,000 m²).
         """
-        cftfrac = self.cell.from_earth.cftfrac
+        cftfrac = self._get_from_earth("cftfrac")
 
         # Sum of all crop fractions
         total_cftfrac = float(np.sum(cftfrac.values))
 
         # Get area from cell (pycopanlpjml provides this from world.area)
-        # Area is in km², convert to hectares (1 km² = 100 ha)
+        # Area is in m², convert to hectares (1 ha = 10,000 m²)
         area = self.cell.area
-        if area is None:
-            # Fallback: estimate from grid resolution (~0.5° ≈ 2500 km² at equator)
-            area_km2 = 2500.0
-        elif hasattr(area, "values"):
-            area_km2 = float(np.asarray(area.values).mean())
+        if hasattr(area, "values"):
+            area_m2 = float(np.asarray(area.values).mean())
         else:
-            area_km2 = float(area)
+            area_m2 = float(area)
 
-        area_ha = area_km2 * 100.0
+        area_ha = area_m2 / 10000.0
 
         return total_cftfrac * area_ha
 
     @property
     def cell_avg_hdate(self):
         """Return the average harvest date of the cell."""
-        hdate_data = self.cell.from_earth.hdate
-        cftfrac_data = self.cell.from_earth.cftfrac
+        hdate_data = self._get_from_earth("hdate")
+        cftfrac_data = self._get_from_earth("cftfrac")
 
         # Get band values for both variables
         hdate_bands = hdate_data.band.values

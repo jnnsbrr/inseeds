@@ -289,6 +289,129 @@ def generate_dummy_capital_stock(
     return ds
 
 
+def generate_dummy_gpv(
+    years: tuple[int, int] = (1990, 2020),
+    countries: list[str] | None = None,
+    output_path: str | Path | None = None,
+    seed: int = 42,
+) -> xr.Dataset:
+    """Generate dummy Gross Production Value dataset.
+
+    Creates realistic GPV data for crops and agriculture based on typical
+    values by region. This matches the output format of FaoGrossProductionValue.
+
+    Parameters
+    ----------
+    years : tuple[int, int]
+        Year range (start, end) inclusive.
+    countries : list[str] | None
+        List of ISO3 country codes. If None, uses common countries.
+    output_path : str | Path | None
+        If provided, saves dataset to this path.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with dimensions (time, area_code) and variables
+        "gpv_crops" and "gpv_agriculture".
+    """
+    rng = np.random.default_rng(seed)
+
+    if countries is None:
+        countries = [
+            "USA", "DEU", "FRA", "BRA", "IND", "CHN", "ARG", "AUS",
+            "CAN", "MEX", "ESP", "ITA", "GBR", "POL", "NLD", "ZAF",
+        ]
+
+    year_list = list(range(years[0], years[1] + 1))
+    n_years = len(year_list)
+    n_countries = len(countries)
+
+    # Base crop shares by country (realistic estimates)
+    # This is crop_share = GPV_crops / GPV_agriculture
+    # Based on FAO QV data patterns
+    base_crop_shares = {
+        # Europe - generally lower due to livestock
+        "NLD": 0.20, "DEU": 0.40, "FRA": 0.50, "GBR": 0.35,
+        "ITA": 0.55, "ESP": 0.60, "POL": 0.55,
+        # Americas
+        "USA": 0.60, "CAN": 0.55, "MEX": 0.65, "BRA": 0.70, "ARG": 0.75,
+        # Asia
+        "CHN": 0.65, "IND": 0.75,
+        # Africa
+        "ZAF": 0.60,
+        # Oceania
+        "AUS": 0.55,
+    }
+    default_share = 0.65
+
+    # Generate GPV values
+    gpv_crops = np.zeros((n_years, n_countries))
+    gpv_agriculture = np.zeros((n_years, n_countries))
+
+    for i, country in enumerate(countries):
+        # Base GPV for agriculture (million USD, scaled by country)
+        base_gpv = rng.uniform(10000, 500000)  # Varies by country size
+        crop_share = base_crop_shares.get(country, default_share)
+
+        for j, year in enumerate(year_list):
+            # Growth over time (~2% per year)
+            growth = 1.0 + 0.02 * (year - years[0])
+            # Year-to-year variation (±10%)
+            year_var = rng.uniform(0.9, 1.1)
+            
+            gpv_agriculture[j, i] = base_gpv * growth * year_var
+            # Add small variation to crop share
+            share_var = crop_share + rng.uniform(-0.03, 0.03)
+            share_var = np.clip(share_var, 0.1, 0.95)
+            gpv_crops[j, i] = gpv_agriculture[j, i] * share_var
+
+    # Create xarray Dataset
+    ds = xr.Dataset(
+        {
+            "gpv_crops": (["time", "area_code"], gpv_crops),
+            "gpv_agriculture": (["time", "area_code"], gpv_agriculture),
+        },
+        coords={
+            "time": year_list,
+            "area_code": countries,
+        },
+    )
+
+    # Add metadata
+    ds["gpv_crops"].attrs = {
+        "units": "million_USD",
+        "long_name": "Gross Production Value - Crops (DUMMY DATA)",
+        "fao_item_code": "1717",
+        "source": "Generated dummy data - NOT real FAOSTAT",
+    }
+    ds["gpv_agriculture"].attrs = {
+        "units": "million_USD",
+        "long_name": "Gross Production Value - Agriculture (DUMMY DATA)",
+        "fao_item_code": "2051",
+        "note": "Agriculture = crops + livestock (excludes forestry and fishing)",
+        "source": "Generated dummy data - NOT real FAOSTAT",
+    }
+    ds.time.attrs = {"units": "year", "long_name": "Year"}
+    ds.area_code.attrs = {"code_standard": "ISO3"}
+
+    # Add global warning
+    ds.attrs["warning"] = "DUMMY DATA - Generated for testing, not real FAOSTAT data"
+
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        ds.to_netcdf(output_path)
+        print(f"Saved dummy GPV data to {output_path}")
+
+    return ds
+
+
+# Keep old name as alias for backwards compatibility
+generate_dummy_crop_share = generate_dummy_gpv
+
+
 def ensure_dummy_fao_data(
     sim_path: str | Path,
     data_type: Literal["producer_prices", "capital_stock", "both"] = "both",

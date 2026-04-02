@@ -100,7 +100,7 @@ class Model(lpjml.Model):
         self.world = World(
             model=self,
             input=self.lpjml.read_input(),
-            output=self.lpjml.read_historic_output().isel(time=[-1]),
+            output=self.lpjml.read_historic_output(), # .isel(time=[-1]),
             grid=self.lpjml.grid,
             # country_code is the array of country codes
             country_code=self.lpjml.country,
@@ -125,14 +125,34 @@ class Model(lpjml.Model):
         # initialize cells
         self.init_cells(cell_class=Cell)
 
-        # initialize farmers
+        # initialize farmers (uses historic data for trend initialization)
         self.init_farmers(farmer_class=Farmer)
+
+        # After initialization, trim from_earth to single year for normal updates
+        # This is needed because we pass multi-year historic data for initialization
+        # but update_lpjml expects single-year data during the simulation loop
+        self._trim_from_earth_to_current_year()
+
+    def _trim_from_earth_to_current_year(self):
+        """Trim from_earth data to only the most recent year.
+
+        During initialization, we pass multi-year historic output to give
+        farmers initial history for trend computation. After initialization,
+        we trim back to single year so update_lpjml works correctly.
+        """
+        if not hasattr(self.world, '_from_earth_data'):
+            return
+
+        from_earth = self.world._from_earth_data
+        if hasattr(from_earth, 'time') and len(from_earth.time) > 1:
+            # Keep only the last time step
+            self.world._from_earth_data = from_earth.isel(time=[-1])
 
     def init_farmers(self, farmer_class, **kwargs):
         """Initialize farmers for cells with crops, sorted by harvest date."""
         farmers = []
         for cell in self.world.cells:
-            has_crops = cell.from_earth.cftfrac.sum("band") > 0
+            has_crops = cell.from_earth.cftfrac.sum("band").isel(time=[-1]) > 0
             if not has_crops:
                 continue
             farmer = farmer_class(cell=cell, model=self)

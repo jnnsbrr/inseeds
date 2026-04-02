@@ -81,7 +81,7 @@ coupling_map:
 
 # Practice dimensions for multi-practice farmer decisions
 practice_dimensions:
-    tillage: { n_options: 2 }  # 0=no tillage, 1=conventional
+    tillage: { n_options: 2 }  # 0=no-till (CA), 1=conventional tillage
     cover_crop:
         n_options: 3  # 0=none, 1=non-legumes, 2=legumes
         leaching_high: 5    # mgN/l threshold for non-legume selection

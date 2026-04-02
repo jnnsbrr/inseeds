@@ -106,7 +106,6 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Policy/behavioral parameters (not derivable from FAO)
         # -----------------------------------------------------------------
-
         # Survival buffer: years of depreciation the farmer can sustain
         # min_capital = n_survival_years × δ × initial_capital
         # This ties the threshold to actual capital dynamics (Jorgenson 1963)
@@ -115,14 +114,14 @@ class ConservationAgricultureFarmer(Farmer):
         # maintain working capital ratio of 0.3-0.5 (Katchova & Dinterman 2018),
         # and current ratio ~1.5-2.0 (USDA ERS). One year of depreciation buffer
         # represents a conservative minimum for operational continuity.
-        self._n_survival_years = econ.get("n_survival_years", 1)
+        self._n_survival_years = econ.get("n_survival_years")
 
         # Savings rate: fraction of profit reinvested into farm capital
         # This is a behavioral parameter representing farmer investment decisions.
         # Literature suggests farm savings rates of 10-30% depending on region
         # and farm type (Lowder et al. 2016; FAO 2017).
         # Default 15% is a moderate estimate for smallholder farmers.
-        self._savings_rate = econ.get("savings_rate", 0.15)
+        self._savings_rate = econ.get("savings_rate")
 
         # -----------------------------------------------------------------
         # Get FAO data from country (loaded once per country, not per farmer)
@@ -340,7 +339,6 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Revenue from crop sales (LPJmL yields × FAO prices)
         revenue = self._calculate_revenue()
-
         # Variable costs for current practices (per-ha costs × farm size)
         variable_costs = self._get_current_direct_costs()
 
@@ -438,65 +436,70 @@ class ConservationAgricultureFarmer(Farmer):
         1. Get harvest in gC/m² from LPJmL
         2. Multiply by crop fraction and cell area to get total production
         3. Convert gC to tonnes dry matter (using 0.45 C fraction)
-        4. Multiply by FAO prices to get revenue
+        4. Aggregate rainfed/irrigated variants to match price categories
+        5. Multiply by FAO prices to get revenue
 
         Returns
         -------
         float
             Total revenue in currency units (USD).
         """
-        # Get LPJmL outputs
-        pft_harvestc = self.cell.from_earth.pft_harvestc  # Harvest in gC/m²
-        cftfrac = self.cell.from_earth.cftfrac  # Crop fractions
-
-        # Get country-specific prices (already extracted at country level)
-        prices = self._pft_prices
+        # Get LPJmL outputs (uses _get_from_earth which handles multi-year data)
+        pft_harvestc = self._get_from_earth("pft_harvestc")  # Harvest in gC/m²
+        cftfrac = self._get_from_earth("cftfrac")  # Crop fractions
 
         # -----------------------------------------------------------------
-        # Align bands (crop types) between harvest and prices
-        # -----------------------------------------------------------------
-        # Prices may have 'band' or 'npft' dimension depending on source
-        price_dim = None
-        if "band" in prices.dims:
-            price_dim = "band"
-        elif "npft" in prices.dims:
-            price_dim = "npft"
-
-        if price_dim and "band" in pft_harvestc.dims:
-            # Get common crop types between LPJmL bands and price dimension
-            lpjml_bands = set(pft_harvestc.band.values)
-            price_bands = set(prices[price_dim].values)
-            common = list(lpjml_bands & price_bands)
-
-            if common:
-                pft_harvestc = pft_harvestc.sel(band=common)
-                cftfrac = cftfrac.sel(band=common)
-                prices = prices.sel({price_dim: common})
-                # Rename price dimension to match LPJmL if needed
-                if price_dim != "band":
-                    prices = prices.rename({price_dim: "band"})
-
-        # -----------------------------------------------------------------
-        # Calculate production
+        # Calculate production per band
         # -----------------------------------------------------------------
         # Production in gC = yield (gC/m²) × crop fraction × cell area (m²)
-        # Cell area is in km², convert to m² (1 km² = 1e6 m²)
-        # Note: Use cell.area directly, not farm_size (which already includes cftfrac)
-        production_gC = pft_harvestc * cftfrac * self.cell.area.item() * 1e6
+        # Cell area from pycopanlpjml is already in m²
+        production_gC = pft_harvestc * cftfrac * self.cell.area.item()
 
-        # -----------------------------------------------------------------
-        # Convert gC to tonnes dry matter
-        # -----------------------------------------------------------------
-        # Carbon fraction in dry matter is approximately 0.45
-        # 1 tonne = 1e6 grams
-        # tonnes_DM = gC / (0.45 × 1e6)
+        # Convert gC to tonnes dry matter (C fraction ~0.45, 1 tonne = 1e6 g)
         production_tonnes_dm = production_gC / (0.45 * 1e6)
 
         # -----------------------------------------------------------------
-        # Calculate revenue
+        # Aggregate production by crop type (strip rainfed/irrigated prefix)
         # -----------------------------------------------------------------
-        # Revenue = production × price, summed across all crops
-        return float(np.nansum((production_tonnes_dm * prices).values))
+        # LPJmL bands: 'rainfed temperate cereals', 'irrigated temperate cereals'
+        # Price categories: 'temperate cereals'
+        # Sum production across irrigation variants
+        if "band" in production_tonnes_dm.dims:
+            # Create mapping from LPJmL band to price category
+            band_to_category = {}
+            for band in production_tonnes_dm.band.values:
+                # Strip 'rainfed ' or 'irrigated ' prefix
+                category = band
+                if band.startswith("rainfed "):
+                    category = band[8:]  # len("rainfed ") = 8
+                elif band.startswith("irrigated "):
+                    category = band[10:]  # len("irrigated ") = 10
+                band_to_category[band] = category
+
+            # Group production by category and sum
+            category_production = {}
+            for band, category in band_to_category.items():
+                prod = float(production_tonnes_dm.sel(band=band).sum().values)
+                if category not in category_production:
+                    category_production[category] = 0.0
+                category_production[category] += prod
+
+        # -----------------------------------------------------------------
+        # Match with prices and calculate revenue
+        # -----------------------------------------------------------------
+        prices = self._pft_prices
+
+        # Get price dimension name
+        price_dim = "npft" if "npft" in prices.dims else "band"
+        price_categories = set(prices[price_dim].values)
+
+        total_revenue = 0.0
+        for category, production in category_production.items():
+            if category in price_categories:
+                price = float(prices.sel({price_dim: category}).values)
+                total_revenue += production * price
+
+        return total_revenue
 
     # =========================================================================
     # AFFORDABILITY CHECK

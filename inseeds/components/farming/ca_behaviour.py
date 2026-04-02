@@ -50,18 +50,22 @@ def sigmoid(x):
 # =============================================================================
 
 # Practice bundle: (tillage, cover_crop, residue_on_field), each 0 or 1
-# 0 = practice OFF (conventional tillage, no cover crop, baseline residue)
-# 1 = practice ON (no-till, cover crop planted, residue retained)
+#
+# tillage:         0 = no-till (CA practice), 1 = conventional tillage
+# cover_crop:      0 = no cover crop,         1 = cover crop planted
+# residue:         0 = baseline removal,      1 = residue retained
+#
+# Full CA = (0, 1, 1): no-till + cover crops + residue retention
 
 BUNDLE_NAMES = {
-    (0, 0, 0): "conventional",        # All conventional practices
-    (0, 0, 1): "residue_only",        # Only residue retention
-    (0, 1, 0): "cover_crop_only",     # Only cover crops
-    (0, 1, 1): "cover_crop_residue",  # Cover crops + residue
-    (1, 0, 0): "notill_only",         # Only no-till (risky without residue)
-    (1, 0, 1): "notill_residue",      # No-till + residue (common CA entry)
-    (1, 1, 0): "notill_cover_crop",   # No-till + cover (needs residue ideally)
-    (1, 1, 1): "conservation",        # Full Conservation Agriculture
+    (0, 0, 0): "notill_only",         # No-till without cover/residue (risky)
+    (0, 0, 1): "notill_residue",      # No-till + residue (common CA entry)
+    (0, 1, 0): "notill_cover_crop",   # No-till + cover (needs residue ideally)
+    (0, 1, 1): "conservation",        # Full Conservation Agriculture
+    (1, 0, 0): "conventional",        # All conventional practices
+    (1, 0, 1): "residue_only",        # Conventional tillage + residue retention
+    (1, 1, 0): "cover_crop_only",     # Conventional tillage + cover crops
+    (1, 1, 1): "cover_crop_residue",  # Conventional tillage + cover + residue
 }
 
 # Reverse lookup: name → tuple
@@ -147,7 +151,13 @@ class DecisionModel(ABC):
         # Initialize current practice bundle from agent state
         # -----------------------------------------------------------------
         # Bundle is a tuple: (tillage, cover_crop, residue_on_field)
-        # Each element is 0 (off) or 1 (on)
+        # Each element is 0 (practice OFF) or 1 (practice ON)
+        #
+        # Convention (matches LPJmL):
+        #   tillage=0 means no tillage (no-till, CA practice)
+        #   tillage=1 means tillage is ON (conventional)
+        #   cover_crop=0 means no cover crop, >0 means cover crop planted
+        #   residue=0 means baseline removal, >baseline means retention
 
         self._practice_bundle = (
             int(agent.tillage),
@@ -165,20 +175,35 @@ class DecisionModel(ABC):
         self._decline_years = 0
 
         # -----------------------------------------------------------------
-        # Snapshot current state for trend computation
+        # Online regression state for trend computation
         # -----------------------------------------------------------------
-        # When farmer switches practices, we record soil C, moisture, yield
-        # to compute trends (annual rate of change) under the new bundle
+        # Instead of storing full history, we track running sums for online
+        # linear regression. This allows computing trends from all data points
+        # without storing them.
+        #
+        # For y = a + b*t, slope b = (n*sum_ty - sum_t*sum_y) / (n*sum_tt - sum_t²)
+        # We track separate sums for soil, moisture, and yield.
 
-        t_start = agent.model.lpjml.sim_year
+        t_start, history = self._get_initial_state(agent)
 
         self.current_state = {
-            "t_start": t_start,              # Year of last switch
-            "soilc_start": agent.soilc,      # Soil carbon at switch (gC/m²)
-            "moisture_start": agent.root_moisture,  # Root zone moisture
-            "yield_start": agent.cropyield,  # Crop yield at switch
-            "baseline_score": 0.0,           # Weighted score at switch (for fallback)
+            "t_start": t_start,           # Year of last practice switch
+            "baseline_score": 0.0,        # Weighted score at switch (for fallback)
+            # Online regression accumulators (initialized from history if available)
+            "n": 0,                        # Number of observations
+            "sum_t": 0.0,                  # Sum of time indices
+            "sum_tt": 0.0,                 # Sum of t²
+            "sum_soil": 0.0,               # Sum of soil values
+            "sum_t_soil": 0.0,             # Sum of t * soil
+            "sum_moisture": 0.0,           # Sum of moisture values
+            "sum_t_moisture": 0.0,         # Sum of t * moisture
+            "sum_yield": 0.0,              # Sum of yield values
+            "sum_t_yield": 0.0,            # Sum of t * yield
+            "last_obs_year": -1,          # Last year observation was added (prevent duplicates)
         }
+
+        # Initialize accumulators with historic data if available
+        self._initialize_regression_state(agent, history)
 
         # -----------------------------------------------------------------
         # Initialize per-bundle memory
@@ -197,6 +222,212 @@ class DecisionModel(ABC):
             }
             for t in (0, 1) for c in (0, 1) for r in (0, 1)
         }
+
+        # -----------------------------------------------------------------
+        # Initialize memory for current bundle with historic data
+        # -----------------------------------------------------------------
+        # If we have historic data, compute the trend for the current bundle
+        # so farmers start with meaningful memory (not all zeros)
+        self._initialize_current_bundle_memory()
+
+    # -------------------------------------------------------------------------
+    # Initialization helpers
+    # -------------------------------------------------------------------------
+
+    def _get_initial_state(self, agent):
+        """Get initial t_start and historic time series for trend computation.
+
+        If historic output data is available (from_earth has multiple time steps),
+        use config.outputyear as t_start and return the full time series for
+        soil, moisture, and yield. This allows computing proper regression-based
+        trends from all data points.
+
+        Otherwise, use current sim_year and return current values as single-point
+        history.
+
+        Parameters
+        ----------
+        agent : Farmer
+            The farmer agent being initialized.
+
+        Returns
+        -------
+        tuple[int, list[dict]]
+            (t_start, [{"soilc": float, "moisture": float, "yield": float}, ...])
+            List contains one dict per year of history.
+        """
+        from_earth = agent.cell.from_earth
+        has_history = hasattr(from_earth, 'time') and len(from_earth.time) > 1
+
+        if has_history:
+            try:
+                t_start = int(agent.model.config.outputyear)
+            except AttributeError:
+                t_start = agent.model.lpjml.sim_year
+                has_history = False
+
+        if has_history:
+            # Extract full time series for regression
+            n_years = len(from_earth.time)
+            history = []
+            for i in range(n_years):
+                history.append({
+                    "soilc": agent._get_from_earth("soilc_agr_layer", as_scalar=True, band=0, time_idx=i),
+                    "moisture": agent._get_from_earth("rootmoist_agr", as_scalar=True, time_idx=i),
+                    "yield": agent._get_from_earth("harvestc", as_scalar=True, time_idx=i),
+                })
+        else:
+            # No history: single observation at current year
+            t_start = agent.model.lpjml.sim_year
+            history = [{
+                "soilc": agent.soilc,
+                "moisture": agent.root_moisture,
+                "yield": agent.cropyield,
+            }]
+
+        return t_start, history
+
+    def _initialize_regression_state(self, agent, history):
+        """Initialize online regression accumulators from historic data.
+
+        Parameters
+        ----------
+        agent : Farmer
+            The farmer agent.
+        history : list[dict]
+            List of {"soilc", "moisture", "yield"} dicts, one per year.
+        """
+        state = self.current_state
+        for i, obs in enumerate(history):
+            t = i  # Time index (0, 1, 2, ...)
+            state["n"] += 1
+            state["sum_t"] += t
+            state["sum_tt"] += t * t
+            state["sum_soil"] += obs["soilc"]
+            state["sum_t_soil"] += t * obs["soilc"]
+            state["sum_moisture"] += obs["moisture"]
+            state["sum_t_moisture"] += t * obs["moisture"]
+            state["sum_yield"] += obs["yield"]
+            state["sum_t_yield"] += t * obs["yield"]
+
+        # Mark current year as already observed (history includes up to sim_year)
+        state["last_obs_year"] = agent.model.lpjml.sim_year
+
+    def _add_observation(self, soilc, moisture, cropyield):
+        """Add a new observation to the online regression accumulators.
+
+        Called each year to update the running sums for trend computation.
+        Skips if observation for current year was already added (e.g., from
+        historic initialization).
+
+        Parameters
+        ----------
+        soilc : float
+            Current soil carbon value.
+        moisture : float
+            Current root moisture value.
+        cropyield : float
+            Current crop yield value.
+        """
+        current_year = self.agent.model.lpjml.sim_year
+        state = self.current_state
+
+        # Skip if we already have an observation for this year
+        if state["last_obs_year"] >= current_year:
+            return
+
+        t = state["n"]  # Next time index
+        state["n"] += 1
+        state["sum_t"] += t
+        state["sum_tt"] += t * t
+        state["sum_soil"] += soilc
+        state["sum_t_soil"] += t * soilc
+        state["sum_moisture"] += moisture
+        state["sum_t_moisture"] += t * moisture
+        state["sum_yield"] += cropyield
+        state["sum_t_yield"] += t * cropyield
+        state["last_obs_year"] = current_year
+
+    def _compute_slope(self, sum_y, sum_ty):
+        """Compute regression slope from running sums.
+
+        Parameters
+        ----------
+        sum_y : float
+            Sum of y values.
+        sum_ty : float
+            Sum of t * y values.
+
+        Returns
+        -------
+        float
+            Slope (trend) of the regression line, or 0.0 if insufficient data.
+        """
+        state = self.current_state
+        n = state["n"]
+        if n < 2:
+            return 0.0
+
+        sum_t = state["sum_t"]
+        sum_tt = state["sum_tt"]
+        denominator = n * sum_tt - sum_t * sum_t
+
+        if abs(denominator) < 1e-10:
+            return 0.0
+
+        return (n * sum_ty - sum_t * sum_y) / denominator
+
+    def _initialize_current_bundle_memory(self):
+        """Initialize bundle_memory for current bundle from regression state.
+
+        Uses the computed trends from the online regression to populate
+        the bundle_memory entry for the current practice bundle.
+        Also sets baseline_score for fallback comparison.
+        """
+        n = self.current_state["n"]
+        if n < 2:
+            return
+
+        current_year = self.agent.model.lpjml.sim_year
+        trend = self.current_trend
+
+        # Set baseline_score from historic trend (for fallback comparison)
+        self.current_state["baseline_score"] = self._weighted_score(trend)
+
+        self.bundle_memory[self._practice_bundle] = {
+            "trend_soil": trend["soil"],
+            "trend_moisture": trend["moisture"],
+            "trend_yield": trend["yield"],
+            "duration": n,
+            "last_updated": current_year,
+            "failure_count": 0,
+        }
+
+    def _update_current_bundle_memory(self):
+        """Update bundle_memory for current bundle with latest trends.
+
+        Called every year to keep bundle_memory up-to-date. This ensures
+        neighbours see current performance when evaluating which bundle
+        to imitate, not stale data from the last switch.
+        """
+        n = self.current_state["n"]
+        if n < 2:
+            return
+
+        trend = self.current_trend
+        current_year = self.agent.model.lpjml.sim_year
+
+        # Preserve failure_count from existing memory
+        old_fc = self.bundle_memory[self._practice_bundle].get("failure_count", 0)
+
+        self.bundle_memory[self._practice_bundle].update({
+            "trend_soil": trend["soil"],
+            "trend_moisture": trend["moisture"],
+            "trend_yield": trend["yield"],
+            "duration": n,
+            "last_updated": current_year,
+            "failure_count": old_fc,
+        })
 
     # -------------------------------------------------------------------------
     # Properties for external access
@@ -230,23 +461,26 @@ class DecisionModel(ABC):
     def current_trend(self):
         """Annual change in soil C, moisture, and yield since last switch.
 
+        Computes trends using linear regression over all observations since
+        the last practice switch, not just start and end points. This provides
+        more robust trend estimates that are less sensitive to noise.
+
         Returns
         -------
         dict
-            Keys: 'soil', 'moisture', 'yield'. Values: annual rate of change.
+            Keys: 'soil', 'moisture', 'yield'. Values: annual rate of change
+            (regression slope).
         """
-        mem = self.current_state
-        duration = self.agent.model.lpjml.sim_year - mem["t_start"]
+        state = self.current_state
 
-        # Need at least 1 year to compute trend
-        if duration < 1:
+        # Need at least 2 observations for regression
+        if state["n"] < 2:
             return {"soil": 0.0, "moisture": 0.0, "yield": 0.0}
 
-        # Annual rate of change = (current - start) / years
         return {
-            "soil": (self.agent.soilc - mem["soilc_start"]) / duration,
-            "moisture": (self.agent.root_moisture - mem["moisture_start"]) / duration,
-            "yield": (self.agent.cropyield - mem["yield_start"]) / duration,
+            "soil": self._compute_slope(state["sum_soil"], state["sum_t_soil"]),
+            "moisture": self._compute_slope(state["sum_moisture"], state["sum_t_moisture"]),
+            "yield": self._compute_slope(state["sum_yield"], state["sum_t_yield"]),
         }
 
     # -------------------------------------------------------------------------
@@ -265,12 +499,12 @@ class DecisionModel(ABC):
             The new (tillage, cover_crop, residue_on_field) bundle.
         """
         current_year = self.agent.model.lpjml.sim_year
-        duration = current_year - self.current_state["t_start"]
+        n_obs = self.current_state["n"]
 
         # -----------------------------------------------------------------
-        # Store outcome of outgoing bundle (if used for at least 1 year)
+        # Store outcome of outgoing bundle (if used for at least 2 years)
         # -----------------------------------------------------------------
-        if duration > 0:
+        if n_obs >= 2:
             trend = self.current_trend
 
             # Preserve failure count from previous memory
@@ -281,28 +515,37 @@ class DecisionModel(ABC):
                 "trend_soil": trend["soil"],
                 "trend_moisture": trend["moisture"],
                 "trend_yield": trend["yield"],
-                "duration": duration,
+                "duration": n_obs,
                 "last_updated": current_year,
                 "failure_count": old_fc,
             }
 
         # -----------------------------------------------------------------
-        # Prepare for new bundle
+        # Prepare for new bundle: reset regression state
         # -----------------------------------------------------------------
 
         # Remember previous bundle (for potential fallback)
         self._previous_bundle = self._practice_bundle
 
-        # Reset state snapshot for new bundle
-        # Note: baseline_score is set to 0 because we're starting fresh with
-        # the new bundle. The trend will be computed relative to these new
-        # starting values (soilc_start, moisture_start, yield_start).
+        # Capture baseline score before resetting (for fallback comparison)
+        # This is the performance level we expect to maintain or exceed
+        baseline = self._weighted_score(self.current_trend) if n_obs >= 2 else 0.0
+
+        # Reset regression accumulators for new bundle
+        # Start with current values as first observation
         self.current_state = {
             "t_start": current_year,
-            "soilc_start": self.agent.soilc,
-            "moisture_start": self.agent.root_moisture,
-            "yield_start": self.agent.cropyield,
-            "baseline_score": 0.0,
+            "baseline_score": baseline,  # Score to beat with new bundle
+            "n": 1,
+            "sum_t": 0.0,
+            "sum_tt": 0.0,
+            "sum_soil": self.agent.soilc,
+            "sum_t_soil": 0.0,
+            "sum_moisture": self.agent.root_moisture,
+            "sum_t_moisture": 0.0,
+            "sum_yield": self.agent.cropyield,
+            "sum_t_yield": 0.0,
+            "last_obs_year": current_year,  # Mark this year as observed
         }
 
         # Switch to new bundle
@@ -334,32 +577,6 @@ class DecisionModel(ABC):
                         "last_updated": 0,
                         "failure_count": 0,
                     }
-
-    def _get_valid_memory(self, bundle):
-        """Return memory for bundle if recent enough, else None.
-
-        Parameters
-        ----------
-        bundle : tuple
-            Practice bundle to look up.
-
-        Returns
-        -------
-        dict or None
-            Memory dict if valid, None if no memory or too old.
-        """
-        mem = self.bundle_memory.get(bundle, {})
-
-        # No memory recorded
-        if mem.get("duration", 0) == 0:
-            return None
-
-        # Memory too old
-        memory_decay = self._get_aft_param("memory_decay_years")
-        if self.agent.model.lpjml.sim_year - mem.get("last_updated", 0) > memory_decay:
-            return None
-
-        return mem
 
     # -------------------------------------------------------------------------
     # Abstract methods (implemented by subclasses)
@@ -442,43 +659,52 @@ class TPB(DecisionModel):
         """Compute proposed bundle and TPB scores for this timestep.
 
         Decision flow:
-        1. Decay old memories (bounded rationality)
-        2. Check if minimum observation period has passed
-        3. Check fallback condition (sustained decline → revert)
-        4. Find best-performing neighbour's bundle OR explore randomly
-        5. Adjust target bundle for affordability
-        6. Compute TPB scores for the proposed bundle
+        1. Add current observation to regression accumulators
+        2. Update bundle_memory with current trends (for neighbour visibility)
+        3. Decay old memories (bounded rationality)
+        4. Check if minimum observation period has passed
+        5. Check fallback condition (sustained decline → revert)
+        6. Find best-performing neighbour's bundle OR explore randomly
+        7. Adjust target bundle for affordability
+        8. Compute TPB scores for the proposed bundle
         """
         # -----------------------------------------------------------------
-        # Step 1: Decay old memories
+        # Step 1: Add current year's observation to regression
+        # -----------------------------------------------------------------
+        self._add_observation(
+            self.agent.soilc,
+            self.agent.root_moisture,
+            self.agent.cropyield
+        )
+
+        # -----------------------------------------------------------------
+        # Step 2: Update bundle_memory with current trends
+        # -----------------------------------------------------------------
+        # Keep bundle_memory up-to-date so neighbours see current performance
+        self._update_current_bundle_memory()
+
+        # -----------------------------------------------------------------
+        # Step 3: Decay old memories
         # -----------------------------------------------------------------
         self._decay_old_memories()
 
-        duration = self.agent.model.lpjml.sim_year - self.current_state["t_start"]
-
         # -----------------------------------------------------------------
-        # Step 2: Need at least 1 year of data
-        # -----------------------------------------------------------------
-        if duration < 1:
-            self._tpb = 0.0
-            self._proposed_bundle = None
-            return
-
-        # -----------------------------------------------------------------
-        # Step 3: Require minimum observation years before switching
+        # Step 4: Require minimum observation years before switching
         # -----------------------------------------------------------------
         # Avoids noisy decisions based on single-year fluctuations
         # Typical value: 3 years (allows trends to stabilize)
+        # With historic data initialization, farmers start with enough history
 
+        n_obs = self.current_state["n"]
         min_obs = self._get_aft_param("min_observation_years")
 
-        if duration < min_obs:
+        if n_obs < min_obs:
             self._tpb = 0.0
             self._proposed_bundle = None
             return
 
         # -----------------------------------------------------------------
-        # Step 4: Check fallback condition
+        # Step 5: Check fallback condition
         # -----------------------------------------------------------------
         # If performance has declined for FALLBACK_YEARS consecutive years,
         # propose reverting to the previous bundle (adaptive management)
@@ -487,7 +713,7 @@ class TPB(DecisionModel):
             return  # Fallback sets _proposed_bundle and _tpb internally
 
         # -----------------------------------------------------------------
-        # Step 5: Find target bundle (neighbour imitation or exploration)
+        # Step 6: Find target bundle (neighbour imitation or exploration)
         # -----------------------------------------------------------------
 
         # First, try to imitate best-performing neighbour
@@ -504,7 +730,7 @@ class TPB(DecisionModel):
             return
 
         # -----------------------------------------------------------------
-        # Step 6: Adjust for affordability
+        # Step 7: Adjust for affordability
         # -----------------------------------------------------------------
         # If farmer can't afford full target bundle, find affordable subset
 
@@ -517,7 +743,7 @@ class TPB(DecisionModel):
             return
 
         # -----------------------------------------------------------------
-        # Step 7: Compute TPB scores for proposed bundle
+        # Step 8: Compute TPB scores for proposed bundle
         # -----------------------------------------------------------------
         self._proposed_bundle = affordable_bundle
         self._compute_tpb_for_bundle(affordable_bundle)
@@ -544,15 +770,17 @@ class TPB(DecisionModel):
 
         # Allow grace period for new practices to show effects
         # Grace period = min_observation_years (reuse existing param)
-        duration = self.agent.model.lpjml.sim_year - self.current_state["t_start"]
+        n_obs = self.current_state["n"]
         grace_period = self._get_aft_param("min_observation_years")
-        if duration < grace_period:
+        if n_obs < grace_period:
             return False
 
         # -----------------------------------------------------------------
         # Compare current performance to baseline at switch time
         # -----------------------------------------------------------------
-        baseline = self.current_state.get("baseline_score", 0)
+        # baseline_score captures the trend score at the time of switch.
+        # If current score is worse than baseline, we're declining.
+        baseline = self.current_state.get("baseline_score", 0.0)
         current_score = self._weighted_score(self.current_trend)
 
         # Track consecutive years of decline
@@ -611,14 +839,15 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # No-till without residue is risky
         # -----------------------------------------------------------------
+        # t=0 is no-till, t=1 is conventional tillage
         # No-till alone (no cover, no residue): soil exposed
-        if t == 1 and c == 0 and r == 0:
+        if t == 0 and c == 0 and r == 0:
             # Only unreasonable if residue is cheap (could easily retain it)
             if self.agent.residue_opportunity_cost_per_ha < residue_threshold:
                 return False
 
         # No-till + cover but no residue: still risky in off-season
-        if t == 1 and c == 1 and r == 0:
+        if t == 0 and c == 1 and r == 0:
             if self.agent.residue_opportunity_cost_per_ha < residue_threshold:
                 return False
 
@@ -661,9 +890,9 @@ class TPB(DecisionModel):
 
         # Experience affects willingness to explore (smooth ramp based on confidence_years)
         # Early: 0.5x exploration (cautious), Experienced: 1.5x exploration (confident)
-        duration = self.agent.model.lpjml.sim_year - self.current_state["t_start"]
+        n_obs = self.current_state["n"]
         confidence_years = self._get_aft_param("confidence_years")
-        experience_factor = min(1.0, duration / confidence_years)
+        experience_factor = min(1.0, n_obs / confidence_years)
         exploration_modifier = 0.5 + experience_factor * 1.0  # Ramps from 0.5 to 1.5
         base_prob *= exploration_modifier
 
@@ -742,7 +971,8 @@ class TPB(DecisionModel):
             (tillage, cover_crop, residue_on_field), each 0 or 1.
         """
         # -----------------------------------------------------------------
-        # Tillage: 0 = conventional, 1 = no-till
+        # Tillage: 0 = no-till (CA), 1 = conventional tillage
+        # Directly maps to LPJmL's with_tillage
         # -----------------------------------------------------------------
         self.agent.tillage = bundle[0]
 
@@ -956,9 +1186,9 @@ class TPB(DecisionModel):
             0.5: Same dominant crop but different share
             0.0: Different dominant crops or neighbour doesn't grow it
         """
-        # Get crop fractions
-        cft_self = self.agent.cell.from_earth.cftfrac.values.flatten()
-        cft_neighbour = neighbour.cell.from_earth.cftfrac.values.flatten()
+        # Get crop fractions via farmer's _get_from_earth (handles multi-year data)
+        cft_self = self.agent._get_from_earth("cftfrac").values.flatten()
+        cft_neighbour = neighbour._get_from_earth("cftfrac").values.flatten()
 
         # Find own dominant crop (single argmax - very fast)
         dominant_idx = np.argmax(cft_self)
@@ -1013,12 +1243,17 @@ class TPB(DecisionModel):
     # =========================================================================
 
     def _attitude_social_learning(self, new_bundle):
-        """Compute attitude from neighbours using similar bundles and crops.
+        """Compute attitude from neighbours using the proposed bundle.
 
         Social learning (Bandura 1977): farmers learn from observing
-        neighbours who use similar practices. Weight by:
-        - Similarity: bundle + crop similarity (more similar = more informative)
-        - Confidence: longer use → more reliable signal
+        neighbours who use similar practices.
+
+        Combines:
+        - Absolute performance comparison (ratio - 1): "Is neighbour doing better?"
+        - Slope adjustment: "Is neighbour's trajectory sustainable?"
+
+        The slope factor (via sigmoid) discounts neighbours who are declining,
+        even if their absolute values are currently high (trap avoidance).
 
         Parameters
         ----------
@@ -1033,11 +1268,19 @@ class TPB(DecisionModel):
         if not self.agent.neighbourhood:
             return 0.5  # Neutral without neighbours
 
-        weighted_sum = 0.0
+        # Accumulate weighted comparisons
+        weighted_yield = 0.0
+        weighted_soil = 0.0
+        weighted_moisture = 0.0
         total_weight = 0.0
 
-        # Get confidence_years from config (default 10)
+        # Get confidence_years from config
         confidence_years = self._get_aft_param("confidence_years")
+
+        # My current absolute values (avoid division by zero)
+        my_yield = max(self.agent.cropyield, 1e-6)
+        my_soil = max(self.agent.soilc, 1e-6)
+        my_moisture = max(self.agent.root_moisture, 1e-6)
 
         for neighbour in self.agent.neighbourhood:
             # How similar is neighbour? (bundle + crop similarity)
@@ -1046,26 +1289,56 @@ class TPB(DecisionModel):
             if similarity == 0:
                 continue  # Skip completely different neighbours
 
-            # Confidence: longer use → more reliable information
-            n_duration = (
-                neighbour.behaviour.agent.model.lpjml.sim_year
-                - neighbour.behaviour.current_state["t_start"]
-            )
-            confidence = min(1.0, n_duration / confidence_years)
+            # Confidence: more observations → more reliable information
+            n_obs = neighbour.behaviour.current_state["n"]
+            confidence = min(1.0, n_obs / confidence_years)
 
-            # neighbour's performance score
-            n_score = self._weighted_score(neighbour.behaviour.current_trend)
+            # -----------------------------------------------------------------
+            # Absolute comparisons (ratio - 1, like old tillage_farmer.py)
+            # -----------------------------------------------------------------
+            # Positive if neighbour is better, negative if worse
+            yield_cmp = neighbour.cropyield / my_yield - 1
+            soil_cmp = neighbour.soilc / my_soil - 1
+            moisture_cmp = neighbour.root_moisture / my_moisture - 1
+
+            # -----------------------------------------------------------------
+            # Slope adjustment: discount declining neighbours
+            # -----------------------------------------------------------------
+            # sigmoid maps slope to (0, 1): <0.5 if declining, >0.5 if improving
+            neighbour_slope = self._weighted_score(neighbour.behaviour.current_trend)
+            slope_factor = sigmoid(neighbour_slope)
+
+            # Adjust comparisons by slope factor
+            yield_adj = yield_cmp * slope_factor
+            soil_adj = soil_cmp * slope_factor
+            moisture_adj = moisture_cmp * slope_factor
 
             # Weight = similarity × confidence
             weight = similarity * confidence
-            weighted_sum += weight * n_score
+
+            # Accumulate
+            weighted_yield += weight * yield_adj
+            weighted_soil += weight * soil_adj
+            weighted_moisture += weight * moisture_adj
             total_weight += weight
 
         if total_weight == 0:
             return 0.5  # Neutral if no relevant neighbours
 
-        # Normalize the weighted average
-        return self._normalize_score(weighted_sum / total_weight)
+        # Normalize by total weight
+        avg_yield = weighted_yield / total_weight
+        avg_soil = weighted_soil / total_weight
+        avg_moisture = weighted_moisture / total_weight
+
+        # Weighted sum of comparisons (like old model)
+        raw_score = (
+            self.agent.weight_yield * avg_yield
+            + self.agent.weight_soil * avg_soil
+            + self.agent.weight_moisture * avg_moisture
+        )
+
+        # Final sigmoid (maps to (0, 1), consistent with old model)
+        return sigmoid(raw_score)
 
     # =========================================================================
     # TPB COMPONENT: SOCIAL NORM
@@ -1367,39 +1640,32 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Attitude: own experience + social learning
         # -----------------------------------------------------------------
+        #
+        # att_own: "Am I doing poorly with my current practices?"
+        # Based on current_trend (regression over all observations).
+        # Declining performance → high attitude → more willing to switch
+        # Improving performance → low attitude → less willing to switch
+        #
+        # Structure matches old tillage_farmer.py:
+        # - Weighted sum of individual trend components
+        # - Negate (so decline → positive)
+        # - Final sigmoid
 
-        own_memory = self._get_valid_memory(new_bundle)
+        trend = self.current_trend
+        raw_own = (
+            self.agent.weight_yield * (-trend["yield"])
+            + self.agent.weight_soil * (-trend["soil"])
+            + self.agent.weight_moisture * (-trend["moisture"])
+        )
+        att_own = sigmoid(raw_own)
 
-        # Get confidence_years from config
-        confidence_years = self._get_aft_param("confidence_years")
-
-        if own_memory:
-            # Own experience: confidence grows with duration
-            duration = own_memory.get("duration", 1)
-            confidence = min(1.0, duration / confidence_years)
-
-            # Reconstruct trend from memory
-            trend_from_memory = {
-                k: own_memory["trend_" + k]
-                for k in ["soil", "moisture", "yield"]
-            }
-            att_own_raw = self._weighted_score(trend_from_memory)
-
-            # Blend own experience with neutral (0.5) based on confidence
-            att_own = confidence * self._normalize_score(att_own_raw) + (1 - confidence) * 0.5
-        else:
-            # No prior experience: neutral attitude
-            att_own = 0.5
-
-        # Social learning component
+        # Social learning component: how are neighbours with proposed bundle
+        # doing compared to me?
         att_social = self._attitude_social_learning(new_bundle)
 
         # -----------------------------------------------------------------
         # Weighted combination (same approach as tillage_farmer.py)
         # -----------------------------------------------------------------
-        # Weights serve dual purpose: relative importance + variance compensation.
-        # If att_own has lower variance than att_social, increase weight_own_land
-        # to amplify its contribution. Calibrate weights empirically.
         self._attitude = (
             self.agent.weight_own_land * att_own
             + self.agent.weight_social_learning * att_social
@@ -1409,7 +1675,6 @@ class TPB(DecisionModel):
         # Social Norm: what neighbours are doing
         # -----------------------------------------------------------------
         self._social_norm = self._compute_social_norm(new_bundle)
-
         # -----------------------------------------------------------------
         # PBC: can I afford this?
         # -----------------------------------------------------------------

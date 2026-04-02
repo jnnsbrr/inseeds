@@ -17,7 +17,8 @@ This document describes the theoretical basis of the **Conservation Agriculture 
 | **Economics** | None | FAO-based capital dynamics (depreciation, investment, profit) |
 | **Memory** | Previous year only | Per-bundle memory with temporal decay |
 | **Fallback** | None | Revert after sustained decline (adaptive management) |
-| **Agent heterogeneity** | Single type | Pioneer vs traditionalist (AFT) |
+| **Agent heterogeneity** | Pioneer vs traditionalist (AFT)e | Pioneer vs traditionalist (AFT) |
+| **Spatial structure** | Cells only | Countries → Cells → Farmers (hierarchical) |
 
 ---
 
@@ -57,8 +58,9 @@ Proportion of neighbours using no-till. A sigmoid centred at 0.5 maps this to (0
 ### 3.4 PBC
 
 PBC is a heuristic variable:
+- Starts at 1.0 (full perceived control)
 - Drops by a fixed amount (−0.25) after each switch
-- Slowly recovers when TPB is near the threshold (0.4–0.5)
+- Minimum value of 0.5
 
 There is no explicit economic or cost model. PBC loosely captures "adjustment difficulty" but is not grounded in economic constraints.
 
@@ -83,11 +85,11 @@ Conservation Agriculture requires the joint adoption of minimum soil disturbance
 | 0 | Conv | No | Baseline | `conventional` |
 | 1 | Conv | No | Retained | `residue_only` |
 | 2 | Conv | Yes | Baseline | `cover_crop_only` |
-| 3 | Conv | Yes | Retained | `cover_residue` |
+| 3 | Conv | Yes | Retained | `cover_crop_residue` |
 | 4 | No-till | No | Baseline | `notill_only` |
 | 5 | No-till | No | Retained | `notill_residue` |
-| 6 | No-till | Yes | Baseline | `notill_cover` |
-| 7 | No-till | Yes | Retained | `full_ca` |
+| 6 | No-till | Yes | Baseline | `notill_cover_crop` |
+| 7 | No-till | Yes | Retained | `conservation` |
 
 This captures that practices interact: no-till without residue cover exposes soil (see §4.11), and full CA requires all three simultaneously. Farmers do not merely toggle a single switch; they navigate a space of complementary and competing practices.
 
@@ -197,20 +199,42 @@ The Regenerative Tillage model has no economic dimension. The CA model introduce
 
 **Initial capital**:
 
-> K₀ = NCS / agricultural_land_area
+> K₀ = (NCS × crop_share) / agricultural_land_area
 
-where NCS = Net Capital Stocks from FAO (country-specific). This provides a data-driven starting endowment.
+where:
+- NCS = Net Capital Stocks from FAO (country-specific, in million USD)
+- crop_share = fraction of agricultural capital attributable to field crops
+
+**Capital scaling**: FAO's Capital Stock (CS) domain reports total capital for "Agriculture, Forestry and Fishing" combined, including livestock, greenhouses, and fishing infrastructure. Since LPJmL simulates only field crops, we scale capital by a country-specific **crop_capital_share** derived from FAO Gross Production Value (QV domain):
+
+> crop_share ≈ GPV_crops / GPV_agriculture
+
+This scaling is essential for realistic depreciation/revenue ratios. For example:
+- Netherlands: crop_share = 0.18 (dairy and horticulture dominate)
+- India: crop_share = 0.70 (crop-dominated agriculture)
+- Default: crop_share = 0.85 (for countries without specific data)
+
+See `inseeds/components/data/fao/crop_capital_share.py` for country-specific values and methodology.
 
 **Annual capital update**:
 
-> K_{t+1} = K_t − δ K_t + i × max(π_t, 0)
+> K_{t+1} = K_t − δ K_t + s × max(π_t, 0)
 
 where:
 - δ = CFC / NCS: **depreciation rate** from FAO Consumption of Fixed Capital. This captures the annual wear of machinery, equipment, and infrastructure (Jorgenson 1963).
 - π_t = revenue − variable_costs − depreciation: **net profit**. Revenue is computed from LPJmL harvest (gC) converted to monetary value via FAO producer prices.
-- i = GFCF / NCS: **investment rate** from FAO Gross Fixed Capital Formation. This represents observed reinvestment behaviour at the national level.
+- s = **savings rate** (behavioral parameter, default 15%): fraction of net profit reinvested into farm capital. Literature suggests 10-30% depending on region and farm type (Lowder et al. 2016; FAO 2017).
 
 Only positive profit contributes to reinvestment; losses lead to capital decline through depreciation without offsetting investment.
+
+**Revenue calculation**:
+
+Revenue is calculated by:
+1. Getting per-PFT harvest from LPJmL (gC/m²)
+2. Multiplying by crop fraction and cell area to get total production (gC)
+3. Converting gC to tonnes dry matter (using 0.45 C fraction)
+4. Aggregating rainfed/irrigated variants to match FAO price categories (e.g., "rainfed temperate cereals" + "irrigated temperate cereals" → "temperate cereals")
+5. Multiplying by FAO producer prices (USD/tonne dry matter)
 
 **Affordability constraints**:
 - **Transition costs** (one-time costs for equipment, training) are deducted from capital at switch time.
@@ -232,11 +256,7 @@ PBC in the CA model is derived from the farmer's economic situation rather than 
 
 where cost_impact = transition cost + annual direct cost increase, and disposable_capital = capital − min_capital. PBC approaches 0 as cost approaches disposable capital and approaches 1 when costs are negligible.
 
-**Risk aversion** (Chavas & Holt 1996): composed of two terms:
-1. **Base risk aversion**: an AFT parameter (traditionalists > pioneers). Risk-averse farmers weight potential losses more heavily than gains.
-2. **Capital volatility**: coefficient of variation of capital over recent years. Volatile capital history increases perceived risk.
-
-> risk_factor = min(1, base_risk + (1 − base_risk) × CV_capital × 0.5)
+**Risk aversion** (Chavas & Holt 1996): Risk-averse farmers weight potential losses more heavily than gains. Currently uses AFT base risk aversion (traditionalists > pioneers).
 
 High risk → low PBC → lower adoption intention, even if attitude and norm are positive. This captures the empirical observation that risk is a key barrier to CA adoption in developing countries (Pannell et al. 2014).
 
@@ -279,25 +299,137 @@ The switch threshold for adopting a new bundle differs from the revert threshold
 
 ---
 
-## 5. Decision Flow Summary
+## 5. Spatial Structure: Countries, Cells, Farmers
 
-Each year, the CA farmer executes the following decision sequence:
+The CA realisation introduces a hierarchical spatial structure:
 
-1. **Decay old memories** — bounded rationality (§4.3)
-2. **Check minimum observation period** — require sufficient data before switching (§4.2)
-3. **Check fallback condition** — revert if sustained decline (§4.8)
-4. **Find target bundle** — imitate best-performing neighbour OR explore randomly (§4.4)
-5. **Adjust for affordability** — partial bundle if full target is too expensive (§4.9)
-6. **Compute TPB** — attitude (own memory + social learning, §4.6), social norm (similarity + conformity, §4.7), PBC (cost-capital × risk, §4.10)
-7. **Switch decision** — compare TPB to threshold (with hysteresis; §4.14)
+### 5.1 Country level (`CACountry`)
+
+Countries aggregate cells and provide country-level economic parameters from FAO:
+- **Depreciation rate** (δ = CFC / NCS)
+- **Investment rate** (i = GFCF / NCS)
+- **Initial capital per hectare** (NCS / cropland_area)
+- **Producer prices** by crop type (USD/tonne dry matter)
+
+FAO data is loaded **once per simulation** for all countries, minimizing API calls. Data is cached at the class level to avoid redundant downloads during parallelization.
+
+### 5.2 Cropland area calculation
+
+Country-level cropland area is calculated as:
+
+> cropland_ha = Σ (cftfrac × cell_area)
+
+where:
+- `cftfrac` = crop functional type fractions from LPJmL (sum over all crop bands)
+- `cell_area` = cell area in m² (from pycopanlpjml), converted to hectares
+
+This provides the denominator for computing capital per hectare from FAO Net Capital Stocks.
+
+### 5.3 Cell level
+
+Cells belong to countries and contain spatial data from LPJmL:
+- Grid coordinates (lat, lon)
+- Crop fractions (`cftfrac`)
+- Harvest data (`pft_harvestc`)
+- Environmental conditions (soil moisture, leaching, fertilizer)
+
+### 5.4 Farmer level
+
+Farmers are initialized on cells with crops (`cftfrac.sum() > 0`). Each farmer:
+- Inherits country-level economic parameters
+- Maintains individual capital, practice bundle, and TPB state
+- Interacts with neighbouring farmers for social learning
 
 ---
 
-## 6. File Structure
+## 6. FAO Data Integration
 
-- `tillage_farmer.py`: Regenerative Tillage realisation (single file, ~190 lines)
-- `ca_farmer.py`: CA farmer agent — capital dynamics, FAO data, revenue, costs, practice application
-- `ca_behaviour.py`: TPB decision model — bundles, memory, social learning, social norm, PBC, fallback, exploration
+### 6.1 Data sources
+
+The model uses two FAO datasets:
+
+1. **Capital Stock (CS domain)**: Net Capital Stocks (NCS), Gross Fixed Capital Formation (GFCF), Consumption of Fixed Capital (CFC) for the Agriculture, Forestry and Fishing sector. Used to derive depreciation rate, investment rate, and initial capital.
+
+2. **Producer Prices (PP domain)**: Prices by crop type in USD/tonne. Translated to LPJmL crop categories using `copan_eval`'s `FaoCropTranslator`.
+
+### 6.2 Data retrieval
+
+FAO data is retrieved via the `copan_eval` library:
+- **API access**: Downloads from FAOSTAT API with authentication
+- **Caching**: Downloaded data is cached locally as NetCDF files
+- **Fallback**: If API fails, generates dummy data with warning
+
+### 6.3 Crop price matching
+
+LPJmL uses detailed crop bands (e.g., "rainfed temperate cereals", "irrigated temperate cereals") while FAO prices use aggregated categories ("temperate cereals"). The revenue calculation:
+1. Strips "rainfed " or "irrigated " prefixes from LPJmL bands
+2. Aggregates production across irrigation variants
+3. Matches with FAO price categories
+4. Multiplies production × price for each category
+
+---
+
+## 7. Decision Flow Summary
+
+Each year, the CA farmer executes the following decision sequence:
+
+1. **Parent update** — base farmer logic (soil C, yield, moisture tracking)
+2. **Skip if control run** — no CA dynamics in baseline scenarios
+3. **Update capital** — depreciation, profit calculation, reinvestment
+4. **Check affordability** — deselect practices if capital too low
+5. **Skip TPB if capital-constrained** — survival mode, no voluntary changes
+6. **Decay old memories** — bounded rationality (§4.3)
+7. **Check minimum observation period** — require sufficient data before switching (§4.2)
+8. **Check fallback condition** — revert if sustained decline (§4.8)
+9. **Find target bundle** — imitate best-performing neighbour OR explore randomly (§4.4)
+10. **Adjust for affordability** — partial bundle if full target is too expensive (§4.9)
+11. **Compute TPB** — attitude (own memory + social learning, §4.6), social norm (similarity + conformity, §4.7), PBC (cost-capital × risk, §4.10)
+12. **Switch decision** — compare TPB to threshold (with hysteresis; §4.14)
+13. **Apply switch** — deduct transition cost, update practices, record in memory
+
+---
+
+## 8. File Structure
+
+| File | Purpose |
+|------|---------|
+| `tillage_farmer.py` | Regenerative Tillage realisation (single file, ~200 lines) |
+| `ca_farmer.py` | CA farmer agent — capital dynamics, FAO data, revenue, costs, practice application |
+| `ca_behaviour.py` | TPB decision model — bundles, memory, social learning, social norm, PBC, fallback, exploration |
+| `ca_country.py` | Country-level FAO data loading and economic parameter extraction |
+| `region.py` | Base Country class with cropland area calculation |
+| `model.py` | Model class — entity initialization, update loop |
+| `config.yaml` | Configuration — AFT parameters, practice costs, thresholds |
+
+---
+
+## 9. Configuration Parameters
+
+Key parameters in `config.yaml`:
+
+### AFT parameters (`aftpar.pioneer` / `aftpar.traditionalist`)
+- `exploration_base_prob`: Base probability of random exploration
+- `switch_threshold` / `revert_threshold`: TPB thresholds for adoption/reversion
+- `min_observation_years`: Minimum years before considering switch
+- `fallback_years`: Consecutive decline years before fallback
+- `memory_decay_years`: Years until old memories expire
+- `confidence_years`: Years to reach full confidence
+- `risk_aversion`: Base risk aversion (0-1)
+- `weight_bundle_similarity` / `weight_crop_similarity`: Social learning weights
+- `conformity_bonus` / `conformity_penalty`: Social norm adjustments
+
+### Farm economics (`farm_economics`)
+- `n_survival_years`: Years of depreciation buffer for min_capital
+- `savings_rate`: Fraction of profit reinvested
+
+### Practice costs (`practice_costs`)
+- `tillage.direct` / `tillage.transition`: No-till costs
+- `cover_crop.direct` / `cover_crop.transition`: Cover crop costs
+- `residue_on_field.direct` / `residue_on_field.transition`: Residue retention costs
+
+### Residue economics (`residue_economics`)
+- `use_costs.feed` / `use_costs.sale`: Opportunity costs by use type
+- `default_removal_use`: Default use for opportunity cost calculation
 
 ---
 
@@ -309,10 +441,13 @@ Each year, the CA farmer executes the following decision sequence:
 - Chavas, J.P. & Holt, M.T. (1996). Economic behavior under uncertainty: A joint analysis of risk preferences and technology. *Review of Economics and Statistics*, 78(2), 329–335.
 - Cialdini, R.B., Reno, R.R., & Kallgren, C.A. (1990). A focus theory of normative conduct. *Journal of Personality and Social Psychology*, 58(6), 1015–1026.
 - Cialdini, R.B. & Goldstein, N.J. (2004). Social influence: Compliance and conformity. *Annual Review of Psychology*, 55, 591–621.
+- FAO (2017). The State of Food and Agriculture: Leveraging Food Systems for Inclusive Rural Transformation.
 - FAO (2023). FAOSTAT Capital Stock methodology. Food and Agriculture Organization.
 - Holling, C.S. (1978). *Adaptive Environmental Assessment and Management*. John Wiley & Sons.
 - Jorgenson, D.W. (1963). Capital theory and investment behavior. *American Economic Review*, 53(2), 247–259.
 - Kassam, A., Friedrich, T., Shaxson, F., & Pretty, J. (2009). The spread of Conservation Agriculture. *International Journal of Environmental Studies*, 66(6), 677–697.
+- Katchova, A.L. & Dinterman, R. (2018). Evaluating financial stress and performance of beginning farmers during the agricultural downturn. *Agricultural Finance Review*, 78(4), 457–469.
+- Lowder, S.K., Skoet, J., & Raney, T. (2016). The number, size, and distribution of farms, smallholder farms, and family farms worldwide. *World Development*, 87, 16–29.
 - OECD (2009). *Measuring Capital — OECD Manual*, 2nd ed. OECD Publishing.
 - Pannell, D.J., Llewellyn, R.S., & Corbeels, M. (2014). The farm-level economics of conservation agriculture for resource-poor farmers. *Agriculture, Ecosystems & Environment*, 187, 52–64.
 - Pittelkow, C.M. et al. (2015). Productivity limits and potentials of the principles of conservation agriculture. *Nature*, 517, 365–368.
