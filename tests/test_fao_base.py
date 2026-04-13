@@ -522,3 +522,176 @@ class TestFaoDatasetItemRetrieval:
         # Should be iterable
         assert hasattr(items, "__iter__")
         assert len(items) > 0
+
+
+@pytest.mark.integration
+class TestFaoDownloadIntegration:
+    """Integration tests for FAO API download with real API calls.
+    
+    These tests require FAO API access and are marked with @pytest.mark.integration.
+    Run with: pytest -m integration tests/test_fao_base.py
+    Skip with: pytest -m "not integration" tests/test_fao_base.py
+    """
+
+    def test_download_single_country(self):
+        """Download FAO data for a single country (NLD)."""
+        from inseeds.components.data.fao.base import check_fao_api_available
+        
+        if not check_fao_api_available():
+            pytest.skip("FAO API not available")
+        
+        prices = FaoProducerPrices()
+        
+        with tempfile.TemporaryDirectory() as tmp:
+            sim_path = Path(tmp) / "sim"
+            cache_path = sim_path / "input" / "pft_prices_cache.parquet"
+            output_path = sim_path / "input" / "fao_pft_prices.nc"
+            
+            ds = prices.prepare(
+                cache_path=cache_path,
+                output_path=output_path,
+                years=(2018, 2020),
+                country_codes=["NLD"],
+            )
+            
+            # Verify result
+            assert "area_code" in ds.dims
+            assert "NLD" in ds.area_code.values
+            assert len(ds.area_code) == 1  # Only NLD
+            assert "npft" in ds.dims
+            assert "time" in ds.dims
+            
+            # Verify file was created
+            assert output_path.exists()
+            
+            ds.close()
+
+    def test_download_multiple_countries(self):
+        """Download FAO data for multiple countries (NLD, DEU, BEL)."""
+        from inseeds.components.data.fao.base import check_fao_api_available
+        
+        if not check_fao_api_available():
+            pytest.skip("FAO API not available")
+        
+        prices = FaoProducerPrices()
+        
+        with tempfile.TemporaryDirectory() as tmp:
+            sim_path = Path(tmp) / "sim"
+            cache_path = sim_path / "input" / "pft_prices_cache.parquet"
+            output_path = sim_path / "input" / "fao_pft_prices.nc"
+            
+            ds = prices.prepare(
+                cache_path=cache_path,
+                output_path=output_path,
+                years=(2018, 2020),
+                country_codes=["NLD", "DEU", "BEL"],
+            )
+            
+            # Verify result
+            assert "area_code" in ds.dims
+            assert len(ds.area_code) == 3
+            assert "NLD" in ds.area_code.values
+            assert "DEU" in ds.area_code.values
+            assert "BEL" in ds.area_code.values
+            
+            ds.close()
+
+    def test_download_respects_country_codes_parameter(self):
+        """Verify that only requested countries are downloaded."""
+        from inseeds.components.data.fao.base import check_fao_api_available
+        
+        if not check_fao_api_available():
+            pytest.skip("FAO API not available")
+        
+        prices = FaoProducerPrices()
+        
+        with tempfile.TemporaryDirectory() as tmp:
+            sim_path = Path(tmp) / "sim"
+            cache_path = sim_path / "input" / "pft_prices_cache.parquet"
+            output_path = sim_path / "input" / "fao_pft_prices.nc"
+            
+            # Request only 2 countries
+            ds = prices.prepare(
+                cache_path=cache_path,
+                output_path=output_path,
+                years=(2019, 2020),
+                country_codes=["FRA", "ESP"],
+            )
+            
+            # Should have exactly 2 countries
+            assert len(ds.area_code) == 2
+            assert "FRA" in ds.area_code.values
+            assert "ESP" in ds.area_code.values
+            # Should NOT have other countries
+            assert "NLD" not in ds.area_code.values
+            assert "DEU" not in ds.area_code.values
+            
+            ds.close()
+
+    def test_download_caches_to_parquet(self):
+        """Verify that download creates parquet cache file."""
+        from inseeds.components.data.fao.base import check_fao_api_available
+        
+        if not check_fao_api_available():
+            pytest.skip("FAO API not available")
+        
+        prices = FaoProducerPrices()
+        
+        with tempfile.TemporaryDirectory() as tmp:
+            sim_path = Path(tmp) / "sim"
+            cache_path = sim_path / "input" / "pft_prices_cache.parquet"
+            output_path = sim_path / "input" / "fao_pft_prices.nc"
+            
+            prices.prepare(
+                cache_path=cache_path,
+                output_path=output_path,
+                years=(2019, 2020),
+                country_codes=["NLD"],
+            )
+            
+            # Cache file should exist
+            assert cache_path.exists()
+            
+            # Cache should be readable
+            df = pd.read_parquet(cache_path)
+            assert len(df) > 0
+
+    def test_download_uses_cache_on_second_call(self):
+        """Verify that second call uses cache instead of API."""
+        from inseeds.components.data.fao.base import check_fao_api_available
+        
+        if not check_fao_api_available():
+            pytest.skip("FAO API not available")
+        
+        prices = FaoProducerPrices()
+        
+        with tempfile.TemporaryDirectory() as tmp:
+            sim_path = Path(tmp) / "sim"
+            cache_path = sim_path / "input" / "pft_prices_cache.parquet"
+            output_path = sim_path / "input" / "fao_pft_prices.nc"
+            
+            # First call - downloads from API
+            ds1 = prices.prepare(
+                cache_path=cache_path,
+                output_path=output_path,
+                years=(2019, 2020),
+                country_codes=["NLD"],
+            )
+            ds1.close()
+            
+            # Delete output but keep cache
+            output_path.unlink()
+            
+            # Second call - should use cache (no API call)
+            with patch("inseeds.components.data.fao.base.FaoApiAdapter") as mock_adapter:
+                ds2 = prices.prepare(
+                    cache_path=cache_path,
+                    output_path=output_path,
+                    years=(2019, 2020),
+                    country_codes=["NLD"],
+                )
+                
+                # API adapter should NOT have been instantiated
+                mock_adapter.assert_not_called()
+                
+            ds2.close()

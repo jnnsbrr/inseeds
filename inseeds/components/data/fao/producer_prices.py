@@ -109,7 +109,6 @@ class FaoProducerPrices(FaoDataset):
         by the dry matter factor. For example, potatoes have DM=0.24,
         so $117/t fresh becomes $487.50/t dry matter.
         """
-        print("  Applying dry matter conversion...")
         dm_factors = DRY_MATTER_FACTORS.to_xarray()
 
         for var in ds.data_vars:

@@ -162,7 +162,7 @@ class DecisionModel(ABC):
         self._practice_bundle = (
             int(agent.tillage),
             1 if agent.cover_crop > 0 else 0,
-            1 if agent.residue_on_field > agent.residue_baseline else 0,
+            1 if agent.residue_on_field > 0.5 else 0,
         )
 
         # Proposed bundle for potential switch (set by update())
@@ -1688,3 +1688,9 @@ class TPB(DecisionModel):
             self.agent.weight_attitude * self._attitude
             + self.agent.weight_norm * self._social_norm
         ) * self._pbc
+
+        # if self._practice_bundle[0] == 0:
+        #     breakpoint()
+
+        # if self._tpb > 0.5:
+        #     breakpoint()

@@ -441,11 +441,17 @@ def get_crop_share_from_qv(
     country_code: str,
     year: int | None = None,
     avg_years: int = 5,
+    max_lookback: int = 20,
+    neighbour_codes: list[str] | None = None,
 ) -> float:
     """Get crop share of agriculture from FAO QV data.
 
-    Computes crop_share = GPV_crops / GPV_agriculture from real FAO data.
-    Raises an error if data is not available - no fallback to static values.
+    Computes crop_share = GPV_crops / GPV_agriculture using the generic
+    tiered fallback mechanism:
+
+    1. **Tier A (country)**: Same country with expanding time window
+    2. **Tier B (neighbours)**: Mean from neighbouring countries
+    3. **Tier C (global)**: Global mean across all countries
 
     Parameters
     ----------
@@ -457,7 +463,12 @@ def get_crop_share_from_qv(
     year : int | None
         Target year. If None, uses the most recent available year.
     avg_years : int
-        Number of years to average (for robustness). Default 5.
+        Initial window size for time averaging (default 5).
+    max_lookback : int
+        Maximum years to look back if initial window has no data (default 20).
+    neighbour_codes : list[str] | None
+        ISO3 codes of neighbouring countries (from country.neighbourhood).
+        If None, Tier B is skipped.
 
     Returns
     -------
@@ -467,9 +478,9 @@ def get_crop_share_from_qv(
     Raises
     ------
     ValueError
-        If FAO QV data is not available for the country.
+        If FAO QV data is not available at any tier.
     """
-    import numpy as np
+    from .base import get_value_with_fallback
 
     # Check required variables exist
     if "gpv_crops" not in qv_ds.data_vars or "gpv_agriculture" not in qv_ds.data_vars:
@@ -479,51 +490,29 @@ def get_crop_share_from_qv(
             f"Required: gpv_crops, gpv_agriculture"
         )
 
-    gpv_crops = qv_ds["gpv_crops"]
-    gpv_ag = qv_ds["gpv_agriculture"]
+    # Get GPV for crops using tiered fallback
+    crops_result = get_value_with_fallback(
+        qv_ds["gpv_crops"],
+        country_code,
+        year=year,
+        avg_years=avg_years,
+        max_lookback=max_lookback,
+        neighbour_codes=neighbour_codes,
+        aggregator="mean",
+    )
 
-    # Check if country is in the dataset
-    if "area_code" not in gpv_crops.dims:
-        raise ValueError("FAO QV dataset missing area_code dimension")
+    # Get GPV for agriculture using tiered fallback
+    ag_result = get_value_with_fallback(
+        qv_ds["gpv_agriculture"],
+        country_code,
+        year=year,
+        avg_years=avg_years,
+        max_lookback=max_lookback,
+        neighbour_codes=neighbour_codes,
+        aggregator="mean",
+    )
 
-    if country_code not in gpv_crops.area_code.values:
-        raise ValueError(
-            f"Country {country_code} not found in FAO QV data. "
-            f"Available countries: {list(gpv_crops.area_code.values[:10])}..."
-        )
-
-    # Select country
-    crops_country = gpv_crops.sel(area_code=country_code)
-    ag_country = gpv_ag.sel(area_code=country_code)
-
-    # Determine year range
-    available_years = crops_country.time.values
-    if len(available_years) == 0:
-        raise ValueError(f"No years available for country {country_code}")
-
-    if year is None:
-        year = int(max(available_years))
-
-    # Get years for averaging
-    years_to_avg = [y for y in available_years if year - avg_years < y <= year]
-    if not years_to_avg:
-        years_to_avg = [max(available_years)]
-
-    # Compute crop share for each year and average
-    shares = []
-    for y in years_to_avg:
-        crops_val = float(crops_country.sel(time=y).values)
-        ag_val = float(ag_country.sel(time=y).values)
-        
-        if not np.isnan(crops_val) and not np.isnan(ag_val) and ag_val > 0:
-            shares.append(crops_val / ag_val)
-
-    if not shares:
-        raise ValueError(
-            f"No valid FAO QV data for country {country_code} in years {years_to_avg}"
-        )
-
-    return float(np.mean(shares))
+    return crops_result.value / ag_result.value
 
 
 def compute_crop_capital_share(
@@ -531,12 +520,14 @@ def compute_crop_capital_share(
     country_code: str,
     year: int | None = None,
     avg_years: int = 5,
+    max_lookback: int = 20,
+    neighbour_codes: list[str] | None = None,
 ) -> float:
     """Compute total crop capital share from FAO data.
 
     Combines:
     1. Agriculture share of Ag+F+F (from static table)
-    2. Crop share of agriculture (from FAO QV data)
+    2. Crop share of agriculture (from FAO QV data with tiered fallback)
 
     Final: crop_capital_share = ag_share × crop_share
 
@@ -549,7 +540,11 @@ def compute_crop_capital_share(
     year : int | None
         Target year for FAO QV data.
     avg_years : int
-        Number of years to average.
+        Initial window size for time averaging (default 5).
+    max_lookback : int
+        Maximum years to look back if initial window has no data (default 20).
+    neighbour_codes : list[str] | None
+        ISO3 codes of neighbouring countries (from country.neighbourhood).
 
     Returns
     -------
@@ -559,9 +554,11 @@ def compute_crop_capital_share(
     Raises
     ------
     ValueError
-        If FAO QV data is not available for the country.
+        If FAO QV data is not available at any tier.
     """
     ag_share = get_ag_share_of_aff(country_code)
-    crop_share = get_crop_share_from_qv(qv_ds, country_code, year, avg_years)
+    crop_share = get_crop_share_from_qv(
+        qv_ds, country_code, year, avg_years, max_lookback, neighbour_codes
+    )
     
     return ag_share * crop_share

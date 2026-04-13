@@ -191,11 +191,17 @@ class TestCACountryFaoLoading:
     def test_ca_country_loads_fao_data_with_dummy(self):
         """CACountry loads dummy FAO data once per country."""
         from inseeds.components.farming.ca_country import CACountry
+        from inseeds.components.data.fao.dummy import generate_dummy_gpv
 
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
             # Create dummy FAO data files
             dummy_paths = ensure_dummy_fao_data(sim_path, data_type="both", years=(2010, 2015))
+
+            # Create dummy crop share (GPV) data
+            crop_share_path = Path(sim_path) / "input" / "fao_crop_share_DUMMY.nc"
+            crop_share_path.parent.mkdir(parents=True, exist_ok=True)
+            generate_dummy_gpv(years=(2010, 2015), output_path=crop_share_path)
 
             # Create minimal mock model with config
             model = MagicMock()
@@ -210,10 +216,12 @@ class TestCACountryFaoLoading:
             # Clear class-level cache to ensure fresh load
             CACountry._fao_prices_ds = None
             CACountry._fao_capital_ds = None
+            CACountry._fao_crop_share_ds = None
 
             # Pre-load the datasets into class cache to avoid API calls
             CACountry._fao_prices_ds = xr.open_dataset(dummy_paths["producer_prices"])
             CACountry._fao_capital_ds = xr.open_dataset(dummy_paths["capital_stock"])
+            CACountry._fao_crop_share_ds = xr.open_dataset(crop_share_path)
 
             # Call the extraction methods directly (bypassing ensure())
             country._extract_capital_parameters("NLD")
@@ -230,5 +238,7 @@ class TestCACountryFaoLoading:
             # Clean up
             CACountry._fao_prices_ds.close()
             CACountry._fao_capital_ds.close()
+            CACountry._fao_crop_share_ds.close()
             CACountry._fao_prices_ds = None
             CACountry._fao_capital_ds = None
+            CACountry._fao_crop_share_ds = None

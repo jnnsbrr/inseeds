@@ -8,6 +8,11 @@ Classes:
     FaoProducerPrices: Producer prices (PP domain)
     FaoCapitalStock: Capital stock data (CS domain)
     FaoGrossProductionValue: Gross production value (QV domain) for crop shares
+    FallbackResult: Result of tiered fallback lookup
+
+Tiered fallback for missing data:
+    get_value_with_fallback: Get value with tiered fallback (country → neighbours → global)
+    FallbackResult: Dataclass with value, tier, and detail
 
 Agriculture and crop capital shares:
     get_ag_share_of_aff: Get agriculture share of Ag+Forestry+Fishing (static table)
@@ -23,7 +28,7 @@ Dummy data functions (for testing when FAO API unavailable):
     ensure_dummy_fao_data: Convenience function to set up test simulations
 """
 
-from .base import FaoDataset
+from .base import FaoDataset, FallbackResult, get_value_with_fallback
 from .producer_prices import FaoProducerPrices
 from .capital_stock import FaoCapitalStock
 from .gross_production_value import FaoGrossProductionValue
@@ -46,6 +51,8 @@ __all__ = [
     "FaoProducerPrices",
     "FaoCapitalStock",
     "FaoGrossProductionValue",
+    "FallbackResult",
+    "get_value_with_fallback",
     "get_ag_share_of_aff",
     "get_crop_share_from_qv",
     "compute_crop_capital_share",

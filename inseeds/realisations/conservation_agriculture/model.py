@@ -113,9 +113,9 @@ class Model(lpjml.Model):
             and hasattr(self.world, "country_code")
             and self.world.country_code is not None
         ):
+            self._preload_fao_data()
             self.init_countries(country_class=Country)
         else:
-            # No country data available - create an empty list
             self.countries = []
             print(
                 "Warning: No country data available. "
@@ -172,3 +172,38 @@ class Model(lpjml.Model):
         self.update_lpjml(t)
         # Collect outputs (if enabled in config)
         self.collect_outputs(t)
+
+    def _preload_fao_data(self):
+        """Pre-load FAO data for all countries before initialization.
+
+        Must be called BEFORE init_countries() to ensure FAO data is available
+        for parallelization and to avoid issues during country initialization.
+        """
+        import numpy as np
+        from pycopanlpjml.model import _get_country_names
+
+        country_values = self.world.country_code.values
+        if hasattr(country_values, "compute"):
+            country_values = country_values.compute()
+
+        unique_codes = np.unique(country_values)
+        country_names = _get_country_names()
+        iso3_codes = [
+            country_names[c]["code"]
+            for c in unique_codes
+            if c in country_names
+        ]
+
+        if not iso3_codes:
+            return
+
+        try:
+            reference_year = self.config.coupled_config.start_year
+        except AttributeError:
+            reference_year = 2020
+
+        Country.preload_fao_data(
+            self.config.sim_path,
+            iso3_codes,
+            reference_year=reference_year,
+        )

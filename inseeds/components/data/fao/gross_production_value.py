@@ -4,21 +4,27 @@ This module downloads Gross Production Value (GPV) data from FAOSTAT (QV domain)
 to provide the raw data needed for computing crop share of agricultural output.
 
 FAOSTAT QV domain provides:
-- Gross Production Value (current thousand US$) by commodity
-- Element code 57: Gross Production Value (current thousand US$)
+- Gross Production Value by commodity
+- Element code 152: Gross Production Value (constant 2014-2016 thousand I$)
+  - Better coverage than current US$ (element 57)
+  - Data available up to ~2017 for most countries
 - Covers crops and livestock products (NOT forestry or fishing)
 
 Item codes used:
-- 1717: Crops (PIN) - Primary crops aggregate
-- 2051: Agriculture (PIN) - Total agriculture (crops + livestock)
+- 2041: Crops - all primary crops aggregate
+- 2051: Agriculture - total agriculture (crops + livestock)
 
 Output variables:
-- gpv_crops: GPV for crops (item code 1717)
+- gpv_crops: GPV for crops (item code 2041)
 - gpv_agriculture: GPV for total agriculture (item code 2051)
 
 The crop share calculation (gpv_crops / gpv_agriculture) is done in
 crop_capital_share.py, which combines it with the agriculture share of
 Ag+Forestry+Fishing to compute the final crop capital share.
+
+Note: FAO QV data has a lag of several years. The code downloads a wider
+year range (10 years) to ensure data availability and uses the most recent
+available year for each country.
 
 References:
 - FAO (2023). Value of Agricultural Production methodology.
@@ -35,16 +41,11 @@ import xarray as xr
 from .base import FaoDataset
 
 
-# Item codes for crop aggregates in QV domain
-# These are aggregate codes that sum all crops
-CROP_AGGREGATE_ITEMS = [
-    "1717",  # Crops (PIN) - Primary crops aggregate
-]
-
-# Item codes for total agriculture (crops + livestock)
-TOTAL_AGRICULTURE_ITEMS = [
-    "2051",  # Agriculture (PIN) - Total agriculture aggregate
-]
+# Item codes for QV domain aggregates
+# 2041: Crops - all primary crops aggregate
+# 2051: Agriculture - total agriculture (crops + livestock, excludes forestry/fishing)
+CROP_ITEM = "2041"  # Crops
+AGRICULTURE_ITEM = "2051"  # Agriculture (crops + livestock)
 
 
 class FaoGrossProductionValue(FaoDataset):
@@ -58,7 +59,7 @@ class FaoGrossProductionValue(FaoDataset):
     domain : str
         "QV" (Value of Agricultural Production)
     elements : list[str]
-        ["57"] (Gross Production Value, current thousand US$)
+        ["152"] (Gross Production Value, constant 2014-2016 thousand I$)
     name : str
         "gross_production_value"
     output_filename : str
@@ -73,9 +74,9 @@ class FaoGrossProductionValue(FaoDataset):
     @property
     @override
     def elements(self) -> list[str]:
-        # 57: Gross Production Value (current thousand US$)
-        # Note: FAOSTAT uses "thousand US$" not "million US$"
-        return ["57"]
+        # 152: Gross Production Value (constant 2014-2016 thousand I$)
+        # Better coverage than element 57 (current US$)
+        return ["152"]
 
     @property
     @override
@@ -95,7 +96,7 @@ class FaoGrossProductionValue(FaoDataset):
     @override
     def _get_items(self) -> pd.Series:
         """Return item codes for crop and total agriculture aggregates."""
-        return pd.Series(CROP_AGGREGATE_ITEMS + TOTAL_AGRICULTURE_ITEMS)
+        return pd.Series([CROP_ITEM, AGRICULTURE_ITEM])
 
     @override
     def _post_process(self, ds: xr.Dataset) -> xr.Dataset:
@@ -106,35 +107,31 @@ class FaoGrossProductionValue(FaoDataset):
         """
         print("  Extracting GPV for crops and agriculture...")
 
-        element_code = "57"  # Gross Production Value (current thousand US$)
+        element_code = "152"  # Gross Production Value (constant 2014-2016 thousand I$)
 
         if element_code not in ds.data_vars:
             raise RuntimeError(f"Expected element {element_code} not found in QV dataset")
 
         data = ds[element_code]
 
-        # Extract crops and total agriculture GPV
-        crop_item = "1717"  # Crops (PIN)
-        total_item = "2051"  # Agriculture (PIN)
-
         result_ds = xr.Dataset()
 
         if "item_code" in data.dims:
             # Get GPV for crops
-            if crop_item in data.item_code.values:
-                gpv_crops = data.sel(item_code=crop_item)
+            if CROP_ITEM in data.item_code.values:
+                gpv_crops = data.sel(item_code=CROP_ITEM)
                 result_ds["gpv_crops"] = gpv_crops
-                result_ds["gpv_crops"].attrs["units"] = "thousand_USD"
+                result_ds["gpv_crops"].attrs["units"] = "thousand_IntD"
                 result_ds["gpv_crops"].attrs["long_name"] = "Gross Production Value - Crops"
-                result_ds["gpv_crops"].attrs["fao_item_code"] = crop_item
+                result_ds["gpv_crops"].attrs["fao_item_code"] = CROP_ITEM
 
             # Get GPV for total agriculture
-            if total_item in data.item_code.values:
-                gpv_total = data.sel(item_code=total_item)
+            if AGRICULTURE_ITEM in data.item_code.values:
+                gpv_total = data.sel(item_code=AGRICULTURE_ITEM)
                 result_ds["gpv_agriculture"] = gpv_total
-                result_ds["gpv_agriculture"].attrs["units"] = "thousand_USD"
+                result_ds["gpv_agriculture"].attrs["units"] = "thousand_IntD"
                 result_ds["gpv_agriculture"].attrs["long_name"] = "Gross Production Value - Agriculture"
-                result_ds["gpv_agriculture"].attrs["fao_item_code"] = total_item
+                result_ds["gpv_agriculture"].attrs["fao_item_code"] = AGRICULTURE_ITEM
                 result_ds["gpv_agriculture"].attrs["note"] = (
                     "Agriculture = crops + livestock (excludes forestry and fishing)"
                 )

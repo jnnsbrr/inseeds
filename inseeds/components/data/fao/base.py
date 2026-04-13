@@ -1,37 +1,212 @@
 """Base class for FAO dataset handlers.
 
-This module provides the abstract base class for downloading, transforming,
-and caching FAOSTAT data for InSEEDS simulations.
+This module provides:
+
+1. **FaoDataset**: Abstract base class for downloading and caching FAOSTAT data
+2. **get_value_with_fallback**: Tiered lookup for missing country data
+
+Fallback Tiers
+--------------
+When country data is missing, the fallback mechanism tries:
+
+1. **Country**: Same country with expanding time window (up to 20 years back)
+2. **Neighbours**: Mean from neighbouring countries  
+3. **Global**: Mean across all available countries
+
+This ensures complete data coverage even when FAOSTAT has gaps.
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import logging
 from pathlib import Path
-from typing import Self
+from typing import Literal
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
 from copan_eval.fao import FaoData, fao_definitions, FaoApiAdapter, FaoCropTranslator
 
+logger = logging.getLogger(__name__)
 
-def check_fao_api_available(timeout: float = 5.0) -> bool:
-    """Check if FAO API is available and accessible with authentication.
 
-    Uses the FaoApiAdapter.ping() method which includes authentication headers.
-    This fails fast if the API requires authentication or is down.
+# =============================================================================
+# Fallback Mechanism
+# =============================================================================
 
+@dataclass
+class FallbackResult:
+    """Result from tiered fallback lookup.
+    
+    Attributes
+    ----------
+    value : float
+        The retrieved value.
+    tier : str
+        Which tier provided the value: "country", "neighbours", or "global".
+    detail : str
+        Context about the lookup (e.g., time window used, neighbours consulted).
+    """
+    value: float
+    tier: Literal["country", "neighbours", "global"]
+    detail: str
+
+
+def get_value_with_fallback(
+    data: xr.DataArray,
+    country_code: str,
+    year: int | None = None,
+    neighbour_codes: list[str] | None = None,
+    avg_years: int = 5,
+    max_lookback: int = 20,
+    aggregator: Literal["mean", "sum", "last"] = "mean",
+) -> FallbackResult:
+    """Get value for a country with tiered fallback for missing data.
+    
     Parameters
     ----------
-    timeout : float
-        Request timeout in seconds.
-
+    data : xr.DataArray
+        Data with "area_code" dimension and optionally "time".
+    country_code : str
+        ISO3 country code (e.g., "NLD").
+    year : int, optional
+        Target year. If None, uses most recent available.
+    neighbour_codes : list[str], optional
+        ISO3 codes of neighbouring countries for Tier B fallback.
+    avg_years : int
+        Initial time window size for averaging (default: 5 years).
+    max_lookback : int
+        Maximum years to search backward (default: 20 years).
+    aggregator : str
+        How to aggregate over time: "mean", "sum", or "last".
+        
     Returns
     -------
-    bool
-        True if API is accessible with valid authentication, False otherwise.
+    FallbackResult
+        Value with tier and detail information.
+        
+    Raises
+    ------
+    ValueError
+        If no valid data found at any tier.
+        
+    Examples
+    --------
+    >>> result = get_value_with_fallback(
+    ...     ds["depreciation_rate"],
+    ...     country_code="NLD",
+    ...     year=2020,
+    ...     neighbour_codes=["DEU", "BEL"],
+    ... )
+    >>> print(f"{result.value:.3f} (tier: {result.tier})")
     """
+    has_time = "time" in data.dims
+    area_codes = list(data.area_code.values) if "area_code" in data.dims else []
+    
+    # Determine target year
+    if has_time:
+        available_years = sorted(int(y) for y in data.time.values)
+        year = int(year) if year else max(available_years)
+    else:
+        available_years = []
+    
+    def aggregate(arr: xr.DataArray, years: list[int]) -> float | None:
+        """Aggregate values over time, returning None if all NaN."""
+        if not has_time:
+            val = float(arr.values)
+            return None if np.isnan(val) else val
+        
+        valid_years = [y for y in years if y in arr.time.values]
+        if not valid_years:
+            return None
+            
+        subset = arr.sel(time=valid_years)
+        if aggregator == "last":
+            val = float(subset.isel(time=-1).values)
+        elif aggregator == "sum":
+            val = float(subset.sum(dim="time").values)
+        else:
+            val = float(subset.mean(dim="time").values)
+        
+        return None if np.isnan(val) else val
+    
+    def get_window(target: int, size: int) -> list[int]:
+        """Get years in window: (target - size, target]."""
+        return [y for y in available_years if target - size < y <= target]
+    
+    def try_country(code: str) -> tuple[float | None, str]:
+        """Try to get value for a single country with expanding window."""
+        if code not in area_codes:
+            return None, ""
+        
+        country_data = data.sel(area_code=code)
+        
+        # Try progressively larger windows
+        for window_size in range(avg_years, max_lookback + 1):
+            years = get_window(year, window_size)
+            value = aggregate(country_data, years)
+            if value is not None:
+                window_str = f"{min(years)}-{max(years)}" if years else str(year)
+                return value, window_str
+        
+        # Last resort: all available years
+        if has_time and available_years:
+            value = aggregate(country_data, available_years)
+            if value is not None:
+                return value, f"{min(available_years)}-{max(available_years)}"
+        
+        return None, ""
+    
+    # Tier A: Country
+    value, window = try_country(country_code)
+    if value is not None:
+        return FallbackResult(value, "country", f"window={window}")
+    
+    # Tier B: Neighbours
+    if neighbour_codes:
+        neighbour_values = []
+        used = []
+        for nc in neighbour_codes:
+            val, _ = try_country(nc)
+            if val is not None:
+                neighbour_values.append(val)
+                used.append(nc)
+        
+        if neighbour_values:
+            mean_val = float(np.mean(neighbour_values))
+            detail = f"neighbours={','.join(used)}"
+            logger.info(f"{country_code}: using neighbours tier ({detail})")
+            return FallbackResult(mean_val, "neighbours", detail)
+    
+    # Tier C: Global mean
+    if area_codes:
+        window_years = get_window(year, avg_years) if has_time else []
+        
+        if has_time and window_years:
+            valid_years = [y for y in window_years if y in data.time.values]
+            subset = data.sel(time=valid_years) if valid_years else data
+            global_data = subset.mean(dim="time") if aggregator == "mean" else subset.isel(time=-1)
+        else:
+            global_data = data
+        
+        global_mean = float(global_data.mean(dim="area_code").values)
+        
+        if not np.isnan(global_mean):
+            n_countries = int((~np.isnan(global_data.values)).sum())
+            logger.info(f"{country_code}: using global tier (n_countries={n_countries})")
+            return FallbackResult(global_mean, "global", f"n_countries={n_countries}")
+    
+    raise ValueError(f"No valid data for {country_code} at any tier")
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def check_fao_api_available(timeout: float = 5.0) -> bool:
+    """Check if FAO API is accessible with valid authentication."""
     try:
-        from copan_eval.fao import FaoApiAdapter
         adapter = FaoApiAdapter()
         return adapter.ping()
     except Exception:
@@ -39,39 +214,36 @@ def check_fao_api_available(timeout: float = 5.0) -> bool:
 
 
 def get_fao_country_code(iso3_code: str) -> str | None:
-    """Convert ISO3 country code to FAO country code.
-
-    Parameters
-    ----------
-    iso3_code : str
-        ISO3 country code (e.g., "NLD" for Netherlands).
-
-    Returns
-    -------
-    str | None
-        FAO country code, or None if not found.
-    """
+    """Convert ISO3 country code to FAO country code."""
     iso3_to_fao = fao_definitions.get_area_code_dict(
         code_standard_out="FAO", code_standard_in="ISO3"
     )
     return iso3_to_fao.get(iso3_code)
 
 
+# =============================================================================
+# FaoDataset Base Class
+# =============================================================================
+
 class FaoDataset(ABC):
     """Abstract base class for FAO dataset handlers.
-
-    Subclasses must implement:
-        - domain: FAOSTAT domain code (e.g., "PP", "CS")
-        - elements: List of element codes to download
-        - name: Human-readable name for the dataset
-        - output_filename: Filename for the output NetCDF file
-        - _get_items(): Returns item codes to download
-        - _post_process(ds): Domain-specific transformations
-
-    The base class provides shared functionality for:
-        - Chunked download from FAO API (handling 500-record limit)
-        - Coordinate transformations (FAO→ISO3 area codes, cftime→int years)
-        - Caching and lazy loading
+    
+    Handles downloading, transforming, and caching FAOSTAT data.
+    Subclasses define domain-specific behavior.
+    
+    Subclass Requirements
+    ---------------------
+    Must implement:
+    - domain: FAOSTAT domain code (e.g., "PP", "CS")
+    - elements: Element codes to download
+    - name: Human-readable name
+    - output_filename: Output NetCDF filename
+    - _get_items(): Item codes to download
+    - _post_process(ds): Domain-specific transformations
+    
+    Optional overrides:
+    - _translate_to_lpjml(): Whether to map crops to LPJmL names (default: True)
+    - _generate_dummy_fallback(): Create dummy data when API fails
     """
 
     @property
@@ -83,215 +255,138 @@ class FaoDataset(ABC):
     @property
     @abstractmethod
     def elements(self) -> list[str]:
-        """List of FAOSTAT element codes to download."""
+        """FAOSTAT element codes to download."""
         ...
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Human-readable name for this dataset."""
+        """Human-readable dataset name."""
         ...
 
     @property
     @abstractmethod
     def output_filename(self) -> str:
-        """Filename for the output NetCDF file."""
+        """Output NetCDF filename."""
         ...
 
     @abstractmethod
     def _get_items(self) -> pd.Series:
-        """Return item codes to download from FAOSTAT.
-
-        Returns
-        -------
-        pd.Series
-            Series of item codes appropriate for this domain.
-        """
+        """Return item codes to download."""
         ...
 
     @abstractmethod
     def _post_process(self, ds: xr.Dataset) -> xr.Dataset:
-        """Apply domain-specific post-processing to the dataset.
-
-        Parameters
-        ----------
-        ds : xr.Dataset
-            Dataset after standard transformations.
-
-        Returns
-        -------
-        xr.Dataset
-            Dataset with domain-specific transformations applied.
-        """
+        """Apply domain-specific post-processing."""
         ...
 
     def _translate_to_lpjml(self) -> bool:
-        """Whether to translate item codes to LPJmL CFT names.
-
-        Override to return False for datasets that don't use crop items
-        (e.g., capital stock which uses sector codes).
-        """
+        """Whether to translate crop codes to LPJmL CFT names."""
         return True
 
+    # -------------------------------------------------------------------------
+    # Path Management
+    # -------------------------------------------------------------------------
+    
     def get_path(self, sim_path: str | Path) -> Path:
-        """Get the path to the real FAO data file in simulation input folder.
-
-        Parameters
-        ----------
-        sim_path : str | Path
-            Simulation path (pycoupler sim_path).
-
-        Returns
-        -------
-        Path
-            Path to output file in {sim_path}/input/
-        """
+        """Path to real FAO data file."""
         return Path(sim_path) / "input" / self.output_filename
 
     def get_dummy_path(self, sim_path: str | Path) -> Path:
-        """Get the path to the dummy data file in simulation input folder.
-
-        Dummy files have '_DUMMY' suffix to distinguish them from real data.
-
-        Parameters
-        ----------
-        sim_path : str | Path
-            Simulation path (pycoupler sim_path).
-
-        Returns
-        -------
-        Path
-            Path to dummy file in {sim_path}/input/
-        """
+        """Path to dummy data file (used when API fails)."""
         base = self.output_filename.replace(".nc", "_DUMMY.nc")
         return Path(sim_path) / "input" / base
 
+    # -------------------------------------------------------------------------
+    # Download & Transform
+    # -------------------------------------------------------------------------
+    
     def download(
         self,
         adapter: FaoApiAdapter,
         years: list[str],
         countries: pd.Series,
     ) -> pd.DataFrame:
-        """Download data from FAOSTAT API with chunking.
-
-        The FAO API has a limit of 500 records per request. This method
-        handles chunking by country and year to stay under the limit.
-
-        Parameters
-        ----------
-        adapter : FaoApiAdapter
-            FAO API adapter instance.
-        years : list[str]
-            List of years to download.
-        countries : pd.Series
-            Country codes to download (FAO format).
-
-        Returns
-        -------
-        pd.DataFrame
-            Downloaded data from FAOSTAT.
+        """Download data from FAOSTAT API.
+        
+        Handles the FAO API's 500-record limit by chunking requests.
         """
         items = self._get_items()
-        item_list = list(items)
-
         country_list = list(countries)
-        n_years = len(years)
         n_countries = len(country_list)
-        n_elements = len(self.elements)
-        n_items = len(item_list)
         
-        # CS domain requires separate calls per item (GFCF, CFC, NCS are different data types)
-        # Other domains can batch all items AND countries together
+        # Chunk by country to stay under 500-record API limit
+        # For ~166 crop items, we can batch ~3 countries per call
+        api_limit = 500
+        batch_size = max(1, api_limit // len(items))
+        batches = [
+            country_list[i:i + batch_size]
+            for i in range(0, n_countries, batch_size)
+        ]
+        
+        country_str = f"{n_countries} countries" if n_countries > 1 else "1 country"
+        print(f"Downloading {self.name} ({country_str}) from FAOSTAT...")
+        
+        dfs = []
         is_cs_domain = self.domain == "CS"
         
-        if is_cs_domain:
-            total_chunks = n_years * n_elements * n_items
-            print(f"Downloading {self.name} from FAOSTAT ({self.domain} domain)...")
-            print(f"  {total_chunks} API calls ({n_years} years × {n_elements} elements × {n_items} items)")
-            print(f"  Downloading {n_countries} countries per call")
-        else:
-            total_chunks = n_years * n_elements
-            print(f"Downloading {self.name} from FAOSTAT ({self.domain} domain)...")
-            print(f"  {total_chunks} API calls ({n_years} years × {n_elements} elements)")
-            print(f"  Downloading {n_items} items × {n_countries} countries per call")
-
-        dfs = []
         for element in self.elements:
             for year in years:
                 if is_cs_domain:
-                    # CS domain: separate call per item, all countries batched
-                    for item in item_list:
+                    # Capital Stock: one item per call (different structure)
+                    for item in items:
                         try:
                             df = adapter.download_data(
                                 domain=self.domain,
                                 element=element,
                                 year=[year],
                                 items=[item],
-                                areas=countries,  # All countries at once
+                                areas=countries,
                                 item_code_format="FAO",
                                 area_code_format="FAO",
                             )
                             if len(df) > 0:
                                 dfs.append(df)
-                        except Exception as e:
-                            print(f"  Warning: Failed {element}/{year}/{item}: {e}")
+                        except Exception:
+                            pass  # Skip failed items silently
                 else:
-                    # Other domains: batch all items AND all countries together
-                    try:
-                        df = adapter.download_data(
-                            domain=self.domain,
-                            element=element,
-                            year=[year],
-                            items=items,  # All items at once
-                            areas=countries,  # All countries at once
-                            item_code_format="FAO",
-                            area_code_format="FAO",
-                        )
-                        if len(df) > 0:
-                            dfs.append(df)
-                    except Exception as e:
-                        print(f"  Warning: Failed {element}/{year}: {e}")
-
+                    # Other domains: batch by country
+                    for batch in batches:
+                        try:
+                            df = adapter.download_data(
+                                domain=self.domain,
+                                element=element,
+                                year=[year],
+                                items=items,
+                                areas=batch,
+                                item_code_format="FAO",
+                                area_code_format="FAO",
+                            )
+                            if len(df) > 0:
+                                dfs.append(df)
+                        except Exception:
+                            pass  # Skip failed batches silently
+        
         if not dfs:
             raise RuntimeError(f"No data downloaded for {self.name}")
-
-        print(f"  Downloaded {sum(len(df) for df in dfs)} records")
-        return pd.concat(dfs, ignore_index=True)
+        
+        result = pd.concat(dfs, ignore_index=True)
+        print(f"  Done ({len(result)} records)")
+        return result
 
     def transform(self, df: pd.DataFrame) -> xr.Dataset:
-        """Transform downloaded DataFrame to xarray Dataset.
-
-        Applies standard transformations:
-        - Convert to FaoData via from_dataframe()
-        - Translate crop codes to LPJmL CFT names (if applicable)
-        - Convert area codes from FAO to ISO3
-        - Convert time coordinates from cftime to integer years
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Downloaded FAOSTAT data.
-
-        Returns
-        -------
-        xr.Dataset
-            Transformed dataset.
-        """
-        print(f"Converting {self.name} to xarray format...")
-
-        fao_data_list = FaoData.from_dataframe(
-            df, multi_element=len(self.elements) > 1
-        )
+        """Transform DataFrame to xarray Dataset with standard coordinates."""
+        fao_data_list = FaoData.from_dataframe(df, multi_element=len(self.elements) > 1)
         fao_data_list = [d for d in fao_data_list if d is not None]
-
+        
         if not fao_data_list:
             raise RuntimeError(f"Failed to convert {self.name} to FaoData")
-
+        
+        # Translate crop codes to LPJmL names if applicable
         if self._translate_to_lpjml():
-            print("  Translating to LPJmL CFT format...")
-            translated = []
+            datasets = []
             for fao_data in fao_data_list:
-                fao_data_npft = fao_data.translate_dimension(
+                translated = fao_data.translate_dimension(
                     FaoCropTranslator(
                         dim="item_code",
                         new_standard="LPJmL",
@@ -300,61 +395,56 @@ class FaoDataset(ABC):
                         dim_rename="npft",
                     )
                 )
-                translated.append(fao_data_npft.dataset)
-
-            if len(translated) == 1:
-                ds = translated[0]
-            else:
-                ds = xr.merge(translated)
+                datasets.append(translated.dataset)
         else:
-            if len(fao_data_list) == 1:
-                ds = fao_data_list[0].dataset
-            else:
-                ds = xr.merge([d.dataset for d in fao_data_list])
-
+            datasets = [d.dataset for d in fao_data_list]
+        
+        ds = xr.merge(datasets) if len(datasets) > 1 else datasets[0]
+        
+        # Convert coordinates
         ds = self._convert_area_codes(ds)
         ds = self._convert_time_coords(ds)
-
+        
         return ds
 
     def _convert_area_codes(self, ds: xr.Dataset) -> xr.Dataset:
-        """Convert area codes from FAO to ISO3 format."""
+        """Convert FAO area codes to ISO3."""
         if "area_code" not in ds.dims:
             return ds
-
-        print("  Converting area codes to ISO3...")
+        
         fao_to_iso3 = fao_definitions.get_area_code_dict(
             code_standard_out="ISO3", code_standard_in="FAO"
         )
-        current_codes = ds.area_code.values
-        iso3_codes = [fao_to_iso3.get(str(c), str(c)) for c in current_codes]
-
-        valid_mask = [bool(c) for c in iso3_codes]
-        if not all(valid_mask):
-            valid_indices = [i for i, v in enumerate(valid_mask) if v]
-            ds = ds.isel(area_code=valid_indices)
-            iso3_codes = [iso3_codes[i] for i in valid_indices]
-
-        ds = ds.assign_coords(area_code=iso3_codes)
-        return ds
+        
+        current = ds.area_code.values
+        iso3 = [fao_to_iso3.get(str(c), "") for c in current]
+        
+        # Filter out unmapped codes
+        valid_idx = [i for i, code in enumerate(iso3) if code]
+        if len(valid_idx) < len(iso3):
+            ds = ds.isel(area_code=valid_idx)
+            iso3 = [iso3[i] for i in valid_idx]
+        
+        return ds.assign_coords(area_code=iso3)
 
     def _convert_time_coords(self, ds: xr.Dataset) -> xr.Dataset:
-        """Convert time coordinates from cftime to integer years."""
+        """Convert time coordinates to integer years."""
         if "time" not in ds.dims:
             return ds
-
-        print("  Converting time coordinates to integer years...")
-        time_values = ds.time.values
-        if hasattr(time_values[0], "year"):
-            years = [int(t.year) for t in time_values]
-        else:
-            years = [int(t) for t in time_values]
-
+        
+        years = [
+            int(t.year) if hasattr(t, "year") else int(t)
+            for t in ds.time.values
+        ]
+        
         ds = ds.assign_coords(time=years)
-        ds.time.attrs["units"] = "year"
-        ds.time.attrs["long_name"] = "Year"
+        ds.time.attrs.update(units="year", long_name="Year")
         return ds
 
+    # -------------------------------------------------------------------------
+    # Main Entry Points
+    # -------------------------------------------------------------------------
+    
     def prepare(
         self,
         cache_path: str | Path | None = None,
@@ -362,148 +452,98 @@ class FaoDataset(ABC):
         years: tuple[int, int] = (1990, 2020),
         country_codes: list[str] | None = None,
     ) -> xr.Dataset:
-        """Prepare FAO data: download, transform, and optionally save.
-
+        """Download, transform, and optionally save FAO data.
+        
         Parameters
         ----------
-        cache_path : str | Path | None
-            Path to cache downloaded data (parquet). If exists, loads from cache.
-        output_path : str | Path | None
-            Path to save output NetCDF. If None, returns dataset without saving.
+        cache_path : Path, optional
+            Parquet cache for raw downloaded data.
+        output_path : Path, optional
+            Where to save the final NetCDF.
         years : tuple[int, int]
-            Year range (start, end) inclusive.
-        country_codes : list[str] | None
-            Specific ISO3 country codes to download. If None, downloads all.
-
+            Year range (inclusive).
+        country_codes : list[str], optional
+            ISO3 codes to download. If None, downloads all countries.
+            
         Returns
         -------
         xr.Dataset
-            Prepared dataset.
-
-        Raises
-        ------
-        RuntimeError
-            If FAO API is unavailable and no cache exists.
+            Processed dataset.
         """
         year_list = [str(y) for y in range(years[0], years[1] + 1)]
-
-        # Check cache first
+        
+        # Try cache first
         if cache_path and Path(cache_path).exists():
-            print(f"Loading {self.name} from cache: {cache_path}")
             df = pd.read_parquet(cache_path)
         else:
-            # Check API availability before attempting download
-            print(f"Checking FAO API availability...")
             if not check_fao_api_available():
-                raise RuntimeError(
-                    "FAO API is unavailable (requires authentication or is down). "
-                    "Use dummy data fallback or provide cached data."
-                )
-
-            # Get country codes in FAO format
+                raise RuntimeError("FAO API unavailable. Check authentication.")
+            
+            # Convert country codes
             if country_codes:
-                fao_codes = []
-                for iso3 in country_codes:
-                    fao_code = get_fao_country_code(iso3)
-                    if fao_code:
-                        fao_codes.append(fao_code)
-                    else:
-                        print(f"  Warning: Unknown country code {iso3}, skipping")
+                fao_codes = [get_fao_country_code(c) for c in country_codes]
+                fao_codes = [c for c in fao_codes if c]
                 if not fao_codes:
-                    raise RuntimeError(f"No valid country codes found in {country_codes}")
+                    raise RuntimeError(f"No valid FAO codes for: {country_codes}")
                 countries = pd.Series(fao_codes)
             else:
                 countries = fao_definitions.get_all_country_codes()
-
+            
             adapter = FaoApiAdapter()
             df = self.download(adapter, year_list, countries)
+            
             if cache_path:
-                print(f"Saving to cache: {cache_path}")
                 Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
                 df.to_parquet(cache_path)
-
+        
         ds = self.transform(df)
         ds = self._post_process(ds)
-
+        
         if output_path:
-            print(f"Saving to {output_path}...")
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             ds.to_netcdf(output_path)
-
-        print(f"Done preparing {self.name}!")
-        print(f"  Dimensions: {dict(ds.dims)}")
-        print(f"  Variables: {list(ds.data_vars)}")
-
+        
         return ds
 
     def ensure(
         self,
         sim_path: str | Path,
         country_codes: list[str] | None = None,
-        reference_year: int | None = None,
+        reference_year: int = 2020,
         years_before: int = 5,
         force_download: bool = False,
-        use_dummy_on_failure: bool = True,
     ) -> Path:
-        """Ensure FAO data is available in simulation input folder.
-
-        Downloads only the data needed: specific countries and a few years
-        around the reference year for robust averaging.
-
-        Priority order:
-        1. Real data file exists → use silently
-        2. Try to download from FAO API → save as real data
-        3. API fails + dummy exists → use existing dummy with warning
-        4. API fails + no dummy + use_dummy_on_failure → generate dummy data
-
+        """Ensure FAO data is available, downloading if needed.
+        
         Parameters
         ----------
-        sim_path : str | Path
-            Simulation path (pycoupler sim_path).
-        country_codes : list[str] | None
-            ISO3 country codes to download (e.g., ["NLD"]). If None, downloads all.
-        reference_year : int | None
-            Reference year for data (e.g., simulation start year). Downloads
-            this year plus years_before previous years. If None, uses 2020.
+        sim_path : Path
+            Simulation directory.
+        country_codes : list[str], optional
+            ISO3 codes to download.
+        reference_year : int
+            Target year for data.
         years_before : int
-            Number of years before reference_year to include (default 5).
-            This provides data for robust averaging.
+            Years before reference_year to include.
         force_download : bool
-            If True, re-download even if file exists.
-        use_dummy_on_failure : bool
-            If True (default), use/generate dummy data when FAO API fails.
-
+            Re-download even if file exists.
+            
         Returns
         -------
         Path
-            Path to the FAO data file (real or dummy).
-
-        Raises
-        ------
-        RuntimeError
-            If data cannot be downloaded/prepared and use_dummy_on_failure=False.
+            Path to the data file (real or dummy).
         """
         output_path = self.get_path(sim_path)
         dummy_path = self.get_dummy_path(sim_path)
-
-        # Priority 1: Real data exists - use silently
+        
+        # Use existing file if available
         if output_path.exists() and not force_download:
             return output_path
-
-        # Compute year range
-        if reference_year is None:
-            reference_year = 2020
-        year_start = reference_year - years_before
-        years = (year_start, reference_year)
-
-        # Priority 2: Try to download from FAO API
-        if country_codes:
-            print(f"Downloading {self.name} for {country_codes} ({years[0]}-{years[1]})...")
-        else:
-            print(f"Downloading {self.name} for all countries ({years[0]}-{years[1]})...")
+        
+        years = (reference_year - years_before, reference_year)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path = output_path.parent / f"{self.name}_cache.parquet"
-
+        
         try:
             self.prepare(
                 cache_path=cache_path,
@@ -511,76 +551,36 @@ class FaoDataset(ABC):
                 years=years,
                 country_codes=country_codes,
             )
-            # Success - delete any existing dummy file
+            # Clean up old dummy if real data now available
             if dummy_path.exists():
                 dummy_path.unlink()
-                print(f"  Removed obsolete dummy file: {dummy_path.name}")
             return output_path
+            
         except Exception as e:
-            if use_dummy_on_failure:
-                print(f"WARNING: FAO API failed: {e}")
-                # Priority 3: Use existing dummy if available
-                if dummy_path.exists():
-                    print(f"Using existing DUMMY data: {dummy_path.name}")
-                    return dummy_path
-                # Priority 4: Generate new dummy
-                print(f"Generating DUMMY data for {self.name}...")
-                self._generate_dummy_fallback(dummy_path, years)
+            # Fall back to dummy data
+            if dummy_path.exists():
+                print(f"WARNING: Using cached dummy data ({e})")
                 return dummy_path
-            else:
-                raise RuntimeError(
-                    f"Failed to download/prepare {self.name}: {e}\n"
-                    f"Please check your internet connection and try again, or "
-                    f"manually prepare the data and place it at: {output_path}"
-                ) from e
+            
+            print(f"WARNING: FAO API failed, generating dummy data ({e})")
+            self._generate_dummy_fallback(dummy_path, years)
+            return dummy_path
 
-    def _generate_dummy_fallback(
-        self,
-        output_path: Path,
-        years: tuple[int, int],
-    ) -> None:
-        """Generate dummy data as fallback when FAO API fails.
-
-        Override in subclasses to provide domain-specific dummy data.
-
-        Parameters
-        ----------
-        output_path : Path
-            Where to save the dummy data.
-        years : tuple[int, int]
-            Year range for data generation.
-        """
+    def _generate_dummy_fallback(self, output_path: Path, years: tuple[int, int]) -> None:
+        """Generate dummy data when FAO API fails. Override in subclasses."""
         raise NotImplementedError(
-            f"Dummy data generation not implemented for {self.name}. "
-            f"Please provide data manually at: {output_path}"
+            f"Dummy generation not implemented for {self.name}. "
+            f"Provide data manually at: {output_path}"
         )
 
+    # -------------------------------------------------------------------------
+    # Status Checks
+    # -------------------------------------------------------------------------
+    
     def is_available(self, sim_path: str | Path) -> bool:
-        """Check if FAO data (real or dummy) is available.
-
-        Parameters
-        ----------
-        sim_path : str | Path
-            Simulation path (pycoupler sim_path).
-
-        Returns
-        -------
-        bool
-            True if real or dummy data file exists.
-        """
+        """Check if data (real or dummy) exists."""
         return self.get_path(sim_path).exists() or self.get_dummy_path(sim_path).exists()
 
     def is_dummy(self, sim_path: str | Path) -> bool:
-        """Check if only dummy data is available (no real data).
-
-        Parameters
-        ----------
-        sim_path : str | Path
-            Simulation path (pycoupler sim_path).
-
-        Returns
-        -------
-        bool
-            True if using dummy data (real data not available).
-        """
+        """Check if only dummy data is available."""
         return not self.get_path(sim_path).exists() and self.get_dummy_path(sim_path).exists()
