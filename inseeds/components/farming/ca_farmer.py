@@ -22,9 +22,6 @@ References:
 - Ajzen, I. (1991). The theory of planned behavior. OBHDP.
 """
 
-import numpy as np
-import xarray as xr
-
 from inseeds.components.farming.farmer import Farmer
 from inseeds.components.farming.ca_behaviour import TPB
 
@@ -151,13 +148,11 @@ class ConservationAgricultureFarmer(Farmer):
         self.practice_costs = pc.to_dict() if hasattr(pc, "to_dict") else dict(pc)
 
         # -----------------------------------------------------------------
-        # Load residue economics
+        # Load residue economics (spatially-explicit from MADRaT data)
         # -----------------------------------------------------------------
-        # Opportunity cost: value of residue if sold/used elsewhere (e.g., feed)
-        # Retaining residue means forgoing this income
-        res = self.model.config.coupled_config.residue_economics
-        use_costs = res.use_costs.to_dict() if hasattr(res.use_costs, "to_dict") else dict(res.use_costs)
-        self._residue_opportunity_cost_per_ha = use_costs[res.default_removal_use]
+        # Opportunity cost: value of residue if sold/used elsewhere
+        # Weighted by spatial fractions of burnt, removed, and left on field
+        self._residue_opportunity_cost_per_ha = self._compute_residue_opportunity_cost()
 
         # -----------------------------------------------------------------
         # Initialize behaviour
@@ -221,6 +216,79 @@ class ConservationAgricultureFarmer(Farmer):
             Opportunity cost per ha.
         """
         return self._residue_opportunity_cost_per_ha
+
+    # =========================================================================
+    # RESIDUE ECONOMICS
+    # =========================================================================
+
+    def _compute_residue_opportunity_cost(self):
+        """Compute opportunity cost of retaining residue using spatial data.
+
+        Uses MADRaT data for spatially-explicit fractions of residue burnt,
+        removed, and recycled. The opportunity cost is the weighted sum
+        of per-use costs from config, weighted by these fractions.
+        
+        MADRaT data structure (Smerald et al. 2023):
+            production = recycled + removed + burnt
+            - burnt: burned (no economic value)
+            - removed: animal feed + other purposes (has opportunity cost)
+            - recycled: bedding that returns to field with manure
+
+        If spatial data is unavailable, falls back to config default.
+
+        Returns
+        -------
+        float
+            Opportunity cost per hectare ($/ha/yr).
+        """
+        res_cfg = self.model.config.coupled_config.residue_economics
+        use_costs = res_cfg.use_costs.to_dict() if hasattr(res_cfg.use_costs, "to_dict") else dict(res_cfg.use_costs)
+
+        # Try to get spatial fractions
+        fracs = self._get_residue_fractions()
+        if fracs is not None:
+            # Weighted opportunity cost from spatial data
+            # Only removed residues have economic value (animal feed + other)
+            # Burnt has no value, recycled returns to field via manure
+            return (
+                fracs['burnt'] * use_costs.get('burnt', 0.0) +
+                fracs['removed'] * use_costs.get('removed', use_costs.get('other', 40.0)) +
+                fracs['recycled'] * use_costs.get('recycled', 0.0)
+            )
+        else:
+            # Fallback to config default
+            return use_costs.get(res_cfg.default_removal_use, 40.0)
+
+    def _get_residue_fractions(self):
+        """Get residue use fractions for this cell, weighted by crop composition.
+
+        Uses MADRaT CFT-specific data weighted by actual cftfrac from LPJmL.
+        This ensures residue fractions reflect the actual crop mix in each cell.
+
+        Returns
+        -------
+        dict or None
+            Dict with 'burnt', 'removed', 'recycled' fractions (0-1),
+            or None if data not available.
+        """
+        if not hasattr(self.model.world, 'residue_fractions') or self.model.world.residue_fractions is None:
+            return None
+
+        rf = self.model.world.residue_fractions
+
+        # Get cell index from grid
+        cell_idx = self.cell.grid.cell.item()
+
+        # Get crop fractions from LPJmL for weighting
+        cftfrac = self._get_from_earth("cftfrac")
+        if cftfrac is None:
+            return None
+
+        try:
+            from inseeds.components.data.residue import ResidueData
+            return ResidueData.weighted_fractions(rf, cell_idx, cftfrac)
+        except Exception:
+            return None
 
     # =========================================================================
     # COVER CROP TYPE SELECTION
@@ -582,11 +650,19 @@ class ConservationAgricultureFarmer(Farmer):
         5. Run TPB decision logic
         6. Apply practice switch if TPB threshold exceeded
 
+        Sets behaviour._switch_blocker to indicate why switch didn't happen.
+
         Parameters
         ----------
         t : int
             Current simulation year.
         """
+        # Import blocker constants here to avoid circular imports
+        from inseeds.components.farming.ca_behaviour import (
+            BLOCKER_NONE, BLOCKER_CONTROL_RUN, BLOCKER_CAPITAL_SURVIVAL,
+            BLOCKER_TRANSITION_UNAFFORDABLE
+        )
+
         # -----------------------------------------------------------------
         # Step 1: Parent update
         # -----------------------------------------------------------------
@@ -596,6 +672,7 @@ class ConservationAgricultureFarmer(Farmer):
         # Step 2: Skip CA dynamics in control run
         # -----------------------------------------------------------------
         if self.control_run:
+            self.behaviour._switch_blocker = BLOCKER_CONTROL_RUN
             return
 
         # -----------------------------------------------------------------
@@ -614,6 +691,7 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Farmer is in survival mode; no voluntary practice changes
         if self.capital < self.min_capital:
+            self.behaviour._switch_blocker = BLOCKER_CAPITAL_SURVIVAL
             return
 
         # -----------------------------------------------------------------
@@ -652,3 +730,11 @@ class ConservationAgricultureFarmer(Farmer):
                         # Apply new practices
                         self.behaviour.apply_bundle(new_bundle)
                         self.behaviour.record_switch(new_bundle)
+                        # Clear blocker since switch succeeded
+                        self.behaviour._switch_blocker = BLOCKER_NONE
+                    else:
+                        # Can't afford transition cost
+                        self.behaviour._switch_blocker = BLOCKER_TRANSITION_UNAFFORDABLE
+        else:
+            # TPB score below threshold - identify which component is limiting
+            self.behaviour.set_tpb_switch_blocker()

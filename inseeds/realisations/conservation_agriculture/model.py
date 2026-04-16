@@ -1,13 +1,28 @@
 from pycopancore.data_model.variable import Variable
+from pycopancore.data_model.unit import Unit
 from pycopancore.data_model.master_data_model.dimensions_and_units import (
     DimensionsAndUnits as DAU,
 )
+
+import xarray as xr
 
 from inseeds.components import base
 from inseeds.components import farming
 from inseeds.components.farming import ConservationAgricultureFarmer
 from inseeds.components.farming.ca_country import CACountry
 from inseeds.components import lpjml
+from inseeds.components.data.residue import ResidueData
+from inseeds.components.farming.ca_behaviour import (
+    BUNDLE_IDS, BUNDLE_NAMES, BLOCKER_NAMES
+)
+
+# Custom unit for millions of dollars
+MEGADOLLARS = Unit("megadollars", symbol="M$")
+
+# Mapping from bundle ID (0-7) to bundle name
+BUNDLE_ID_TO_NAME = {v: BUNDLE_NAMES[k] for k, v in BUNDLE_IDS.items()}
+# Add -1 for "no proposed bundle"
+BUNDLE_ID_TO_NAME[-1] = ""
 
 
 class Farmer(ConservationAgricultureFarmer):
@@ -34,6 +49,10 @@ class Farmer(ConservationAgricultureFarmer):
             "root moisture",
             "root moisture of agent land (mm)",
         ),
+        litter_cover=Variable(
+            "litter cover",
+            "fractional soil cover from crop residues (0-1, CA threshold is 0.3)",
+        ),
         tillage=Variable(
             "agent tillage behaviour",
             "conventional=1, conservation=0",
@@ -50,14 +69,56 @@ class Farmer(ConservationAgricultureFarmer):
         ),
         capital=Variable(
             "farm capital",
-            "farm capital stock in USD (total, scaled by farm size)",
+            "farm capital stock (total, scaled by farm size)",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
         ),
         farm_size=Variable(
             "farm size",
             "farm size in hectares (sum of cftfrac * area)",
             unit=DAU.ha,
         ),
+        # TPB decision model outputs (accessed via behaviour.X)
+        **{
+            "behaviour.practice_bundle": Variable(
+                "practice bundle",
+                "current bundle ID (0-7)",
+            ),
+            "behaviour.proposed_bundle": Variable(
+                "proposed bundle",
+                "bundle being evaluated (-1 if none)",
+            ),
+            "behaviour.tpb": Variable(
+                "TPB score",
+                "TPB intention score for proposed bundle",
+            ),
+            "behaviour.attitude": Variable(
+                "attitude",
+                "attitude component of TPB",
+            ),
+            "behaviour.social_norm": Variable(
+                "social norm",
+                "social norm component of TPB",
+            ),
+            "behaviour.pbc": Variable(
+                "PBC",
+                "perceived behavioral control component of TPB",
+            ),
+            "behaviour.switch_blocker": Variable(
+                "switch blocker",
+                "primary reason for blocked switch (0-11)",
+            ),
+        },
     )
+
+    # Label mappings for categorical output variables
+    # Maps variable name -> {numeric_code: human_readable_label}
+    # Used by output.py to populate the 'label' column in CSV/Parquet
+    output_label_mappings = {
+        "behaviour.practice_bundle": BUNDLE_ID_TO_NAME,
+        "behaviour.proposed_bundle": BUNDLE_ID_TO_NAME,
+        "behaviour.switch_blocker": BLOCKER_NAMES,
+    }
 
 
 class Cell(lpjml.Cell, farming.Cell):
@@ -106,6 +167,9 @@ class Model(lpjml.Model):
             country_code=self.lpjml.country,
             area=self.lpjml.terr_area,
         )
+
+        # Load residue fraction data for opportunity cost calculation
+        self._load_residue_data()
 
         # Initialize countries if country data is available
         if (
@@ -172,6 +236,29 @@ class Model(lpjml.Model):
         self.update_lpjml(t)
         # Collect outputs (if enabled in config)
         self.collect_outputs(t)
+
+    def _load_residue_data(self):
+        """Load residue fraction data for opportunity cost calculation.
+
+        Extracts MADRaT residue data (burnt, removed, left on field fractions)
+        for the simulation grid and stores on world.residue_fractions.
+        """
+        try:
+            res_cfg = self.config.coupled_config.residue_economics
+            reference_year = getattr(res_cfg, 'reference_year', 2015)
+        except AttributeError:
+            reference_year = 2015
+
+        try:
+            residue_cache = ResidueData.ensure(
+                sim_path=self.config.sim_path,
+                grid=self.lpjml.grid,
+                reference_year=reference_year,
+            )
+            self.world.residue_fractions = xr.open_dataset(residue_cache)
+        except Exception as e:
+            print(f"Warning: Could not load residue data: {e}")
+            self.world.residue_fractions = None
 
     def _preload_fao_data(self):
         """Pre-load FAO data for all countries before initialization.

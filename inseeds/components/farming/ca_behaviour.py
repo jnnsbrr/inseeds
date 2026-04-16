@@ -77,23 +77,37 @@ BUNDLE_IDS = {
     (1, 0, 0): 4, (1, 0, 1): 5, (1, 1, 0): 6, (1, 1, 1): 7,
 }
 
+# Switch blocker codes - indicates WHY a proposed bundle was not adopted
+# These follow the decision flow order (first blocker hit is the primary reason)
+BLOCKER_NONE = 0                    # No blocker - switch happened or maintaining current
+BLOCKER_MIN_OBS_YEARS = 1           # Not enough observation years yet
+BLOCKER_FALLBACK_TRIGGERED = 2      # Reverting to previous bundle (adaptive management)
+BLOCKER_NO_TARGET = 3               # No better neighbour + exploration didn't trigger
+BLOCKER_TARGET_SAME = 4             # Target bundle same as current (already optimal)
+BLOCKER_TARGET_UNAFFORDABLE = 5     # Target reduced to current due to cost
+BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND = 6    # TPB below threshold - own land attitude is limiting
+BLOCKER_TPB_LOW_ATTITUDE_SOCIAL = 7 # TPB below threshold - social learning attitude is limiting
+BLOCKER_TPB_LOW_SOCIAL_NORM = 8     # TPB below threshold - social norm is limiting factor
+BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC is limiting factor
+BLOCKER_TRANSITION_UNAFFORDABLE = 10 # Can't afford transition cost
+BLOCKER_CAPITAL_SURVIVAL = 11       # Capital below survival threshold
+BLOCKER_CONTROL_RUN = 12            # Control run - no CA dynamics
 
-# =============================================================================
-# DEFAULT TIME PARAMETERS (can be overridden in config per AFT)
-# =============================================================================
-# These are fallback defaults. Actual values come from config.yaml aftpar.
-# Different AFT types (pioneer vs traditionalist) can have different values.
-
-# How long farmers remember outcomes from past practice bundles
-# After this period, old experiences are "forgotten" (reset to neutral)
-DEFAULT_MEMORY_DECAY_YEARS = 30
-
-# How many consecutive years of declining performance before reverting
-# to the previous practice bundle (adaptive management / fallback)
-DEFAULT_FALLBACK_YEARS = 10
-
-# Years to reach full confidence in own/neighbour experience (linear ramp)
-DEFAULT_CONFIDENCE_YEARS = 10
+BLOCKER_NAMES = {
+    BLOCKER_NONE: "none",
+    BLOCKER_MIN_OBS_YEARS: "min_obs_years",
+    BLOCKER_FALLBACK_TRIGGERED: "fallback_triggered",
+    BLOCKER_NO_TARGET: "no_target",
+    BLOCKER_TARGET_SAME: "target_same",
+    BLOCKER_TARGET_UNAFFORDABLE: "target_unaffordable",
+    BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND: "tpb_low_attitude_own_land",
+    BLOCKER_TPB_LOW_ATTITUDE_SOCIAL: "tpb_low_attitude_social",
+    BLOCKER_TPB_LOW_SOCIAL_NORM: "tpb_low_social_norm",
+    BLOCKER_TPB_LOW_PBC: "tpb_low_pbc",
+    BLOCKER_TRANSITION_UNAFFORDABLE: "transition_unaffordable",
+    BLOCKER_CAPITAL_SURVIVAL: "capital_survival",
+    BLOCKER_CONTROL_RUN: "control_run",
+}
 
 
 # =============================================================================
@@ -157,12 +171,15 @@ class DecisionModel(ABC):
         #   tillage=0 means no tillage (no-till, CA practice)
         #   tillage=1 means tillage is ON (conventional)
         #   cover_crop=0 means no cover crop, >0 means cover crop planted
-        #   residue=0 means baseline removal, >baseline means retention
+        #   residue: 1 if litter cover >= CA threshold (30%), 0 otherwise
+
+        # Get CA cover threshold from config
+        ca_threshold = agent.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
 
         self._practice_bundle = (
             int(agent.tillage),
             1 if agent.cover_crop > 0 else 0,
-            1 if agent.residue_on_field > 0.5 else 0,
+            1 if agent.litter_cover >= ca_threshold else 0,
         )
 
         # Proposed bundle for potential switch (set by update())
@@ -453,6 +470,20 @@ class DecisionModel(ABC):
         """Proposed bundle as human-readable name."""
         return BUNDLE_NAMES.get(self._proposed_bundle, "unknown") if self._proposed_bundle else ""
 
+    @property
+    def switch_blocker(self):
+        """Primary reason why proposed bundle was not adopted (numeric code).
+        
+        See BLOCKER_* constants for codes. 0 = no blocker (switch happened
+        or no switch needed).
+        """
+        return getattr(self, '_switch_blocker', BLOCKER_NONE)
+
+    @property
+    def switch_blocker_name(self):
+        """Human-readable name of switch blocker."""
+        return BLOCKER_NAMES.get(self.switch_blocker, "unknown")
+
     # -------------------------------------------------------------------------
     # Trend computation
     # -------------------------------------------------------------------------
@@ -623,7 +654,9 @@ class TPB(DecisionModel):
 
         # TPB components (updated each timestep)
         self._tpb = 0.0          # Overall intention score
-        self._attitude = 0.0     # Attitude toward behavior
+        self._attitude = 0.0     # Attitude toward behavior (combined)
+        self._attitude_own_land = 0.0    # Attitude from own land performance
+        self._attitude_social_learning = 0.0  # Attitude from social learning
         self._social_norm = 0.0  # Subjective norm
         self._pbc = 0.0          # Perceived behavioral control
 
@@ -638,8 +671,18 @@ class TPB(DecisionModel):
 
     @property
     def attitude(self):
-        """Attitude component of TPB."""
+        """Attitude component of TPB (combined)."""
         return self._attitude
+
+    @property
+    def attitude_own_land(self):
+        """Attitude from own land performance."""
+        return self._attitude_own_land
+
+    @property
+    def attitude_social_learning(self):
+        """Attitude from social learning."""
+        return self._attitude_social_learning
 
     @property
     def social_norm(self):
@@ -667,7 +710,12 @@ class TPB(DecisionModel):
         6. Find best-performing neighbour's bundle OR explore randomly
         7. Adjust target bundle for affordability
         8. Compute TPB scores for the proposed bundle
+        
+        Sets _switch_blocker to indicate why switch didn't happen (if applicable).
         """
+        # Reset blocker at start of each update
+        self._switch_blocker = BLOCKER_NONE
+
         # -----------------------------------------------------------------
         # Step 1: Add current year's observation to regression
         # -----------------------------------------------------------------
@@ -701,6 +749,7 @@ class TPB(DecisionModel):
         if n_obs < min_obs:
             self._tpb = 0.0
             self._proposed_bundle = None
+            self._switch_blocker = BLOCKER_MIN_OBS_YEARS
             return
 
         # -----------------------------------------------------------------
@@ -710,7 +759,10 @@ class TPB(DecisionModel):
         # propose reverting to the previous bundle (adaptive management)
 
         if self._check_fallback():
-            return  # Fallback sets _proposed_bundle and _tpb internally
+            # Fallback sets _proposed_bundle and _tpb internally
+            # Blocker will be set by should_switch() if TPB too low
+            self._switch_blocker = BLOCKER_FALLBACK_TRIGGERED
+            return
 
         # -----------------------------------------------------------------
         # Step 6: Find target bundle (neighbour imitation or exploration)
@@ -724,9 +776,16 @@ class TPB(DecisionModel):
             target_bundle = self._maybe_explore_bundle()
 
         # No change proposed
-        if target_bundle is None or target_bundle == self._practice_bundle:
+        if target_bundle is None:
             self._tpb = 0.0
             self._proposed_bundle = None
+            self._switch_blocker = BLOCKER_NO_TARGET
+            return
+
+        if target_bundle == self._practice_bundle:
+            self._tpb = 0.0
+            self._proposed_bundle = None
+            self._switch_blocker = BLOCKER_TARGET_SAME
             return
 
         # -----------------------------------------------------------------
@@ -740,6 +799,7 @@ class TPB(DecisionModel):
         if affordable_bundle == self._practice_bundle:
             self._tpb = 0.0
             self._proposed_bundle = None
+            self._switch_blocker = BLOCKER_TARGET_UNAFFORDABLE
             return
 
         # -----------------------------------------------------------------
@@ -747,6 +807,9 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         self._proposed_bundle = affordable_bundle
         self._compute_tpb_for_bundle(affordable_bundle)
+        
+        # Blocker will be set to BLOCKER_TPB_BELOW_THRESHOLD by CAFarmer
+        # if should_switch() returns False
 
     # =========================================================================
     # FALLBACK MECHANISM (Adaptive Management)
@@ -942,18 +1005,63 @@ class TPB(DecisionModel):
         Compares TPB intention score to threshold. Higher threshold
         when reverting (to avoid oscillation).
 
+        Thresholds are non-AFT-specific (from config.tpb_thresholds).
+        Behavioral differences between AFTs come from weights and PBC.
+
         Returns
         -------
         bool
             True if TPB exceeds threshold and switch should occur.
         """
+        # Get thresholds from config (non-AFT-specific)
+        tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
+        switch_threshold = tpb_cfg.switch_threshold
+        revert_threshold = tpb_cfg.revert_threshold
+
         # Higher threshold for reverting (avoid flip-flopping)
         if self._proposed_bundle == self._previous_bundle:
-            threshold = self._get_aft_param("revert_threshold")
+            threshold = revert_threshold
         else:
-            threshold = self._get_aft_param("switch_threshold")
+            threshold = switch_threshold
 
         return self._tpb > threshold
+
+    def set_tpb_switch_blocker(self):
+        """Set switch_blocker to indicate which TPB component is most limiting.
+
+        Called when should_switch() returns False to identify which component
+        (attitude_own_land, attitude_social_learning, social_norm, or pbc)
+        is furthest below the threshold and thus the primary bottleneck.
+
+        Only sets blocker if there's a proposed bundle being evaluated.
+        """
+        if self._proposed_bundle is None:
+            return
+
+        # Get threshold from config
+        tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
+        threshold = tpb_cfg.switch_threshold
+
+        # Calculate gap below threshold (positive = below threshold)
+        gaps = {
+            'attitude': threshold - self._attitude,
+            'social_norm': threshold - self._social_norm,
+            'pbc': threshold - self._pbc,
+        }
+
+        # Find component with largest gap (most below threshold)
+        max_gap_component = max(gaps, key=gaps.get)
+
+        if max_gap_component == 'attitude':
+            # Attitude is limiting - determine which sub-component is lower
+            if self._attitude_own_land <= self._attitude_social_learning:
+                self._switch_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
+            else:
+                self._switch_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL
+        elif max_gap_component == 'social_norm':
+            self._switch_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM
+        else:
+            self._switch_blocker = BLOCKER_TPB_LOW_PBC
 
     # =========================================================================
     # APPLY BUNDLE TO AGENT
@@ -987,17 +1095,24 @@ class TPB(DecisionModel):
             self.agent.cover_crop = 0
 
         # -----------------------------------------------------------------
-        # Residue retention: 0 = baseline, 1 = retain (capital-constrained)
+        # Residue retention: 0 = baseline, 1 = retain to reach CA threshold
         # -----------------------------------------------------------------
+        # CA threshold from config (default 30% soil cover per FAO definition)
+        # If already at/above threshold, maintain current level
+        # If below, increase retention to reach threshold (if affordable)
+        ca_threshold = self.agent.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
+
         if bundle[2] == 1:
-            # Retention level depends on capital vs opportunity cost
-            opp_cost = self.agent.residue_opportunity_cost
-            if opp_cost > 0:
-                affordable = min(1.0, self.agent.capital / opp_cost)
-            else:
-                affordable = 1.0
-            self.agent.residue_on_field = max(self.agent.residue_baseline, affordable)
+            # Want CA residue retention
+            if self.agent.litter_cover < ca_threshold:
+                # Below threshold - need to increase retention if affordable
+                opp_cost = self.agent.residue_opportunity_cost
+                can_afford = opp_cost <= 0 or self.agent.capital >= opp_cost
+                if can_afford:
+                    self.agent.residue_on_field = 1.0
+            # If already at threshold, keep current residue_on_field unchanged
         else:
+            # Not pursuing CA residue retention - use baseline
             self.agent.residue_on_field = self.agent.residue_baseline
 
         # -----------------------------------------------------------------
@@ -1239,10 +1354,40 @@ class TPB(DecisionModel):
         return w_bundle * bundle_sim + w_crop * crop_sim
 
     # =========================================================================
+    # TPB COMPONENT: ATTITUDE (Own Land)
+    # =========================================================================
+
+    def _compute_attitude_own_land(self):
+        """Compute attitude from own land performance trends.
+
+        "Am I doing poorly with my current practices?"
+        Based on current_trend (regression over all observations).
+        Declining performance → high attitude → more willing to switch
+        Improving performance → low attitude → less willing to switch
+
+        Structure matches old tillage_farmer.py:
+        - Weighted sum of individual trend components
+        - Negate (so decline → positive)
+        - Final sigmoid
+
+        Returns
+        -------
+        float
+            Attitude score in [0, 1].
+        """
+        trend = self.current_trend
+        raw_own = (
+            self.agent.weight_yield * (-trend["yield"])
+            + self.agent.weight_soil * (-trend["soil"])
+            + self.agent.weight_moisture * (-trend["moisture"])
+        )
+        return sigmoid(raw_own)
+
+    # =========================================================================
     # TPB COMPONENT: ATTITUDE (Social Learning)
     # =========================================================================
 
-    def _attitude_social_learning(self, new_bundle):
+    def _compute_attitude_social_learning(self, new_bundle):
         """Compute attitude from neighbours using the proposed bundle.
 
         Social learning (Bandura 1977): farmers learn from observing
@@ -1640,35 +1785,14 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Attitude: own experience + social learning
         # -----------------------------------------------------------------
-        #
-        # att_own: "Am I doing poorly with my current practices?"
-        # Based on current_trend (regression over all observations).
-        # Declining performance → high attitude → more willing to switch
-        # Improving performance → low attitude → less willing to switch
-        #
-        # Structure matches old tillage_farmer.py:
-        # - Weighted sum of individual trend components
-        # - Negate (so decline → positive)
-        # - Final sigmoid
+        # Store sub-components separately for detailed switch_blocker analysis
+        self._attitude_own_land = self._compute_attitude_own_land()
+        self._attitude_social_learning = self._compute_attitude_social_learning(new_bundle)
 
-        trend = self.current_trend
-        raw_own = (
-            self.agent.weight_yield * (-trend["yield"])
-            + self.agent.weight_soil * (-trend["soil"])
-            + self.agent.weight_moisture * (-trend["moisture"])
-        )
-        att_own = sigmoid(raw_own)
-
-        # Social learning component: how are neighbours with proposed bundle
-        # doing compared to me?
-        att_social = self._attitude_social_learning(new_bundle)
-
-        # -----------------------------------------------------------------
         # Weighted combination (same approach as tillage_farmer.py)
-        # -----------------------------------------------------------------
         self._attitude = (
-            self.agent.weight_own_land * att_own
-            + self.agent.weight_social_learning * att_social
+            self.agent.weight_own_land * self._attitude_own_land
+            + self.agent.weight_social_learning * self._attitude_social_learning
         )
 
         # -----------------------------------------------------------------

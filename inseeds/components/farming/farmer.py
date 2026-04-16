@@ -56,13 +56,14 @@ class Farmer(core.Individual, base.Individual):
         #   cell_soilc value is the actual status of soilc of the cell
         self.soilc = self.cell_soilc
 
-        # root moisture is the last "measured" root moisture value of the farmer
-        #   whereas the cell_root_moisture value is the actual status of root
-        #   moisture of the cell
-        self.root_moisture = self.cell_root_moisture
-
         # Same applies for cropyield (as for soilc)
         self.cropyield = self.cell_cropyield
+
+        # Optional outputs (only available in some model versions)
+        if "rootmoist_agr" in self.cell.from_earth:
+            self.root_moisture = self.cell_root_moisture
+        if "litcover_agr" in self.cell.from_earth:
+            self.litter_cover = self.cell_litter_cover
 
     def init_aft(self):
         """Initialize the AFT of the agent."""
@@ -221,6 +222,11 @@ class Farmer(core.Individual, base.Individual):
         return self._get_from_earth("rootmoist_agr", as_scalar=True)
 
     @property
+    def cell_litter_cover(self):
+        """Return fractional soil cover from litter on agricultural stands (0-1)."""
+        return self._get_from_earth("litcover_agr", as_scalar=True)
+
+    @property
     def cell_runoff(self):
         """Return runoff of cell (mm/yr) from LPJmL."""
         return self._get_from_earth("runoff", as_scalar=True)
@@ -331,20 +337,11 @@ class Farmer(core.Individual, base.Individual):
     def update(self, t):
         super().update(t)
 
-        # update the average harvest date of the cell
+        # update cell-level observations from LPJmL output
         self.avg_hdate = self.cell_avg_hdate
-
-        # running average over strategy_switch_duration years to avoid rapid
-        #    switching by weather fluctuations
-        self.cropyield = (
-            (1 - 1 / self.strategy_switch_duration) * self.cropyield
-            + 1 / self.strategy_switch_duration * self.cell_cropyield
-        )
-        self.soilc = (
-            (1 - 1 / self.strategy_switch_duration) * self.soilc
-            + 1 / self.strategy_switch_duration * self.cell_soilc
-        )
-        self.root_moisture = (
-            (1 - 1 / self.strategy_switch_duration) * self.root_moisture
-            + 1 / self.strategy_switch_duration * self.cell_root_moisture
-        )
+        self.cropyield = self.cell_cropyield
+        self.soilc = self.cell_soilc
+        if "rootmoist_agr" in self.cell.from_earth:
+            self.root_moisture = self.cell_root_moisture
+        if "litcover_agr" in self.cell.from_earth:
+            self.litter_cover = self.cell_litter_cover
