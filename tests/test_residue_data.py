@@ -93,7 +93,8 @@ class TestResidueDataExtraction:
         )
 
         total = result.frac_burnt + result.frac_removed + result.frac_recycled
-        np.testing.assert_array_almost_equal(total.values, np.ones(2), decimal=5)
+        # Fractions sum to 1 for each cell (may have CFT dimension)
+        np.testing.assert_array_almost_equal(total.values, np.ones_like(total.values), decimal=5)
 
     def test_fractions_are_normalized(self, mock_madrat_data, mock_grid):
         """Test that fractions are between 0 and 1."""

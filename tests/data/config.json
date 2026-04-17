@@ -15818,7 +15818,7 @@
         "weight_norm": 0.4,
         "weight_social_learning": 0.4,
         "weight_own_land": 0.6,
-        "strategy_switch_duration": 10
+        "strategy_transition_duration": 10
       },
       "pioneer": {
         "pbc": 0.95,
@@ -15828,7 +15828,7 @@
         "weight_norm": 0.2,
         "weight_social_learning": 0.6,
         "weight_own_land": 0.4,
-        "strategy_switch_duration": 10
+        "strategy_transition_duration": 10
       }
     }
   }

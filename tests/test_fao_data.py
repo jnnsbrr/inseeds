@@ -52,7 +52,6 @@ class TestFaoEnsureDummyFallback:
                     sim_path,
                     reference_year=2012,
                     years_before=2,
-                    use_dummy_on_failure=True,
                 )
 
             assert path == prices.get_dummy_path(sim_path)
@@ -79,7 +78,6 @@ class TestFaoEnsureDummyFallback:
                     sim_path,
                     reference_year=2012,
                     years_before=2,
-                    use_dummy_on_failure=True,
                 )
 
             assert path == capital.get_dummy_path(sim_path)
@@ -212,6 +210,7 @@ class TestCACountryFaoLoading:
             country.model = model
             country.country_code = "NLD"
             country._cropland_area = 5000.0  # Pre-set cropland area in ha
+            country._neighbour_codes = []  # No neighbours for this test
 
             # Clear class-level cache to ensure fresh load
             CACountry._fao_prices_ds = None
@@ -224,8 +223,8 @@ class TestCACountryFaoLoading:
             CACountry._fao_crop_share_ds = xr.open_dataset(crop_share_path)
 
             # Call the extraction methods directly (bypassing ensure())
-            country._extract_capital_parameters("NLD")
-            country._extract_prices("NLD")
+            country._extract_capital_parameters("NLD", reference_year=2020)
+            country._extract_prices("NLD", reference_year=2020)
 
             # Verify country has FAO-derived attributes (internal attributes)
             assert hasattr(country, "_depreciation_rate")

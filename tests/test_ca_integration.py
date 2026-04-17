@@ -458,7 +458,6 @@ class TestFAODataBatchDownload:
                 country_codes=["NLD", "DEU", "FRA"],
                 reference_year=2020,
                 years_before=4,
-                use_dummy_on_failure=True,
             )
             
             assert path.exists()
@@ -481,7 +480,6 @@ class TestFAODataBatchDownload:
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=4,
-                use_dummy_on_failure=True,
             )
             
             assert path.exists()
@@ -505,7 +503,6 @@ class TestFAODataYearSelection:
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=4,
-                use_dummy_on_failure=True,
             )
             
             ds = xr.open_dataset(path)
@@ -530,7 +527,6 @@ class TestFAODataYearSelection:
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=2,
-                use_dummy_on_failure=True,
             )
             
             ds = xr.open_dataset(path)
@@ -663,8 +659,8 @@ class TestTPBBehaviourExecution:
         assert isinstance(tpb, (int, float))
         assert 0 <= tpb <= 1
 
-    def test_should_switch_returns_boolean(self, ca_model_instance):
-        """should_switch should return boolean."""
+    def test_should_transition_returns_boolean(self, ca_model_instance):
+        """should_transition should return boolean."""
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
@@ -673,7 +669,7 @@ class TestTPBBehaviourExecution:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        result = farmer.behaviour.should_switch()
+        result = farmer.behaviour.should_transition()
         assert isinstance(result, bool)
 
 

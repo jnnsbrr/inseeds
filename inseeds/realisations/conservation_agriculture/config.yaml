@@ -67,7 +67,8 @@ output:
         - "behaviour.attitude"          # Attitude FOR the proposed_bundle
         - "behaviour.social_norm"       # Social norm FOR the proposed_bundle
         - "behaviour.pbc"               # PBC FOR the proposed_bundle
-        - "behaviour.switch_blocker"    # Primary reason for blocked switch (0-9), name in 'name' column
+        - "behaviour.transition_blocker"    # Primary reason for blocked transition (0-12), label in 'label' column
+        - "behaviour.transition_driver"     # Primary reason for successful transition (0-9), label in 'label' column
         - "capital"                     # Farm capital stock (USD, scaled by farm size)
         - "farm_size"                   # Farm size in hectares
         - "soilc"
@@ -168,8 +169,13 @@ practice_costs:
 # TPB decision thresholds (non-AFT-specific)
 # Behavioral differences between AFTs come from weights and PBC parameters
 tpb_thresholds:
-    switch_threshold: 0.5   # TPB threshold to adopt new practice
+    transition_threshold: 0.5   # TPB threshold to adopt new practice
     revert_threshold: 0.6   # Higher threshold to revert (hysteresis to avoid flip-flopping)
+    # Evaluation interval: farmers don't reconsider practices every year
+    # After transitioning, they commit to observing results for this many years (mean)
+    # Actual interval is randomized: normal(evaluation_interval, evaluation_interval/2)
+    # Literature: Farm planning cycles typically 5-10 years (Pannell et al. 2006)
+    evaluation_interval: 5  # Mean years between practice re-evaluations
 
 # Analogous to LPJmL pftpar, define the AFT parameters for the two different
 #   farmer types
@@ -186,7 +192,7 @@ aftpar:
         weight_social_learning: 0.4
         weight_own_land: 0.6
         # Learning inertia / hysteresis parameters
-        min_observation_years: 3    # Minimum years before considering switch
+        min_observation_years: 3    # Minimum years before considering transition
         # Risk aversion (Chavas & Holt 1996): 0=neutral, 1=very averse
         risk_aversion: 0.2          # Traditionalists are more risk-averse (but must allow PBC > 0.5)
         # Similarity weights for social learning
@@ -205,7 +211,7 @@ aftpar:
         poor_performance_multiplier: 2.0 # Multiplier for poor performers
         max_exploration_prob: 0.15  # Cap on exploration probability
 
-    # AFT for pioneer farmer who more likely tends to switch to new (promising)
+    # AFT for pioneer farmer who more likely tends to transition to new (promising)
     #   regenerative agriculture practices
     pioneer:
         pbc_base: 0.95  # base perceived behavioral control

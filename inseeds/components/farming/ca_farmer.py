@@ -65,7 +65,7 @@ class ConservationAgricultureFarmer(Farmer):
     Affordability Constraints
     -------------------------
     - If capital < min_capital: deselect costly practices until affordable
-    - Transition costs deducted when switching practices (if capital suffices)
+    - Transition costs deducted when transitioning practices (if capital suffices)
 
     Cover Crop Type Selection
     -------------------------
@@ -633,7 +633,7 @@ class ConservationAgricultureFarmer(Farmer):
 
         if new_bundle != self.behaviour._practice_bundle:
             self.behaviour.apply_bundle(new_bundle)
-            self.behaviour.record_switch(new_bundle)
+            self.behaviour.record_transition(new_bundle)
 
     # =========================================================================
     # MAIN UPDATE METHOD
@@ -648,19 +648,20 @@ class ConservationAgricultureFarmer(Farmer):
         3. Update capital (depreciation, investment, profit)
         4. Check affordability (deselect practices if needed)
         5. Run TPB decision logic
-        6. Apply practice switch if TPB threshold exceeded
+        6. Apply practice transition if TPB threshold exceeded
 
-        Sets behaviour._switch_blocker to indicate why switch didn't happen.
+        Sets behaviour._transition_blocker to indicate why transition didn't happen.
 
         Parameters
         ----------
         t : int
             Current simulation year.
         """
-        # Import blocker constants here to avoid circular imports
+        # Import blocker/driver constants here to avoid circular imports
         from inseeds.components.farming.ca_behaviour import (
             BLOCKER_NONE, BLOCKER_CONTROL_RUN, BLOCKER_CAPITAL_SURVIVAL,
-            BLOCKER_TRANSITION_UNAFFORDABLE
+            BLOCKER_TRANSITION_UNAFFORDABLE, BLOCKER_EVALUATION_TIME,
+            DRIVER_NONE, DRIVER_FALLBACK
         )
 
         # -----------------------------------------------------------------
@@ -672,7 +673,8 @@ class ConservationAgricultureFarmer(Farmer):
         # Step 2: Skip CA dynamics in control run
         # -----------------------------------------------------------------
         if self.control_run:
-            self.behaviour._switch_blocker = BLOCKER_CONTROL_RUN
+            self.behaviour._transition_blocker = BLOCKER_CONTROL_RUN
+            self.behaviour._transition_driver = DRIVER_NONE
             return
 
         # -----------------------------------------------------------------
@@ -691,18 +693,30 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Farmer is in survival mode; no voluntary practice changes
         if self.capital < self.min_capital:
-            self.behaviour._switch_blocker = BLOCKER_CAPITAL_SURVIVAL
+            self.behaviour._transition_blocker = BLOCKER_CAPITAL_SURVIVAL
+            self.behaviour._transition_driver = DRIVER_NONE
             return
 
         # -----------------------------------------------------------------
-        # Step 6: Run TPB decision logic
+        # Step 6: Check if farmer should evaluate this year
+        # -----------------------------------------------------------------
+        # Farmers don't reconsider every year - they commit to observing
+        # results for a period before reconsidering
+        if not self.behaviour.should_evaluate():
+            self.behaviour._transition_blocker = BLOCKER_EVALUATION_TIME
+            self.behaviour._transition_driver = DRIVER_NONE  # Reset driver when not evaluating
+            self.behaviour.decrement_evaluation_time()
+            return
+
+        # -----------------------------------------------------------------
+        # Step 7: Run TPB decision logic
         # -----------------------------------------------------------------
         self.behaviour.update()
 
         # -----------------------------------------------------------------
-        # Step 7: Apply switch if TPB threshold exceeded
+        # Step 8: Apply transition if TPB threshold exceeded
         # -----------------------------------------------------------------
-        if self.behaviour.should_switch():
+        if self.behaviour.should_transition():
             new_bundle = self.behaviour._proposed_bundle
 
             if new_bundle is not None:
@@ -729,12 +743,26 @@ class ConservationAgricultureFarmer(Farmer):
 
                         # Apply new practices
                         self.behaviour.apply_bundle(new_bundle)
-                        self.behaviour.record_switch(new_bundle)
-                        # Clear blocker since switch succeeded
-                        self.behaviour._switch_blocker = BLOCKER_NONE
+                        self.behaviour.record_transition(new_bundle)
+                        # Clear blocker since transition succeeded
+                        self.behaviour._transition_blocker = BLOCKER_NONE
+
+                        # Set driver to indicate why transition succeeded
+                        pathway = self.behaviour._target_pathway
+                        if pathway == "fallback":
+                            self.behaviour._transition_driver = DRIVER_FALLBACK
+                        elif pathway in ("social", "exploration"):
+                            self.behaviour.set_tpb_component_driver(pathway)
                     else:
                         # Can't afford transition cost
-                        self.behaviour._switch_blocker = BLOCKER_TRANSITION_UNAFFORDABLE
+                        self.behaviour._transition_blocker = BLOCKER_TRANSITION_UNAFFORDABLE
         else:
             # TPB score below threshold - identify which component is limiting
-            self.behaviour.set_tpb_switch_blocker()
+            self.behaviour.set_tpb_transition_blocker()
+
+        # -----------------------------------------------------------------
+        # Step 9: Reset evaluation time after evaluation completes
+        # -----------------------------------------------------------------
+        # Whether farmer transitioned or not, they've evaluated and will wait
+        # before reconsidering (randomized interval around evaluation_interval)
+        self.behaviour.reset_evaluation_time()

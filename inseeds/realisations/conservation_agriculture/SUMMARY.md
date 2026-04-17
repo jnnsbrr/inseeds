@@ -13,7 +13,7 @@ This document describes the theoretical basis of the **Conservation Agriculture 
 | **Attitude formation** | Year-to-year comparison (soil C, yield) | Trend-based (annual rates of change over observation period) |
 | **Social learning** | Compare to average of neighbours with *other* strategy | Similarity-weighted: bundle similarity, crop similarity, confidence |
 | **Social norm** | Proportion of neighbours using no-till | Similarity-weighted prevalence + conformity pressure |
-| **PBC** | Heuristic decay after switch | Economics-based: cost-capital ratio × risk aversion |
+| **PBC** | Heuristic decay after transition | Economics-based: cost-capital ratio × risk aversion |
 | **Economics** | None | FAO-based capital dynamics (depreciation, investment, profit) |
 | **Memory** | Previous year only | Per-bundle memory with temporal decay |
 | **Fallback** | None | Revert after sustained decline (adaptive management) |
@@ -41,13 +41,13 @@ PBC enters multiplicatively. A farmer with positive attitude and supportive norm
 
 ### 3.1 Decision structure
 
-The farmer chooses between conventional tillage (0) and no-till (1). Decisions are re-evaluated at fixed intervals (`strategy_switch_duration`), staggered randomly across agents to avoid synchronisation artefacts.
+The farmer chooses between conventional tillage (0) and no-till (1). Decisions are re-evaluated at fixed intervals (`strategy_transition_duration`), staggered randomly across agents to avoid synchronisation artefacts.
 
 ### 3.2 Attitude
 
 Attitude has two sources, weighted by `weight_own_land` and `weight_social_learning`:
 
-1. **Own-land experience**: Compare current soil carbon and crop yield to the values stored at the time of the last switch. A sigmoid maps the relative change to (0, 1). This captures experiential learning but is sensitive to single-year noise.
+1. **Own-land experience**: Compare current soil carbon and crop yield to the values stored at the time of the last transition. A sigmoid maps the relative change to (0, 1). This captures experiential learning but is sensitive to single-year noise.
 
 2. **Social learning**: Compare own soil C and yield to the average of neighbours who use the *other* strategy. If neighbours using no-till outperform, attitude toward no-till increases. This follows a simple observational learning logic but does not weight neighbours by relevance.
 
@@ -59,7 +59,7 @@ Proportion of neighbours using no-till. A sigmoid centred at 0.5 maps this to (0
 
 PBC is a heuristic variable:
 - Starts at 1.0 (full perceived control)
-- Drops by a fixed amount (−0.25) after each switch
+- Drops by a fixed amount (−0.25) after each transition
 - Minimum value of 0.5
 
 There is no explicit economic or cost model. PBC loosely captures "adjustment difficulty" but is not grounded in economic constraints.
@@ -69,7 +69,7 @@ There is no explicit economic or cost model. PBC loosely captures "adjustment di
 - **Single practice**: CA is defined by three pillars (minimum soil disturbance, permanent soil cover, crop diversification; Kassam et al. 2009), not by tillage alone.
 - **No memory beyond one year**: Farmers cannot detect trends or distinguish noise from signal.
 - **No economic constraints**: Adoption is not limited by capital, cost, or risk.
-- **No adaptive fallback**: Once switched, there is no mechanism to revert if outcomes deteriorate.
+- **No adaptive fallback**: Once transitioned, there is no mechanism to revert if outcomes deteriorate.
 - **Undifferentiated social learning**: All neighbours contribute equally, regardless of crop similarity or experience duration.
 
 ---
@@ -91,13 +91,13 @@ Conservation Agriculture requires the joint adoption of minimum soil disturbance
 | 6 | No-till | Yes | Baseline | `notill_cover_crop` |
 | 7 | No-till | Yes | Retained | `conservation` |
 
-This captures that practices interact: no-till without residue cover exposes soil (see §4.11), and full CA requires all three simultaneously. Farmers do not merely toggle a single switch; they navigate a space of complementary and competing practices.
+This captures that practices interact: no-till without residue cover exposes soil (see §4.11), and full CA requires all three simultaneously. Farmers do not merely toggle a single transition; they navigate a space of complementary and competing practices.
 
 ### 4.2 Trend-based learning
 
-The Regenerative Tillage model compares current values to the previous year, making it susceptible to inter-annual climate variability. The CA model instead evaluates **annual rates of change** in soil carbon, root-zone moisture, and crop yield since the last practice switch:
+The Regenerative Tillage model compares current values to the previous year, making it susceptible to inter-annual climate variability. The CA model instead evaluates **annual rates of change** in soil carbon, root-zone moisture, and crop yield since the last practice transition:
 
-> trend_x = (x_current − x_at_switch) / years_since_switch
+> trend_x = (x_current − x_at_transition) / years_since_transition
 
 This has several consequences:
 - **Noise reduction**: Trends average over multiple years, filtering out single-year fluctuations from weather or market shocks.
@@ -147,9 +147,9 @@ Not all bundles are valid exploration targets:
 
 From the remaining valid bundles, one is selected uniformly at random.
 
-**No target → no switch**
+**No target → no transition**
 
-If neither neighbour imitation nor exploration yields a target bundle, no switch is proposed and TPB is set to 0. The farmer continues with the current bundle.
+If neither neighbour imitation nor exploration yields a target bundle, no transition is proposed and TPB is set to 0. The farmer continues with the current bundle.
 
 ### 4.6 Similarity-weighted social learning
 
@@ -159,7 +159,7 @@ Social learning theory (Bandura 1977) predicts that individuals learn preferenti
 
 2. **Crop similarity**: whether the neighbour grows the same dominant crop at a similar area share. Neighbours facing similar agronomic conditions provide more relevant information. This is a fast heuristic (argmax comparison) rather than a full portfolio distance.
 
-3. **Confidence weighting**: the neighbour's duration on their current bundle modulates the reliability of their signal. A neighbour who has used a bundle for 10 years provides a more stable signal than one who switched last year.
+3. **Confidence weighting**: the neighbour's duration on their current bundle modulates the reliability of their signal. A neighbour who has used a bundle for 10 years provides a more stable signal than one who transitioned last year.
 
 The combined weight (similarity × confidence) determines each neighbour's contribution to the focal farmer's attitude. The total similarity is a configurable weighted average of bundle and crop similarity (default: 60% bundle, 40% crop).
 
@@ -183,15 +183,15 @@ The Regenerative Tillage model's social norm is simply the proportion of neighbo
 
 Adaptive management (Holling 1978; Walters 1986) treats management interventions as experiments: if outcomes deteriorate, the intervention should be revised. The CA model implements this through a **fallback mechanism**:
 
-1. After a grace period (`min_observation_years`), the model tracks consecutive years where performance falls below the **baseline score recorded at switch time**.
+1. After a grace period (`min_observation_years`), the model tracks consecutive years where performance falls below the **baseline score recorded at transition time**.
 2. If performance declines for `fallback_years` consecutive years (default: 5), the farmer **reverts to the previous bundle**.
 3. The failed bundle's **failure count** is incremented. Bundles that have failed more than `max_failures` times (default: 2) are excluded from future exploration.
 
-Comparing against the baseline at switch time (rather than the previous year) avoids false positives from gradual trends and focuses on whether the switch itself led to improvement. The grace period allows time for transition effects (e.g. soil biology adjustment after no-till adoption) before evaluation begins.
+Comparing against the baseline at transition time (rather than the previous year) avoids false positives from gradual trends and focuses on whether the transition itself led to improvement. The grace period allows time for transition effects (e.g. soil biology adjustment after no-till adoption) before evaluation begins.
 
 Fallback bypasses TPB: it is an emergency response, not a planned behaviour change. TPB intention is set to 1.0 directly, ensuring the reversion occurs.
 
-The Regenerative Tillage model has no fallback mechanism. Once switched, a farmer can only switch again after the next evaluation interval.
+The Regenerative Tillage model has no fallback mechanism. Once transitioned, a farmer can only transition again after the next evaluation interval.
 
 ### 4.9 Capital dynamics and affordability
 
@@ -237,7 +237,7 @@ Revenue is calculated by:
 5. Multiplying by FAO producer prices (USD/tonne dry matter)
 
 **Affordability constraints**:
-- **Transition costs** (one-time costs for equipment, training) are deducted from capital at switch time.
+- **Transition costs** (one-time costs for equipment, training) are deducted from capital at transition time.
 - **Direct costs** (annual costs for seeds, labour, foregone income) reduce profit.
 - If the full target bundle is unaffordable, the farmer adopts a **partial bundle** (cheapest changes first).
 - When capital falls below a **minimum threshold** (n_survival_years × δ × K₀, cf. Bandiera et al. 2017 on poverty traps), costly practices are dropped in order: cover crop first (highest direct cost), then residue retention, then no-till.
@@ -282,7 +282,7 @@ Farmers are differentiated into two agent functional types (AFTs):
 | Parameter | Pioneer | Traditionalist |
 |-----------|---------|----------------|
 | Exploration probability | Higher (0.05) | Lower (0.01) |
-| Switch threshold | Lower (easier to adopt) | Higher |
+| Transition threshold | Lower (easier to adopt) | Higher |
 | Revert threshold | Higher (harder to revert) | Lower |
 | Risk aversion | Lower | Higher |
 | Min observation years | Fewer | More |
@@ -293,9 +293,9 @@ Exploration probability is further modulated by:
 - **Performance**: poor performers explore more (searching for better options)
 - **Experience**: longer duration on current bundle increases willingness to experiment (confidence ramp)
 
-### 4.14 Hysteresis: asymmetric switch/revert thresholds
+### 4.14 Hysteresis: asymmetric transition/revert thresholds
 
-The switch threshold for adopting a new bundle differs from the revert threshold for returning to a previous one (default: 0.5 vs 0.6). This asymmetry creates **hysteresis**: once adopted, a practice is retained even under moderate dissatisfaction. This prevents rapid oscillation and reflects the sunk-cost effect and learning investments associated with practice changes.
+The transition threshold for adopting a new bundle differs from the revert threshold for returning to a previous one (default: 0.5 vs 0.6). This asymmetry creates **hysteresis**: once adopted, a practice is retained even under moderate dissatisfaction. This prevents rapid oscillation and reflects the sunk-cost effect and learning investments associated with practice changes.
 
 ---
 
@@ -379,13 +379,13 @@ Each year, the CA farmer executes the following decision sequence:
 4. **Check affordability** — deselect practices if capital too low
 5. **Skip TPB if capital-constrained** — survival mode, no voluntary changes
 6. **Decay old memories** — bounded rationality (§4.3)
-7. **Check minimum observation period** — require sufficient data before switching (§4.2)
+7. **Check minimum observation period** — require sufficient data before transitioning (§4.2)
 8. **Check fallback condition** — revert if sustained decline (§4.8)
 9. **Find target bundle** — imitate best-performing neighbour OR explore randomly (§4.4)
 10. **Adjust for affordability** — partial bundle if full target is too expensive (§4.9)
 11. **Compute TPB** — attitude (own memory + social learning, §4.6), social norm (similarity + conformity, §4.7), PBC (cost-capital × risk, §4.10)
-12. **Switch decision** — compare TPB to threshold (with hysteresis; §4.14)
-13. **Apply switch** — deduct transition cost, update practices, record in memory
+12. **Transition decision** — compare TPB to threshold (with hysteresis; §4.14)
+13. **Apply transition** — deduct transition cost, update practices, record in memory
 
 ---
 
@@ -409,8 +409,8 @@ Key parameters in `config.yaml`:
 
 ### AFT parameters (`aftpar.pioneer` / `aftpar.traditionalist`)
 - `exploration_base_prob`: Base probability of random exploration
-- `switch_threshold` / `revert_threshold`: TPB thresholds for adoption/reversion
-- `min_observation_years`: Minimum years before considering switch
+- `transition_threshold` / `revert_threshold`: TPB thresholds for adoption/reversion
+- `min_observation_years`: Minimum years before considering transition
 - `fallback_years`: Consecutive decline years before fallback
 - `memory_decay_years`: Years until old memories expire
 - `confidence_years`: Years to reach full confidence

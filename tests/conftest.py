@@ -31,6 +31,7 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
 
     def read_output():
         import numpy as np
+        import xarray as xr
 
         with open(f"{test_path}/data/lpjml_output.pkl", "rb") as out:
             data = pickle.load(out)
@@ -40,6 +41,18 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
             vals = harvestc.values
             if np.any(np.isnan(vals)):
                 harvestc.values[:] = np.nan_to_num(vals, nan=0.0)
+        # Add litcover_agr if not present (for CA model tests)
+        # Directly set the data variable to avoid xarray dimension alignment issues
+        if "litcover_agr" not in data.data_vars:
+            ncell = data.sizes["cell"]
+            ntime = data.sizes.get("time", 1)
+            litcover_da = xr.DataArray(
+                np.ones((ncell, ntime), dtype=np.float32) * 0.35,
+                dims=["cell", "time"],
+                coords={"cell": data.coords["cell"], "time": data.coords["time"]},
+            )
+            # Use internal method to bypass dimension alignment
+            data._variables["litcover_agr"] = litcover_da.variable
         return data
 
     lpjml_obj.read_input = read_input
@@ -146,15 +159,22 @@ def minimal_model_instance(lpjml_data):
     return model
 
 
-@pytest.fixture(scope="session")
-def ca_model_instance(lpjml_data, test_path):
+@pytest.fixture(scope="module")
+def ca_model_instance(test_path):
     """Create Conservation Agriculture model instance for CA farmer tests.
     
+    This fixture creates its own lpjml_data copy to avoid polluting the shared
+    session-scoped lpjml_data fixture used by other model tests.
+    
+    Uses module scope so all CA integration tests share the same model instance,
+    avoiding repeated file operations that cause HDF locking issues.
+    
     This fixture:
-    1. Loads the CA config.yaml using pycopanlpjml's read_yaml
-    2. Adds dummy coupled input variables (tillage, cover_crop, residue)
-    3. Sets up FAO dummy data
-    4. Creates the model with proper config
+    1. Loads fresh lpjml pickle data (separate from session fixture)
+    2. Loads the CA config.yaml using pycopanlpjml's read_yaml
+    3. Adds dummy coupled input variables (tillage, cover_crop, residue)
+    4. Sets up FAO dummy data
+    5. Creates the model with proper config
     """
     from pathlib import Path
     import xarray as xr
@@ -162,6 +182,11 @@ def ca_model_instance(lpjml_data, test_path):
     from pycoupler.config import read_yaml, CoupledConfig
     from inseeds.realisations.conservation_agriculture import Model
     from inseeds.components.data.fao import ensure_dummy_fao_data
+
+    # Load fresh lpjml data (don't use shared session fixture)
+    with open(f"{test_path}/data/lpjml.pkl", "rb") as lpj:
+        lpjml_data = pickle.load(lpj)
+    lpjml_data = _patch_lpjml_for_testing(lpjml_data, test_path)
 
     # Path to the CA config.yaml
     config_path = Path(__file__).parent.parent / "inseeds" / "realisations" / "conservation_agriculture" / "config.yaml"
@@ -173,7 +198,7 @@ def ca_model_instance(lpjml_data, test_path):
     # Load the config using pycopanlpjml's proper config loading
     coupled_config = read_yaml(str(config_path), CoupledConfig)
     
-    # Patch lpjml_data.config with the loaded coupled_config BEFORE model creation
+    # Set config on this fixture's lpjml_data (not the shared one)
     lpjml_data.config.coupled_config = coupled_config
     lpjml_data.config.sim_path = sim_path
     

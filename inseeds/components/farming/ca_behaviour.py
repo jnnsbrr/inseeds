@@ -77,9 +77,9 @@ BUNDLE_IDS = {
     (1, 0, 0): 4, (1, 0, 1): 5, (1, 1, 0): 6, (1, 1, 1): 7,
 }
 
-# Switch blocker codes - indicates WHY a proposed bundle was not adopted
+# Transition blocker codes - indicates WHY a proposed bundle was not adopted
 # These follow the decision flow order (first blocker hit is the primary reason)
-BLOCKER_NONE = 0                    # No blocker - switch happened or maintaining current
+BLOCKER_NONE = 0                    # No blocker - transition happened or maintaining current
 BLOCKER_MIN_OBS_YEARS = 1           # Not enough observation years yet
 BLOCKER_FALLBACK_TRIGGERED = 2      # Reverting to previous bundle (adaptive management)
 BLOCKER_NO_TARGET = 3               # No better neighbour + exploration didn't trigger
@@ -92,6 +92,7 @@ BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC is limiting fact
 BLOCKER_TRANSITION_UNAFFORDABLE = 10 # Can't afford transition cost
 BLOCKER_CAPITAL_SURVIVAL = 11       # Capital below survival threshold
 BLOCKER_CONTROL_RUN = 12            # Control run - no CA dynamics
+BLOCKER_EVALUATION_TIME = 13    # Not yet time to re-evaluate (commitment period)
 
 BLOCKER_NAMES = {
     BLOCKER_NONE: "none",
@@ -107,6 +108,37 @@ BLOCKER_NAMES = {
     BLOCKER_TRANSITION_UNAFFORDABLE: "transition_unaffordable",
     BLOCKER_CAPITAL_SURVIVAL: "capital_survival",
     BLOCKER_CONTROL_RUN: "control_run",
+    BLOCKER_EVALUATION_TIME: "evaluation_time",
+}
+
+# Transition driver codes - indicates WHY a transition succeeded (mirror of blocker)
+# These identify which pathway and TPB component enabled the transition
+DRIVER_NONE = 0                              # No transition - maintaining current bundle
+DRIVER_FALLBACK = 1                          # Reverted to previous bundle (adaptive management)
+
+# Social learning pathway - learned from better-performing neighbor
+DRIVER_SOCIAL_ATTITUDE_OWN_LAND = 2          # TPB passed, attitude_own_land was strongest
+DRIVER_SOCIAL_ATTITUDE_SOCIAL = 3            # TPB passed, attitude_social was strongest
+DRIVER_SOCIAL_SOCIAL_NORM = 4                # TPB passed, social_norm was strongest
+DRIVER_SOCIAL_PBC = 5                        # TPB passed, PBC was strongest
+
+# Exploration pathway - discovered via random exploration
+DRIVER_EXPLORATION_ATTITUDE_OWN_LAND = 6     # TPB passed, attitude_own_land was strongest
+DRIVER_EXPLORATION_ATTITUDE_SOCIAL = 7       # TPB passed, attitude_social was strongest
+DRIVER_EXPLORATION_SOCIAL_NORM = 8           # TPB passed, social_norm was strongest
+DRIVER_EXPLORATION_PBC = 9                   # TPB passed, PBC was strongest
+
+DRIVER_NAMES = {
+    DRIVER_NONE: "none",
+    DRIVER_FALLBACK: "fallback",
+    DRIVER_SOCIAL_ATTITUDE_OWN_LAND: "social_attitude_own_land",
+    DRIVER_SOCIAL_ATTITUDE_SOCIAL: "social_attitude_social",
+    DRIVER_SOCIAL_SOCIAL_NORM: "social_social_norm",
+    DRIVER_SOCIAL_PBC: "social_pbc",
+    DRIVER_EXPLORATION_ATTITUDE_OWN_LAND: "exploration_attitude_own_land",
+    DRIVER_EXPLORATION_ATTITUDE_SOCIAL: "exploration_attitude_social",
+    DRIVER_EXPLORATION_SOCIAL_NORM: "exploration_social_norm",
+    DRIVER_EXPLORATION_PBC: "exploration_pbc",
 }
 
 
@@ -120,7 +152,7 @@ class DecisionModel(ABC):
     Tracks:
     - Current practice bundle (tillage, cover_crop, residue)
     - Memory of past outcomes for each bundle tried
-    - Current state snapshot for computing trends since last switch
+    - Current state snapshot for computing trends since last transition
 
     Subclasses implement specific decision logic (e.g., TPB).
     """
@@ -182,7 +214,7 @@ class DecisionModel(ABC):
             1 if agent.litter_cover >= ca_threshold else 0,
         )
 
-        # Proposed bundle for potential switch (set by update())
+        # Proposed bundle for potential transition (set by update())
         self._proposed_bundle = None
 
         # Previous bundle (for fallback mechanism)
@@ -204,8 +236,8 @@ class DecisionModel(ABC):
         t_start, history = self._get_initial_state(agent)
 
         self.current_state = {
-            "t_start": t_start,           # Year of last practice switch
-            "baseline_score": 0.0,        # Weighted score at switch (for fallback)
+            "t_start": t_start,           # Year of last practice transition
+            "baseline_score": 0.0,        # Weighted score at transition (for fallback)
             # Online regression accumulators (initialized from history if available)
             "n": 0,                        # Number of observations
             "sum_t": 0.0,                  # Sum of time indices
@@ -425,7 +457,7 @@ class DecisionModel(ABC):
 
         Called every year to keep bundle_memory up-to-date. This ensures
         neighbours see current performance when evaluating which bundle
-        to imitate, not stale data from the last switch.
+        to imitate, not stale data from the last transition.
         """
         n = self.current_state["n"]
         if n < 2:
@@ -471,18 +503,33 @@ class DecisionModel(ABC):
         return BUNDLE_NAMES.get(self._proposed_bundle, "unknown") if self._proposed_bundle else ""
 
     @property
-    def switch_blocker(self):
+    def transition_blocker(self):
         """Primary reason why proposed bundle was not adopted (numeric code).
         
-        See BLOCKER_* constants for codes. 0 = no blocker (switch happened
-        or no switch needed).
+        See BLOCKER_* constants for codes. 0 = no blocker (transition happened
+        or no transition needed).
         """
-        return getattr(self, '_switch_blocker', BLOCKER_NONE)
+        return getattr(self, '_transition_blocker', BLOCKER_NONE)
 
     @property
-    def switch_blocker_name(self):
-        """Human-readable name of switch blocker."""
-        return BLOCKER_NAMES.get(self.switch_blocker, "unknown")
+    def transition_blocker_name(self):
+        """Human-readable name of transition blocker."""
+        return BLOCKER_NAMES.get(self.transition_blocker, "unknown")
+
+    @property
+    def transition_driver(self):
+        """Primary reason why a transition succeeded (numeric code).
+        
+        See DRIVER_* constants for codes. 0 = no transition (maintaining current).
+        This is the mirror of transition_blocker - identifies which pathway and
+        TPB component enabled the transition when it succeeds.
+        """
+        return getattr(self, '_transition_driver', DRIVER_NONE)
+
+    @property
+    def transition_driver_name(self):
+        """Human-readable name of transition driver."""
+        return DRIVER_NAMES.get(self.transition_driver, "unknown")
 
     # -------------------------------------------------------------------------
     # Trend computation
@@ -490,10 +537,10 @@ class DecisionModel(ABC):
 
     @property
     def current_trend(self):
-        """Annual change in soil C, moisture, and yield since last switch.
+        """Annual change in soil C, moisture, and yield since last transition.
 
         Computes trends using linear regression over all observations since
-        the last practice switch, not just start and end points. This provides
+        the last practice transition, not just start and end points. This provides
         more robust trend estimates that are less sensitive to noise.
 
         Returns
@@ -518,10 +565,10 @@ class DecisionModel(ABC):
     # Memory management
     # -------------------------------------------------------------------------
 
-    def record_switch(self, new_bundle):
-        """Store outcome of current bundle and prepare for switch to new_bundle.
+    def record_transition(self, new_bundle):
+        """Store outcome of current bundle and prepare for transition to new_bundle.
 
-        Called when farmer commits to switching practices. Records the
+        Called when farmer commits to transitioning practices. Records the
         performance of the outgoing bundle for future reference.
 
         Parameters
@@ -579,7 +626,7 @@ class DecisionModel(ABC):
             "last_obs_year": current_year,  # Mark this year as observed
         }
 
-        # Switch to new bundle
+        # Transition to new bundle
         self._practice_bundle = new_bundle
 
         # Reset decline counter
@@ -619,8 +666,8 @@ class DecisionModel(ABC):
         pass
 
     @abstractmethod
-    def should_switch(self):
-        """Return True if farmer should switch to proposed bundle."""
+    def should_transition(self):
+        """Return True if farmer should transition to proposed bundle."""
         pass
 
 
@@ -660,6 +707,11 @@ class TPB(DecisionModel):
         self._social_norm = 0.0  # Subjective norm
         self._pbc = 0.0          # Perceived behavioral control
 
+        # Evaluation time: farmers don't reconsider every year
+        # Initialized to 0 so first evaluation can happen after min_obs_years
+        # After each transition, reset with randomized interval
+        self._years_until_evaluation = 0
+
     # -------------------------------------------------------------------------
     # Properties for external access to TPB components
     # -------------------------------------------------------------------------
@@ -695,6 +747,51 @@ class TPB(DecisionModel):
         return self._pbc
 
     # =========================================================================
+    # EVALUATION TIMING
+    # =========================================================================
+
+    def should_evaluate(self) -> bool:
+        """Check if farmer should evaluate practice transition this year.
+
+        Farmers don't reconsider practices every year. They evaluate when
+        the time period has ended (randomized around evaluation_interval).
+
+        This saves computation and is more realistic - farmers commit to
+        observing results before reconsidering.
+
+        Returns
+        -------
+        bool
+            True if farmer should run TPB evaluation this year.
+        """
+        return self._years_until_evaluation <= 0
+
+    def reset_evaluation_time(self):
+        """Reset evaluation time after a transition decision (transition or stay).
+
+        Uses randomized interval: normal(evaluation_interval, evaluation_interval/2)
+        This creates natural variation - some farmers reconsider after 7 years,
+        others after 13, centered around 10 (if interval=10).
+
+        Called after TPB evaluation completes, regardless of whether transition happened.
+        """
+        mean_interval = self.agent.model.config.coupled_config.tpb_thresholds.evaluation_interval
+        std_interval = mean_interval / 2
+
+        self._years_until_evaluation = max(
+            1,
+            int(np.random.normal(mean_interval, std_interval))
+        )
+
+    def decrement_evaluation_time(self):
+        """Decrement the evaluation time counter by one year.
+
+        Called each year when farmer doesn't evaluate.
+        """
+        if self._years_until_evaluation > 0:
+            self._years_until_evaluation -= 1
+
+    # =========================================================================
     # MAIN UPDATE LOGIC
     # =========================================================================
 
@@ -711,10 +808,13 @@ class TPB(DecisionModel):
         7. Adjust target bundle for affordability
         8. Compute TPB scores for the proposed bundle
         
-        Sets _switch_blocker to indicate why switch didn't happen (if applicable).
+        Sets _transition_blocker to indicate why transition didn't happen (if applicable).
+        Sets _transition_driver to indicate why transition succeeded (if applicable).
         """
-        # Reset blocker at start of each update
-        self._switch_blocker = BLOCKER_NONE
+        # Reset blocker, driver, and pathway at start of each update
+        self._transition_blocker = BLOCKER_NONE
+        self._transition_driver = DRIVER_NONE
+        self._target_pathway = None
 
         # -----------------------------------------------------------------
         # Step 1: Add current year's observation to regression
@@ -737,7 +837,7 @@ class TPB(DecisionModel):
         self._decay_old_memories()
 
         # -----------------------------------------------------------------
-        # Step 4: Require minimum observation years before switching
+        # Step 4: Require minimum observation years before transitioning
         # -----------------------------------------------------------------
         # Avoids noisy decisions based on single-year fluctuations
         # Typical value: 3 years (allows trends to stabilize)
@@ -749,7 +849,7 @@ class TPB(DecisionModel):
         if n_obs < min_obs:
             self._tpb = 0.0
             self._proposed_bundle = None
-            self._switch_blocker = BLOCKER_MIN_OBS_YEARS
+            self._transition_blocker = BLOCKER_MIN_OBS_YEARS
             return
 
         # -----------------------------------------------------------------
@@ -760,8 +860,9 @@ class TPB(DecisionModel):
 
         if self._check_fallback():
             # Fallback sets _proposed_bundle and _tpb internally
-            # Blocker will be set by should_switch() if TPB too low
-            self._switch_blocker = BLOCKER_FALLBACK_TRIGGERED
+            # Blocker will be set by should_transition() if TPB too low
+            self._transition_blocker = BLOCKER_FALLBACK_TRIGGERED
+            self._target_pathway = "fallback"  # Track pathway for transition_driver
             return
 
         # -----------------------------------------------------------------
@@ -770,22 +871,24 @@ class TPB(DecisionModel):
 
         # First, try to imitate best-performing neighbour
         target_bundle = self._most_promising_bundle()
+        self._target_pathway = "social"  # Track pathway for transition_driver
 
         # If no better neighbour, maybe explore randomly
         if target_bundle is None:
             target_bundle = self._maybe_explore_bundle()
+            self._target_pathway = "exploration"
 
         # No change proposed
         if target_bundle is None:
             self._tpb = 0.0
             self._proposed_bundle = None
-            self._switch_blocker = BLOCKER_NO_TARGET
+            self._transition_blocker = BLOCKER_NO_TARGET
             return
 
         if target_bundle == self._practice_bundle:
             self._tpb = 0.0
             self._proposed_bundle = None
-            self._switch_blocker = BLOCKER_TARGET_SAME
+            self._transition_blocker = BLOCKER_TARGET_SAME
             return
 
         # -----------------------------------------------------------------
@@ -799,7 +902,7 @@ class TPB(DecisionModel):
         if affordable_bundle == self._practice_bundle:
             self._tpb = 0.0
             self._proposed_bundle = None
-            self._switch_blocker = BLOCKER_TARGET_UNAFFORDABLE
+            self._transition_blocker = BLOCKER_TARGET_UNAFFORDABLE
             return
 
         # -----------------------------------------------------------------
@@ -809,7 +912,7 @@ class TPB(DecisionModel):
         self._compute_tpb_for_bundle(affordable_bundle)
         
         # Blocker will be set to BLOCKER_TPB_BELOW_THRESHOLD by CAFarmer
-        # if should_switch() returns False
+        # if should_transition() returns False
 
     # =========================================================================
     # FALLBACK MECHANISM (Adaptive Management)
@@ -839,9 +942,9 @@ class TPB(DecisionModel):
             return False
 
         # -----------------------------------------------------------------
-        # Compare current performance to baseline at switch time
+        # Compare current performance to baseline at transition time
         # -----------------------------------------------------------------
-        # baseline_score captures the trend score at the time of switch.
+        # baseline_score captures the trend score at the time of transition.
         # If current score is worse than baseline, we're declining.
         baseline = self.current_state.get("baseline_score", 0.0)
         current_score = self._weighted_score(self.current_trend)
@@ -996,11 +1099,11 @@ class TPB(DecisionModel):
         return valid[np.random.randint(len(valid))]
 
     # =========================================================================
-    # SWITCH DECISION
+    # TRANSITION DECISION
     # =========================================================================
 
-    def should_switch(self):
-        """Determine if farmer should switch to proposed bundle.
+    def should_transition(self):
+        """Determine if farmer should transition to proposed bundle.
 
         Compares TPB intention score to threshold. Higher threshold
         when reverting (to avoid oscillation).
@@ -1011,25 +1114,25 @@ class TPB(DecisionModel):
         Returns
         -------
         bool
-            True if TPB exceeds threshold and switch should occur.
+            True if TPB exceeds threshold and transition should occur.
         """
         # Get thresholds from config (non-AFT-specific)
         tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
-        switch_threshold = tpb_cfg.switch_threshold
+        transition_threshold = tpb_cfg.transition_threshold
         revert_threshold = tpb_cfg.revert_threshold
 
         # Higher threshold for reverting (avoid flip-flopping)
         if self._proposed_bundle == self._previous_bundle:
             threshold = revert_threshold
         else:
-            threshold = switch_threshold
+            threshold = transition_threshold
 
         return self._tpb > threshold
 
-    def set_tpb_switch_blocker(self):
-        """Set switch_blocker to indicate which TPB component is most limiting.
+    def set_tpb_transition_blocker(self):
+        """Set transition_blocker to indicate which TPB component is most limiting.
 
-        Called when should_switch() returns False to identify which component
+        Called when should_transition() returns False to identify which component
         (attitude_own_land, attitude_social_learning, social_norm, or pbc)
         is furthest below the threshold and thus the primary bottleneck.
 
@@ -1040,7 +1143,7 @@ class TPB(DecisionModel):
 
         # Get threshold from config
         tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
-        threshold = tpb_cfg.switch_threshold
+        threshold = tpb_cfg.transition_threshold
 
         # Calculate gap below threshold (positive = below threshold)
         gaps = {
@@ -1055,13 +1158,67 @@ class TPB(DecisionModel):
         if max_gap_component == 'attitude':
             # Attitude is limiting - determine which sub-component is lower
             if self._attitude_own_land <= self._attitude_social_learning:
-                self._switch_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
+                self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
             else:
-                self._switch_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL
+                self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL
         elif max_gap_component == 'social_norm':
-            self._switch_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM
+            self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM
         else:
-            self._switch_blocker = BLOCKER_TPB_LOW_PBC
+            self._transition_blocker = BLOCKER_TPB_LOW_PBC
+
+    def set_tpb_component_driver(self, pathway: str):
+        """Set transition_driver to indicate which TPB component enabled the transition.
+
+        Called when should_transition() returns True to identify which component
+        (attitude_own_land, attitude_social_learning, social_norm, or pbc)
+        is furthest above the threshold and thus the primary enabler.
+
+        This is the mirror of set_tpb_transition_blocker() - identifies strength
+        rather than weakness.
+
+        Parameters
+        ----------
+        pathway : str
+            Either "social" (learned from neighbor) or "exploration" (random).
+        """
+        if self._proposed_bundle is None:
+            return
+
+        # Get threshold from config
+        tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
+        threshold = tpb_cfg.transition_threshold
+
+        # Calculate margin above threshold (positive = above threshold)
+        margins = {
+            'attitude': self._attitude - threshold,
+            'social_norm': self._social_norm - threshold,
+            'pbc': self._pbc - threshold,
+        }
+
+        # Find component with largest margin (most above threshold)
+        max_margin_component = max(margins, key=margins.get)
+
+        if pathway == "social":
+            if max_margin_component == 'attitude':
+                # Attitude is strongest - determine which sub-component is higher
+                if self._attitude_own_land >= self._attitude_social_learning:
+                    self._transition_driver = DRIVER_SOCIAL_ATTITUDE_OWN_LAND
+                else:
+                    self._transition_driver = DRIVER_SOCIAL_ATTITUDE_SOCIAL
+            elif max_margin_component == 'social_norm':
+                self._transition_driver = DRIVER_SOCIAL_SOCIAL_NORM
+            else:
+                self._transition_driver = DRIVER_SOCIAL_PBC
+        elif pathway == "exploration":
+            if max_margin_component == 'attitude':
+                if self._attitude_own_land >= self._attitude_social_learning:
+                    self._transition_driver = DRIVER_EXPLORATION_ATTITUDE_OWN_LAND
+                else:
+                    self._transition_driver = DRIVER_EXPLORATION_ATTITUDE_SOCIAL
+            elif max_margin_component == 'social_norm':
+                self._transition_driver = DRIVER_EXPLORATION_SOCIAL_NORM
+            else:
+                self._transition_driver = DRIVER_EXPLORATION_PBC
 
     # =========================================================================
     # APPLY BUNDLE TO AGENT
@@ -1362,8 +1519,8 @@ class TPB(DecisionModel):
 
         "Am I doing poorly with my current practices?"
         Based on current_trend (regression over all observations).
-        Declining performance → high attitude → more willing to switch
-        Improving performance → low attitude → less willing to switch
+        Declining performance → high attitude → more willing to transition
+        Improving performance → low attitude → less willing to transition
 
         Structure matches old tillage_farmer.py:
         - Weighted sum of individual trend components
@@ -1731,7 +1888,7 @@ class TPB(DecisionModel):
             PBC score in [0, pbc_base].
         """
         # -----------------------------------------------------------------
-        # Calculate cost impact of switching
+        # Calculate cost impact of transitioning
         # -----------------------------------------------------------------
 
         # One-time transition cost
@@ -1785,7 +1942,7 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Attitude: own experience + social learning
         # -----------------------------------------------------------------
-        # Store sub-components separately for detailed switch_blocker analysis
+        # Store sub-components separately for detailed transition_blocker analysis
         self._attitude_own_land = self._compute_attitude_own_land()
         self._attitude_social_learning = self._compute_attitude_social_learning(new_bundle)
 

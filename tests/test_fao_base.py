@@ -136,7 +136,6 @@ class TestFaoDatasetEnsureLogic:
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=0,
-                use_dummy_on_failure=True,
             )
             
             assert result == real_path
@@ -169,7 +168,6 @@ class TestFaoDatasetEnsureLogic:
                     country_codes=["NLD"],
                     reference_year=2020,
                     years_before=0,
-                    use_dummy_on_failure=True,
                 )
             
             # Should return dummy path
@@ -321,30 +319,11 @@ class TestFaoDatasetErrorHandling:
                     country_codes=["NLD"],
                     reference_year=2020,
                     years_before=4,
-                    use_dummy_on_failure=True,
                 )
             
-            # Should create dummy file
+            # Should create dummy file (ensure now always falls back to dummy)
             assert path.exists()
             assert "DUMMY" in path.name
-
-    def test_ensure_raises_when_dummy_disabled(self):
-        """ensure should raise when API fails and use_dummy_on_failure=False."""
-        prices = FaoProducerPrices()
-        
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            
-            # Mock prepare to raise error
-            with patch.object(prices, "prepare", side_effect=RuntimeError("API error")):
-                with pytest.raises(RuntimeError):
-                    prices.ensure(
-                        sim_path=sim_path,
-                        country_codes=["NLD"],
-                        reference_year=2020,
-                        years_before=4,
-                        use_dummy_on_failure=False,
-                    )
 
 
 class TestFaoDataTransformation:
@@ -472,7 +451,6 @@ class TestFaoDatasetCaching:
                     country_codes=["NLD"],
                     reference_year=2020,
                     years_before=0,
-                    use_dummy_on_failure=True,
                 )
                 
                 # prepare should not have been called

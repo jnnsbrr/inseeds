@@ -77,14 +77,16 @@ class TestBundleDefinitions:
             assert BUNDLE_NAMES[tup] == name
 
     def test_conventional_bundle(self):
-        """Conventional bundle should be (0,0,0) with ID 0."""
-        assert BUNDLE_NAMES[(0, 0, 0)] == "conventional"
-        assert BUNDLE_IDS[(0, 0, 0)] == 0
+        """Conventional bundle should be (1,0,0) with ID 4."""
+        # tillage=1 is conventional tillage, tillage=0 is no-till
+        assert BUNDLE_NAMES[(1, 0, 0)] == "conventional"
+        assert BUNDLE_IDS[(1, 0, 0)] == 4
 
     def test_full_ca_bundle(self):
-        """Full CA bundle should be (1,1,1) with ID 7."""
-        assert BUNDLE_NAMES[(1, 1, 1)] == "conservation"
-        assert BUNDLE_IDS[(1, 1, 1)] == 7
+        """Full CA bundle should be (0,1,1) with ID 3."""
+        # CA = no-till (0) + cover crops (1) + residue retention (1)
+        assert BUNDLE_NAMES[(0, 1, 1)] == "conservation"
+        assert BUNDLE_IDS[(0, 1, 1)] == 3
 
     def test_all_bundles_have_unique_names(self):
         """All bundle names should be unique."""
@@ -209,7 +211,6 @@ class TestFAODataYearAveraging:
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=4,
-                use_dummy_on_failure=True,
             )
             
             assert path.exists()
@@ -225,7 +226,6 @@ class TestFAODataYearAveraging:
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=4,
-                use_dummy_on_failure=True,
             )
             
             import xarray as xr
@@ -275,17 +275,15 @@ class TestFAODummyDataFallback:
             
             prices = FaoProducerPrices()
             
-            # With use_dummy_on_failure=True, should create dummy
+            # ensure() now automatically falls back to dummy on failure
             path = prices.ensure(
                 sim_path=sim_path,
                 country_codes=["NLD"],
                 reference_year=2020,
                 years_before=4,
-                use_dummy_on_failure=True,
             )
             
             assert path.exists()
-            assert "DUMMY" in path.name or path.exists()
 
     def test_dummy_data_has_correct_structure(self):
         """Dummy data should have same structure as real data."""
@@ -366,7 +364,7 @@ class TestCABehaviourStructure:
         from inseeds.components.farming.ca_behaviour import DecisionModel
         
         assert hasattr(DecisionModel, "update")
-        assert hasattr(DecisionModel, "should_switch")
+        assert hasattr(DecisionModel, "should_transition")
 
 
 class TestCAFarmerCoverCropLogic:

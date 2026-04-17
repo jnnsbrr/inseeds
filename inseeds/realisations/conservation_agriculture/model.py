@@ -13,7 +13,7 @@ from inseeds.components.farming.ca_country import CACountry
 from inseeds.components import lpjml
 from inseeds.components.data.residue import ResidueData
 from inseeds.components.farming.ca_behaviour import (
-    BUNDLE_IDS, BUNDLE_NAMES, BLOCKER_NAMES
+    BUNDLE_IDS, BUNDLE_NAMES, BLOCKER_NAMES, DRIVER_NAMES
 )
 
 # Custom unit for millions of dollars
@@ -104,9 +104,13 @@ class Farmer(ConservationAgricultureFarmer):
                 "PBC",
                 "perceived behavioral control component of TPB",
             ),
-            "behaviour.switch_blocker": Variable(
-                "switch blocker",
-                "primary reason for blocked switch (0-11)",
+            "behaviour.transition_blocker": Variable(
+                "transition blocker",
+                "primary reason for blocked transition (0-13)",
+            ),
+            "behaviour.transition_driver": Variable(
+                "transition driver",
+                "primary reason for successful transition (0-9)",
             ),
         },
     )
@@ -117,7 +121,8 @@ class Farmer(ConservationAgricultureFarmer):
     output_label_mappings = {
         "behaviour.practice_bundle": BUNDLE_ID_TO_NAME,
         "behaviour.proposed_bundle": BUNDLE_ID_TO_NAME,
-        "behaviour.switch_blocker": BLOCKER_NAMES,
+        "behaviour.transition_blocker": BLOCKER_NAMES,
+        "behaviour.transition_driver": DRIVER_NAMES,
     }
 
 

@@ -335,7 +335,7 @@ class TestFallbackRaisesOnNoData:
             },
         )
         
-        with pytest.raises(ValueError, match="No valid FAO data found"):
+        with pytest.raises(ValueError, match="No valid data for .* at any tier"):
             get_value_with_fallback(
                 data,
                 "NLD",
@@ -354,7 +354,7 @@ class TestFallbackRaisesOnNoData:
             },
         )
         
-        with pytest.raises(ValueError, match="No valid FAO data found"):
+        with pytest.raises(ValueError, match="No valid data for .* at any tier"):
             get_value_with_fallback(
                 data,
                 "NLD",  # Not in dataset

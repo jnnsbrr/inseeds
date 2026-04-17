@@ -18,9 +18,6 @@ from inseeds.components.farming.ca_behaviour import (
     BUNDLE_NAMES,
     BUNDLE_IDS,
     sigmoid,
-    DEFAULT_MEMORY_DECAY_YEARS,
-    DEFAULT_FALLBACK_YEARS,
-    DEFAULT_CONFIDENCE_YEARS,
 )
 
 
@@ -36,7 +33,7 @@ class TestDecisionModelInterface:
         """DecisionModel should define abstract methods."""
         # Check that abstract methods are defined
         assert hasattr(DecisionModel, "update")
-        assert hasattr(DecisionModel, "should_switch")
+        assert hasattr(DecisionModel, "should_transition")
 
     def test_decision_model_has_properties(self):
         """DecisionModel should have required properties."""
@@ -64,7 +61,7 @@ class TestTPBStructure:
     def test_tpb_implements_abstract_methods(self):
         """TPB should implement required abstract methods."""
         assert hasattr(TPB, "update")
-        assert hasattr(TPB, "should_switch")
+        assert hasattr(TPB, "should_transition")
 
 
 class TestTPBPropertyAccess:
@@ -104,37 +101,17 @@ class TestTPBWeights:
         assert all(w > 0 for w in weights)
 
 
-class TestBundleSwitchingLogic:
-    """Tests for bundle switching and tracking."""
+class TestBundleTransitioningLogic:
+    """Tests for bundle transitioning and tracking."""
 
-    def test_record_switch_method_signature(self):
-        """record_switch should accept new_bundle parameter."""
+    def test_record_transition_method_signature(self):
+        """record_transition should accept new_bundle parameter."""
         # Verified through method existence
-        assert hasattr(DecisionModel, "record_switch")
+        assert hasattr(DecisionModel, "record_transition")
 
 
 class TestDefaultParameters:
     """Tests for default parameter values."""
-
-    def test_default_memory_decay_years(self):
-        """DEFAULT_MEMORY_DECAY_YEARS should be positive."""
-        assert DEFAULT_MEMORY_DECAY_YEARS > 0
-        assert isinstance(DEFAULT_MEMORY_DECAY_YEARS, int)
-
-    def test_default_fallback_years(self):
-        """DEFAULT_FALLBACK_YEARS should be positive."""
-        assert DEFAULT_FALLBACK_YEARS > 0
-        assert isinstance(DEFAULT_FALLBACK_YEARS, int)
-
-    def test_default_confidence_years(self):
-        """DEFAULT_CONFIDENCE_YEARS should be positive."""
-        assert DEFAULT_CONFIDENCE_YEARS > 0
-        assert isinstance(DEFAULT_CONFIDENCE_YEARS, int)
-
-    def test_memory_longer_than_fallback(self):
-        """Memory should persist longer than fallback period."""
-        assert DEFAULT_MEMORY_DECAY_YEARS >= DEFAULT_FALLBACK_YEARS
-
 
 class TestTPBIntentionThreshold:
     """Tests for intention threshold logic."""
@@ -145,10 +122,10 @@ class TestTPBIntentionThreshold:
         threshold = 0.5
         assert 0 < threshold < 1
 
-    def test_should_switch_returns_boolean(self):
-        """should_switch should return boolean."""
+    def test_should_transition_returns_boolean(self):
+        """should_transition should return boolean."""
         # Verified through method signature
-        assert hasattr(TPB, "should_switch")
+        assert hasattr(TPB, "should_transition")
 
 
 class TestAFTSensitivityParameters:
@@ -185,39 +162,27 @@ class TestSocialLearningStructure:
 class TestMemoryDecay:
     """Tests for memory decay mechanism."""
 
-    def test_memory_decay_years_default(self):
-        """Memory decay should have reasonable default."""
-        assert DEFAULT_MEMORY_DECAY_YEARS == 30
-
     def test_memory_decay_is_configurable(self):
-        """Memory decay should be configurable via TPB config."""
-        # Verified through config structure
+        """Memory decay should be configurable via AFT config."""
+        # Verified through config structure - memory_decay_years is AFT-specific
         assert True
 
 
 class TestFallbackMechanism:
     """Tests for fallback/reversion mechanism."""
 
-    def test_fallback_years_default(self):
-        """Fallback years should have reasonable default."""
-        assert DEFAULT_FALLBACK_YEARS == 10
-
     def test_fallback_is_configurable(self):
-        """Fallback years should be configurable via TPB config."""
-        # Verified through config structure
+        """Fallback years should be configurable via AFT config."""
+        # Verified through config structure - fallback_years is AFT-specific
         assert True
 
 
 class TestConfidenceBuilding:
     """Tests for confidence building over time."""
 
-    def test_confidence_years_default(self):
-        """Confidence years should have reasonable default."""
-        assert DEFAULT_CONFIDENCE_YEARS == 10
-
     def test_confidence_is_configurable(self):
-        """Confidence years should be configurable via TPB config."""
-        # Verified through config structure
+        """Confidence years should be configurable via AFT config."""
+        # Verified through config structure - confidence_years is AFT-specific
         assert True
 
 
@@ -247,9 +212,9 @@ class TestBundleTracking:
         """DecisionModel should track current trend."""
         assert hasattr(DecisionModel, "current_trend")
 
-    def test_record_switch_method_exists(self):
-        """DecisionModel should have record_switch method."""
-        assert hasattr(DecisionModel, "record_switch")
+    def test_record_transition_method_exists(self):
+        """DecisionModel should have record_transition method."""
+        assert hasattr(DecisionModel, "record_transition")
 
 
 class TestTPBComponentWeights:
@@ -312,8 +277,8 @@ class TestTPBAttitudeCalculation:
     """Tests for TPB attitude calculation methods."""
 
     def test_attitude_social_learning_method_exists(self):
-        """_attitude_social_learning method should exist."""
-        assert hasattr(TPB, "_attitude_social_learning")
+        """_compute_attitude_social_learning method should exist."""
+        assert hasattr(TPB, "_compute_attitude_social_learning")
 
     def test_compute_tpb_for_bundle_method_exists(self):
         """_compute_tpb_for_bundle method should exist."""
@@ -376,12 +341,12 @@ class TestTPBBundleProposal:
         assert hasattr(TPB, "_is_reasonable_bundle")
 
 
-class TestTPBSwitchingLogic:
-    """Tests for practice switching logic."""
+class TestTPBTransitioningLogic:
+    """Tests for practice transitioning logic."""
 
-    def test_should_switch_method_exists(self):
-        """should_switch method should exist."""
-        assert hasattr(TPB, "should_switch")
+    def test_should_transition_method_exists(self):
+        """should_transition method should exist."""
+        assert hasattr(TPB, "should_transition")
 
     def test_check_fallback_method_exists(self):
         """_check_fallback method should exist."""
@@ -477,24 +442,24 @@ class TestBundleFailureTracking:
 
 
 class TestTPBHysteresis:
-    """Tests for hysteresis in switching behavior."""
+    """Tests for hysteresis in transitioning behavior."""
 
-    def test_switch_threshold_exists(self):
-        """AFT parameters should include switch_threshold."""
+    def test_transition_threshold_exists(self):
+        """AFT parameters should include transition_threshold."""
         assert hasattr(TPB, "__init__")
 
     def test_revert_threshold_exists(self):
         """AFT parameters should include revert_threshold."""
         assert hasattr(TPB, "__init__")
 
-    def test_revert_threshold_higher_than_switch(self):
-        """Revert threshold should be higher than switch threshold (hysteresis)."""
+    def test_revert_threshold_higher_than_transition(self):
+        """Revert threshold should be higher than transition threshold (hysteresis)."""
         # This is enforced in the config, tested through config validation
         assert hasattr(TPB, "__init__")
 
 
 class TestTPBMinObservationYears:
-    """Tests for minimum observation period before switching."""
+    """Tests for minimum observation period before transitioning."""
 
     def test_min_observation_years_exists(self):
         """AFT parameters should include min_observation_years."""
