@@ -14,9 +14,34 @@ from enum import Enum
 import pycopancore.model_components.base as core
 import inseeds.components.base as base
 
+# Bands to exclude from crop calculations - managed grassland as well as
+# biomass grass and tree are not crops
+NON_CROPS = [
+    'rainfed grassland',
+    'irrigated grassland',
+    'rainfed biomass grass',
+    'irrigated biomass grass',
+    'rainfed biomass tree',
+    'irrigated biomass tree'
+]
+
 
 def sigmoid(x):
-    """Sigmoid function for TPB calculations."""
+    """Map real values to (0, 1) for TPB attitude/norm scores.
+
+    Uses tanh-based sigmoid: output of 0.5 when x=0, approaches 0/1 at extremes.
+    Useful for converting unbounded scores to probability-like values.
+
+    Parameters
+    ----------
+    x : float or array-like
+        Input value(s).
+
+    Returns
+    -------
+    float or ndarray
+        Sigmoid output in (0, 1). Zero maps to 0.5.
+    """
     return 0.5 * (np.tanh(x) + 1)
 
 
@@ -129,7 +154,7 @@ class Farmer(core.Individual, base.Individual):
             for neighbour in cell_neighbours.individuals
         ]
 
-    def _get_from_earth(self, var_name, as_scalar=False, band=None, time_idx=-1):
+    def _get_from_earth(self, var_name, as_scalar=False, band=None, drop_band=None, time_idx=-1):  # noqa: E501
         """Get variable from cell.from_earth, handling multi-year data.
 
         This is the single entry point for accessing from_earth data.
@@ -145,6 +170,8 @@ class Farmer(core.Individual, base.Individual):
         band : int, optional
             If given with as_scalar=True, return value at specific band index.
             If given with as_scalar=False, select that band from the DataArray.
+        drop_band : list, optional
+            If given, drop the specified bands from the DataArray.
         time_idx : int, default -1
             Which time step to select if multiple exist.
             -1 = most recent (default), 0 = first (for initialization with history).
@@ -172,6 +199,10 @@ class Farmer(core.Individual, base.Individual):
         if hasattr(data, 'time') and len(data.time) > 1:
             data = data.isel(time=time_idx)
 
+        # Drop bands if specified
+        if drop_band is not None:
+            data = data.drop_sel(band=drop_band)
+
         # Select band if specified
         if band is not None:
             data = data.isel(band=band)
@@ -198,18 +229,43 @@ class Farmer(core.Individual, base.Individual):
     @property
     def cell_cropyield(self):
         """Return the average crop yield of the cell."""
-        return self._get_from_earth("harvestc", as_scalar=True)
+        return (
+            self._get_from_earth(
+                "pft_harvestc",
+                as_scalar=False,
+                drop_band=NON_CROPS)
+                .weighted(
+                    self._get_from_earth(
+                        "cftfrac",
+                        as_scalar=False,
+                        drop_band=NON_CROPS)
+                )
+                .sum("band")
+            ).item()
 
     @property
     def cell_pft_yield(self):
         """Return the average crop yield of the cell."""
-        return self._get_from_earth("pft_harvestc", as_scalar=True)
+        return self._get_from_earth(
+            "pft_harvestc",
+            as_scalar=True,
+            drop_band=NON_CROPS
+        )
 
     @property
     def cell_pft_production(self):
         """Return the average crop yield of the cell."""
-        return self._get_from_earth("pft_harvestc", as_scalar=True) * \
-            self._get_from_earth("cftfrac", as_scalar=True) * self.farm_size
+        return (
+            self._get_from_earth(
+                "pft_harvestc",
+                as_scalar=True,
+                drop_band=NON_CROPS) * \
+            self._get_from_earth(
+                "cftfrac",
+                as_scalar=True,
+                drop_band=NON_CROPS) * \
+            self.farm_size
+        )
 
     @property
     def cell_soilc(self):
@@ -268,7 +324,10 @@ class Farmer(core.Individual, base.Individual):
             Farm size in hectares (ha). Cell area from pycopanlpjml is in m²,
             converted to ha (1 ha = 10,000 m²).
         """
-        cftfrac = self._get_from_earth("cftfrac")
+        cftfrac = (
+            self._get_from_earth("cftfrac")
+            .drop_sel(band=NON_CROPS)
+        )
 
         # Sum of all crop fractions
         total_cftfrac = float(np.sum(cftfrac.values))
@@ -288,8 +347,12 @@ class Farmer(core.Individual, base.Individual):
     @property
     def cell_avg_hdate(self):
         """Return the average harvest date of the cell."""
-        hdate_data = self._get_from_earth("hdate")
-        cftfrac_data = self._get_from_earth("cftfrac")
+        hdate_data = (
+            self._get_from_earth("hdate")
+        )
+        cftfrac_data = (
+            self._get_from_earth("cftfrac")
+        )
 
         # Get band values for both variables
         hdate_bands = hdate_data.band.values

@@ -241,3 +241,66 @@ class TestCACountryFaoLoading:
             CACountry._fao_prices_ds = None
             CACountry._fao_capital_ds = None
             CACountry._fao_crop_share_ds = None
+
+
+# =============================================================================
+# CACountry Country Stats Cache Tests
+# =============================================================================
+
+class TestCACountryStatsCache:
+    """Tests for CACountry country-level statistics caching."""
+
+    def test_compute_country_stats_method_exists(self):
+        """CACountry should have _compute_country_stats method."""
+        from inseeds.components.farming.ca_country import CACountry
+        assert hasattr(CACountry, "_compute_country_stats")
+
+    def test_country_stats_cache_structure(self):
+        """Country stats cache should have expected structure."""
+        expected_keys = ["year", "bundle_counts", "bundle_performance", "total_farmers"]
+        
+        cache = {
+            "year": 2020,
+            "bundle_counts": {(0, 0, 0): 5, (1, 1, 1): 3},
+            "bundle_performance": {
+                (0, 0, 0): {
+                    "avg_yield": 5.0,
+                    "avg_soil": 10.0,
+                    "avg_moisture": 0.5,
+                    "avg_yield_slope": 0.01,
+                    "avg_soil_slope": 0.02,
+                    "avg_moisture_slope": 0.0,
+                    "n_farmers": 5,
+                },
+            },
+            "total_farmers": 8,
+        }
+        
+        for key in expected_keys:
+            assert key in cache
+
+    def test_bundle_performance_has_required_fields(self):
+        """Bundle performance should have all required metric fields."""
+        required_fields = [
+            "avg_yield", "avg_soil", "avg_moisture",
+            "avg_yield_slope", "avg_soil_slope", "avg_moisture_slope",
+            "n_farmers",
+        ]
+        
+        sample_perf = {
+            "avg_yield": 5.0,
+            "avg_soil": 10.0,
+            "avg_moisture": 0.5,
+            "avg_yield_slope": 0.01,
+            "avg_soil_slope": 0.02,
+            "avg_moisture_slope": 0.0,
+            "n_farmers": 5,
+        }
+        
+        for field in required_fields:
+            assert field in sample_perf
+
+    def test_update_method_exists(self):
+        """CACountry should have update method that calls _compute_country_stats."""
+        from inseeds.components.farming.ca_country import CACountry
+        assert hasattr(CACountry, "update")

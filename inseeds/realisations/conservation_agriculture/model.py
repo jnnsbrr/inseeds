@@ -10,11 +10,13 @@ from inseeds.components import base
 from inseeds.components import farming
 from inseeds.components.farming import ConservationAgricultureFarmer
 from inseeds.components.farming.ca_country import CACountry
+from inseeds.components.farming.farmer import AFT
 from inseeds.components import lpjml
 from inseeds.components.data.residue import ResidueData
 from inseeds.components.farming.ca_behaviour import (
     BUNDLE_IDS, BUNDLE_NAMES, BLOCKER_NAMES, DRIVER_NAMES
 )
+from inseeds.components.farming.farmer import NON_CROPS
 
 # Custom unit for millions of dollars
 MEGADOLLARS = Unit("megadollars", symbol="M$")
@@ -23,6 +25,9 @@ MEGADOLLARS = Unit("megadollars", symbol="M$")
 BUNDLE_ID_TO_NAME = {v: BUNDLE_NAMES[k] for k, v in BUNDLE_IDS.items()}
 # Add -1 for "no proposed bundle"
 BUNDLE_ID_TO_NAME[-1] = ""
+
+# Mapping from AFT ID to name (derived from AFT enum)
+AFT_NAMES = {aft.value: aft.name for aft in AFT}
 
 
 class Farmer(ConservationAgricultureFarmer):
@@ -119,6 +124,7 @@ class Farmer(ConservationAgricultureFarmer):
     # Maps variable name -> {numeric_code: human_readable_label}
     # Used by output.py to populate the 'label' column in CSV/Parquet
     output_label_mappings = {
+        "aft_id": AFT_NAMES,
         "behaviour.practice_bundle": BUNDLE_ID_TO_NAME,
         "behaviour.proposed_bundle": BUNDLE_ID_TO_NAME,
         "behaviour.transition_blocker": BLOCKER_NAMES,
@@ -221,7 +227,12 @@ class Model(lpjml.Model):
         """Initialize farmers for cells with crops, sorted by harvest date."""
         farmers = []
         for cell in self.world.cells:
-            has_crops = cell.from_earth.cftfrac.sum("band").isel(time=[-1]) > 0
+            has_crops = (
+                cell.from_earth.cftfrac
+                .drop_sel(band=NON_CROPS)
+                .sum("band")
+                .isel(time=[-1]) > 0
+            )
             if not has_crops:
                 continue
             farmer = farmer_class(cell=cell, model=self)

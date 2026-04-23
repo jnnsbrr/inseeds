@@ -22,7 +22,7 @@ References:
 - Ajzen, I. (1991). The theory of planned behavior. OBHDP.
 """
 
-from inseeds.components.farming.farmer import Farmer
+from inseeds.components.farming.farmer import Farmer, NON_CROPS
 from inseeds.components.farming.ca_behaviour import TPB
 
 
@@ -265,6 +265,10 @@ class ConservationAgricultureFarmer(Farmer):
         Uses MADRaT CFT-specific data weighted by actual cftfrac from LPJmL.
         This ensures residue fractions reflect the actual crop mix in each cell.
 
+        MADRaT has 16 bands without rainfed/irrigated distinction, so we sum
+        LPJmL's rainfed + irrigated variants by crop type before weighting.
+        Only the first 13 bands are actual crops (excludes grassland, biomass).
+
         Returns
         -------
         dict or None
@@ -279,14 +283,28 @@ class ConservationAgricultureFarmer(Farmer):
         # Get cell index from grid
         cell_idx = self.cell.grid.cell.item()
 
-        # Get crop fractions from LPJmL for weighting
-        cftfrac = self._get_from_earth("cftfrac")
-        if cftfrac is None:
+        # Get crop fractions from LPJmL (exclude non-crops: grassland, biomass)
+        cftfrac_all = self._get_from_earth("cftfrac", drop_band=NON_CROPS)
+        if cftfrac_all is None:
             return None
+
+        # Separate rainfed and irrigated bands
+        cftfrac_rf = cftfrac_all.where(
+            cftfrac_all.band.str.startswith("rainfed"), drop=True
+        )
+        cftfrac_ir = cftfrac_all.where(
+            cftfrac_all.band.str.startswith("irrigated"), drop=True
+        )
+
+        # Strip prefix to get crop type names and sum rainfed + irrigated
+        # MADRaT doesn't distinguish irrigation, so we aggregate
+        rf_values = cftfrac_rf.values.flatten()
+        ir_values = cftfrac_ir.values.flatten()
+        cftfrac_combined = rf_values + ir_values
 
         try:
             from inseeds.components.data.residue import ResidueData
-            return ResidueData.weighted_fractions(rf, cell_idx, cftfrac)
+            return ResidueData.weighted_fractions(rf, cell_idx, cftfrac_combined)
         except Exception:
             return None
 
@@ -313,12 +331,12 @@ class ConservationAgricultureFarmer(Farmer):
         # Get environmental conditions from cell
         runoff = self.cell_runoff
         leaching_val = self.cell_leaching
-        fertilizer_val = self.cell_fertilizer
+        # fertilizer_val = self.cell_fertilizer
 
         # Get thresholds from config
         cc = self.model.config.coupled_config.practice_dimensions.cover_crop
         leaching_limit = cc.leaching_high
-        fertilizer_limit = cc.fertilizer_high
+        # fertilizer_limit = cc.fertilizer_high
 
         # Calculate leaching rate (normalized by runoff)
         leaching = leaching_val *1e3 / runoff if runoff > 0 else 0
@@ -326,9 +344,9 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Decision logic
         # -----------------------------------------------------------------
-        # High leaching + high fertilizer: soil has excess N that's being lost
+        # High leaching: soil has excess N that's being lost
         # → Use non-legume catch crop to capture nutrients
-        if leaching >= leaching_limit and fertilizer_val >= fertilizer_limit:
+        if leaching >= leaching_limit: # and fertilizer_val >= fertilizer_limit:
             return 1  # Non-legume
 
         # Otherwise: soil may be N-limited
@@ -513,8 +531,9 @@ class ConservationAgricultureFarmer(Farmer):
             Total revenue in currency units (USD).
         """
         # Get LPJmL outputs (uses _get_from_earth which handles multi-year data)
-        pft_harvestc = self._get_from_earth("pft_harvestc")  # Harvest in gC/m²
-        cftfrac = self._get_from_earth("cftfrac")  # Crop fractions
+        # Exclude managed grassland - it's not a crop
+        pft_harvestc = self._get_from_earth("pft_harvestc", drop_band=NON_CROPS)
+        cftfrac = self._get_from_earth("cftfrac", drop_band=NON_CROPS)
 
         # -----------------------------------------------------------------
         # Calculate production per band

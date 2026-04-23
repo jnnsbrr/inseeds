@@ -1,6 +1,8 @@
 """The inseeds_farmer.region class."""
 import numpy as np
 
+from inseeds.components.farming.farmer import NON_CROPS
+
 
 class Region:
     """Region entity type mixin class."""
@@ -17,7 +19,7 @@ class Country(Region):
         """Initialize an instance of Country."""
         super().__init__(**kwargs)
 
-    def _get_from_earth(self, var_name):
+    def _get_from_earth(self, var_name, drop_band=None):
         """Get variable from country's from_earth, handling multi-year data.
 
         Automatically selects the most recent time step if multiple exist.
@@ -26,6 +28,8 @@ class Country(Region):
         ----------
         var_name : str
             Name of the variable in from_earth (e.g. cftfrac).
+        drop_band : list, optional
+            If given, drop the specified bands from the DataArray.
 
         Returns
         -------
@@ -40,6 +44,9 @@ class Country(Region):
         # If data has multiple time steps, select the most recent one
         if hasattr(data, 'time') and len(data.time) > 1:
             data = data.isel(time=-1)
+        # Drop bands if specified
+        if drop_band is not None:
+            data = data.drop_sel(band=drop_band)
         return data
 
     @property
@@ -69,11 +76,12 @@ class Country(Region):
             Cropland area in hectares (minimum 1.0 to avoid division by zero).
         """
         if not hasattr(self, "_cropland_area"):
-            cftfrac = self._get_from_earth("cftfrac")
+            # Exclude managed grassland - it's not a crop
+            cftfrac = self._get_from_earth("cftfrac", drop_band=NON_CROPS)  # noqa: E501
             area = self.area
             total_cftfrac = cftfrac.sum("band")
 
-            # Area from pycopanlpjml is in m², convert to hectares (1 ha = 10,000 m²)
+            # Area from pycopanlpjml is in m², convert to hectares (1 ha = 10,000 m²)  # noqa: E501
             if hasattr(area, "values"):
                 area_m2 = np.asarray(area.values)
             else:

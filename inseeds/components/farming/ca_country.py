@@ -266,3 +266,115 @@ class CACountry(Country):
     def pft_prices(self):
         """Producer prices by crop type (USD/tonne dry matter)."""
         return self._get_fao_attr("_pft_prices")
+
+    # -------------------------------------------------------------------------
+    # Country-Level Statistics Cache (for non-local spreading)
+    # -------------------------------------------------------------------------
+
+    def _compute_country_stats(self, t):
+        """Compute country-level statistics for non-local spreading.
+
+        Builds a cache of bundle distribution and average performance per bundle
+        across all farmers in this country. Called once per timestep BEFORE
+        farmer updates to ensure consistent data.
+
+        The cache enables O(1) lookup for country-level social influence
+        instead of O(n²) pairwise comparisons.
+
+        Parameters
+        ----------
+        t : int
+            Current simulation year.
+        """
+        from collections import defaultdict
+
+        # Initialize or check cache validity
+        if not hasattr(self, "_country_stats_cache"):
+            self._country_stats_cache = {}
+
+        # Skip if already computed for this year
+        if self._country_stats_cache.get("year") == t:
+            return
+
+        # Initialize accumulators
+        bundle_data = defaultdict(lambda: {
+            "yield_sum": 0.0,
+            "soil_sum": 0.0,
+            "moisture_sum": 0.0,
+            "yield_slope_sum": 0.0,
+            "soil_slope_sum": 0.0,
+            "moisture_slope_sum": 0.0,
+            "count": 0,
+        })
+
+        # Single pass through all farmers
+        for farmer in self.farmers:
+            # Skip farmers without behaviour initialized
+            if not hasattr(farmer, "behaviour"):
+                continue
+
+            bundle = farmer.behaviour._practice_bundle
+
+            # Accumulate performance metrics
+            bundle_data[bundle]["yield_sum"] += farmer.cropyield
+            bundle_data[bundle]["soil_sum"] += farmer.soilc
+            bundle_data[bundle]["moisture_sum"] += getattr(
+                farmer, "root_moisture", 0.5
+            )
+
+            # Accumulate slopes from behaviour's trend data
+            trend = farmer.behaviour.current_trend
+            bundle_data[bundle]["yield_slope_sum"] += trend.get("yield", 0.0)
+            bundle_data[bundle]["soil_slope_sum"] += trend.get("soilc", 0.0)
+            bundle_data[bundle]["moisture_slope_sum"] += trend.get("moisture", 0.0)
+
+            bundle_data[bundle]["count"] += 1
+
+        # Compute averages and build final cache
+        bundle_counts = {}
+        bundle_performance = {}
+
+        for bundle, data in bundle_data.items():
+            n = data["count"]
+            if n == 0:
+                continue
+
+            bundle_counts[bundle] = n
+            bundle_performance[bundle] = {
+                "avg_yield": data["yield_sum"] / n,
+                "avg_soil": data["soil_sum"] / n,
+                "avg_moisture": data["moisture_sum"] / n,
+                "avg_yield_slope": data["yield_slope_sum"] / n,
+                "avg_soil_slope": data["soil_slope_sum"] / n,
+                "avg_moisture_slope": data["moisture_slope_sum"] / n,
+                "n_farmers": n,
+            }
+
+        # Store in cache with year as invalidation key
+        self._country_stats_cache = {
+            "year": t,
+            "bundle_counts": bundle_counts,
+            "bundle_performance": bundle_performance,
+            "total_farmers": sum(bundle_counts.values()),
+        }
+
+    def update(self, t):
+        """Update country statistics and its farmers.
+
+        Computes country-level statistics BEFORE updating farmers to ensure
+        all farmers see the same country-level data for this timestep.
+        """
+        # Call parent's update (but not the farmer loop part)
+        # We need to manually handle the farmer loop after computing stats
+        super(Country, self).update(t)
+
+        # Compute country-level statistics for non-local spreading
+        self._compute_country_stats(t)
+
+        # Now update farmers (same as base Country.update)
+        farmers_sorted = sorted(
+            self.farmers, key=lambda farmer: farmer.avg_hdate
+        )
+
+        for farmer in farmers_sorted:
+            farmer.update(t)

@@ -114,23 +114,23 @@ class ResidueData(CopanData[GridDimensionType]):
         production = xr.open_dataset(data_path / cls.PRODUCTION_FILE)
         removed = xr.open_dataset(data_path / cls.REMOVED_FILE)
         recycled = xr.open_dataset(data_path / cls.RECYCLED_FILE)
-        
+
         # Select year (or nearest available)
         burnt = burnt.sel(time=year, method="nearest")
         production = production.sel(time=year, method="nearest")
         removed = removed.sel(time=year, method="nearest")
         recycled = recycled.sel(time=year, method="nearest")
-        
+
         # Get variable names
         burnt_var = list(burnt.data_vars)[0]
         prod_var = list(production.data_vars)[0]
         removed_var = list(removed.data_vars)[0]
         recycled_var = list(recycled.data_vars)[0]
-        
+
         # Get grid coordinates
         lats = grid.lat.values
         lons = grid.lon.values
-        
+
         # Extract cells using nearest neighbor (keep CFT dimension)
         burnt_cells = burnt[burnt_var].sel(
             latitude=xr.DataArray(lats, dims="cell"),
@@ -179,7 +179,6 @@ class ResidueData(CopanData[GridDimensionType]):
         """Compute weighted residue fractions for a cell.
         
         Weights CFT-specific fractions by actual crop composition.
-        Only CFTs with valid MADRaT data (sum of fractions > 0) are included.
         
         Parameters
         ----------
@@ -188,8 +187,8 @@ class ResidueData(CopanData[GridDimensionType]):
         cell_idx : int
             Cell index in the dataset.
         cftfrac : np.ndarray
-            Crop fractions from LPJmL (length N_CFTS or more).
-            First 16 values are used for weighting.
+            Crop fractions from LPJmL (rainfed + irrigated summed by crop type,
+            excluding non-crops like grassland/biomass).
             
         Returns
         -------
@@ -202,9 +201,13 @@ class ResidueData(CopanData[GridDimensionType]):
         removed_cft = residue_ds.frac_removed.isel(cell=cell_idx).values
         recycled_cft = residue_ds.frac_recycled.isel(cell=cell_idx).values
         
-        # Use first 16 CFTs from cftfrac (MADRaT uses 16 bands)
-        n_cft = len(burnt_cft)
-        weights = np.asarray(cftfrac[:n_cft], dtype=np.float64)
+        # Use only the crop types present in cftfrac (already filtered upstream)
+        n_crops = len(cftfrac)
+        burnt_cft = burnt_cft[:n_crops]
+        removed_cft = removed_cft[:n_crops]
+        recycled_cft = recycled_cft[:n_crops]
+        
+        weights = np.asarray(cftfrac, dtype=np.float64)
         
         # Identify CFTs with valid MADRaT data (fractions sum > 0)
         # CFTs without production in MADRaT have all zeros

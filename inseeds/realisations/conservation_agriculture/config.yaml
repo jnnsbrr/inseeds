@@ -9,7 +9,7 @@ lpjml_settings:
 # Parallelization settings for pycopanlpjml
 parallelization:
     # Maximum number of workers to use (0 = auto-detect from SLURM_CPUS_ON_NODE or CPU count)
-    max_workers: 0
+    max_workers: 4
     
     # Enable debug output for parallelization
     debug: false
@@ -175,7 +175,7 @@ tpb_thresholds:
     # After transitioning, they commit to observing results for this many years (mean)
     # Actual interval is randomized: normal(evaluation_interval, evaluation_interval/2)
     # Literature: Farm planning cycles typically 5-10 years (Pannell et al. 2006)
-    evaluation_interval: 5  # Mean years between practice re-evaluations
+    evaluation_interval: 1  # Mean years between practice re-evaluations
 
 # Analogous to LPJmL pftpar, define the AFT parameters for the two different
 #   farmer types
@@ -183,24 +183,32 @@ aftpar:
     # AFT for conservative/traditional values following farmer tending to stay
     #   with conventional agriculture
     traditionalist:
-        pbc_base: 0.75  # base perceived behavioral control
+        pbc_base: 0.65  # base perceived behavioral control (captures risk aversion)
         weight_attitude: 0.6
-        weight_yield: 0.8
-        weight_soil: 0.4
-        weight_moisture: 0.3  # drought resilience weight
-        weight_norm: 0.4
+        weight_yield: 0.65 # Yield is everything
+        weight_soil: 0.1 # "I'll worry about that later"
+        weight_moisture: 0.25  # Drought scares me
+        weight_norm: 0.4  # Rogers "Late Majority": strong reliance on social proof
         weight_social_learning: 0.4
         weight_own_land: 0.6
+        # Local vs country weighting for social components
+        # Local effects (neighbours) typically dominate over country-level influence
+        # because neighbours share similar ecological/cultural conditions
+        weight_social_norm_local: 0.8      # Traditionalists rely more on local community
+        weight_social_norm_country: 0.2    # Less influenced by distant farmers
+        weight_attitude_local: 0.8         # Local social learning dominates
+        weight_attitude_country: 0.2       # Country-level less influential
+        # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
+        # Adoption fraction at which the practice feels "normative" (neutral).
+        # Below threshold -> social drag; above -> social boost.
+        # Traditionalists require broad uptake before a practice feels normal.
+        threshold_social_norm_local: 0.15    # 20% of neighbours = neutral
+        threshold_social_norm_country: 0.2  # 30% of country = neutral
         # Learning inertia / hysteresis parameters
         min_observation_years: 3    # Minimum years before considering transition
-        # Risk aversion (Chavas & Holt 1996): 0=neutral, 1=very averse
-        risk_aversion: 0.2          # Traditionalists are more risk-averse (but must allow PBC > 0.5)
         # Similarity weights for social learning
         weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
         weight_crop_similarity: 0.4     # Weight for crop portfolio similarity
-        # Conformity pressure (Cialdini et al. 1990)
-        conformity_bonus: 0.2       # Social norm boost for majority bundle
-        conformity_penalty: 0.1     # Social norm penalty for minority bundle
         # Time parameters (unified, AFT-specific)
         confidence_years: 10        # Years to reach full confidence (linear ramp)
         memory_decay_years: 30      # When old memories are forgotten
@@ -214,24 +222,31 @@ aftpar:
     # AFT for pioneer farmer who more likely tends to transition to new (promising)
     #   regenerative agriculture practices
     pioneer:
-        pbc_base: 0.95  # base perceived behavioral control
-        weight_attitude: 0.8
-        weight_yield: 0.4
-        weight_soil: 0.8
-        weight_moisture: 0.5  # pioneers care more about resilience
-        weight_norm: 0.2
+        pbc_base: 0.85  # base perceived behavioral control (captures risk aversion)
+        weight_attitude: 0.9
+        weight_yield: 0.5 # Still need to make money
+        weight_soil: 0.25 # More educated about long-term
+        weight_moisture: 0.25  # Same drought concern
+        weight_norm: 0.1  # Rogers "Innovators/Early Adopters": low but non-zero
         weight_social_learning: 0.6
         weight_own_land: 0.4
+        # Local vs country weighting for social components
+        # Pioneers are more open to learning from distant farmers (early adopters)
+        # and less bound by local community norms (Rogers 2003)
+        weight_social_norm_local: 0.6      # Still important but less dominant
+        weight_social_norm_country: 0.4    # More open to country-level trends
+        weight_attitude_local: 0.6         # Local social learning still relevant
+        weight_attitude_country: 0.4       # More willing to learn from afar
+        # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
+        # Pioneers feel "normed" at much lower adoption fractions than
+        # traditionalists - they interpret early signals as sufficient.
+        threshold_social_norm_local: 0.05    # 10% of neighbours = neutral
+        threshold_social_norm_country: 0.08  # 15% of country = neutral
         # Learning inertia / hysteresis parameters
         min_observation_years: 2    # Pioneers need less observation time
-        # Risk aversion (Chavas & Holt 1996): 0=neutral, 1=very averse
-        risk_aversion: 0.1          # Pioneers are less risk-averse
         # Similarity weights for social learning
         weight_bundle_similarity: 0.5   # Weight for practice bundle similarity
         weight_crop_similarity: 0.5     # Weight for crop portfolio similarity
-        # Conformity pressure (Cialdini et al. 1990)
-        conformity_bonus: 0.15      # Pioneers less influenced by conformity
-        conformity_penalty: 0.05    # Pioneers less penalized for deviation
         # Time parameters (unified, AFT-specific)
         confidence_years: 8         # Pioneers trust observations sooner
         memory_decay_years: 25      # Pioneers forget old experiences faster

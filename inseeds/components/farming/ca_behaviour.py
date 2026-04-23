@@ -18,32 +18,9 @@ References:
 """
 
 from abc import ABC, abstractmethod
-
 import numpy as np
 
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-def sigmoid(x):
-    """Map real values to (0, 1) for TPB attitude/norm scores.
-
-    Uses tanh-based sigmoid: output of 0.5 when x=0, approaches 0/1 at extremes.
-    Useful for converting unbounded scores to probability-like values.
-
-    Parameters
-    ----------
-    x : float or array-like
-        Input value(s).
-
-    Returns
-    -------
-    float or ndarray
-        Sigmoid output in (0, 1). Zero maps to 0.5.
-    """
-    return 0.5 * (np.tanh(x) + 1)
-
+from inseeds.components.farming.farmer import sigmoid, NON_CROPS
 
 # =============================================================================
 # PRACTICE BUNDLE DEFINITIONS
@@ -85,14 +62,16 @@ BLOCKER_FALLBACK_TRIGGERED = 2      # Reverting to previous bundle (adaptive man
 BLOCKER_NO_TARGET = 3               # No better neighbour + exploration didn't trigger
 BLOCKER_TARGET_SAME = 4             # Target bundle same as current (already optimal)
 BLOCKER_TARGET_UNAFFORDABLE = 5     # Target reduced to current due to cost
-BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND = 6    # TPB below threshold - own land attitude is limiting
-BLOCKER_TPB_LOW_ATTITUDE_SOCIAL = 7 # TPB below threshold - social learning attitude is limiting
-BLOCKER_TPB_LOW_SOCIAL_NORM = 8     # TPB below threshold - social norm is limiting factor
-BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC is limiting factor
+BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND = 6         # TPB low - own land attitude is limiting
+BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL = 7     # TPB low - LOCAL social learning is limiting
+BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY = 14  # TPB low - COUNTRY social learning is limiting
+BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL = 8         # TPB low - LOCAL social norm is limiting
+BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY = 15      # TPB low - COUNTRY social norm is limiting
+BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC (cost affordability) is limiting
 BLOCKER_TRANSITION_UNAFFORDABLE = 10 # Can't afford transition cost
 BLOCKER_CAPITAL_SURVIVAL = 11       # Capital below survival threshold
 BLOCKER_CONTROL_RUN = 12            # Control run - no CA dynamics
-BLOCKER_EVALUATION_TIME = 13    # Not yet time to re-evaluate (commitment period)
+BLOCKER_EVALUATION_TIME = 13        # Not yet time to re-evaluate (commitment period)
 
 BLOCKER_NAMES = {
     BLOCKER_NONE: "none",
@@ -102,8 +81,10 @@ BLOCKER_NAMES = {
     BLOCKER_TARGET_SAME: "target_same",
     BLOCKER_TARGET_UNAFFORDABLE: "target_unaffordable",
     BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND: "tpb_low_attitude_own_land",
-    BLOCKER_TPB_LOW_ATTITUDE_SOCIAL: "tpb_low_attitude_social",
-    BLOCKER_TPB_LOW_SOCIAL_NORM: "tpb_low_social_norm",
+    BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL: "tpb_low_attitude_social_local",
+    BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY: "tpb_low_attitude_social_country",
+    BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL: "tpb_low_social_norm_local",
+    BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY: "tpb_low_social_norm_country",
     BLOCKER_TPB_LOW_PBC: "tpb_low_pbc",
     BLOCKER_TRANSITION_UNAFFORDABLE: "transition_unaffordable",
     BLOCKER_CAPITAL_SURVIVAL: "capital_survival",
@@ -112,32 +93,58 @@ BLOCKER_NAMES = {
 }
 
 # Transition driver codes - indicates WHY a transition succeeded (mirror of blocker)
-# These identify which pathway and TPB component enabled the transition
+# These identify which pathway and TPB component (with local/country distinction) that
+# contributed most to enabling the transition. 3 pathways × 6 components = 18 codes.
 DRIVER_NONE = 0                              # No transition - maintaining current bundle
 DRIVER_FALLBACK = 1                          # Reverted to previous bundle (adaptive management)
 
-# Social learning pathway - learned from better-performing neighbor
-DRIVER_SOCIAL_ATTITUDE_OWN_LAND = 2          # TPB passed, attitude_own_land was strongest
-DRIVER_SOCIAL_ATTITUDE_SOCIAL = 3            # TPB passed, attitude_social was strongest
-DRIVER_SOCIAL_SOCIAL_NORM = 4                # TPB passed, social_norm was strongest
-DRIVER_SOCIAL_PBC = 5                        # TPB passed, PBC was strongest
+# LOCAL pathway - learned from better-performing LOCAL neighbor
+DRIVER_LOCAL_ATTITUDE_OWN_LAND = 2          # TPB passed, attitude_own_land was strongest
+DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL = 3      # TPB passed, local social learning was strongest
+DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY = 4    # TPB passed, country social learning was strongest
+DRIVER_LOCAL_SOCIAL_NORM_LOCAL = 5          # TPB passed, local social norm was strongest
+DRIVER_LOCAL_SOCIAL_NORM_COUNTRY = 6        # TPB passed, country social norm was strongest
+DRIVER_LOCAL_PBC = 7                        # TPB passed, PBC (cost affordability) was strongest
 
-# Exploration pathway - discovered via random exploration
-DRIVER_EXPLORATION_ATTITUDE_OWN_LAND = 6     # TPB passed, attitude_own_land was strongest
-DRIVER_EXPLORATION_ATTITUDE_SOCIAL = 7       # TPB passed, attitude_social was strongest
-DRIVER_EXPLORATION_SOCIAL_NORM = 8           # TPB passed, social_norm was strongest
-DRIVER_EXPLORATION_PBC = 9                   # TPB passed, PBC was strongest
+# COUNTRY pathway - inspired by country-level best performer
+DRIVER_COUNTRY_ATTITUDE_OWN_LAND = 8         # TPB passed, attitude_own_land was strongest
+DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL = 9     # TPB passed, local social learning was strongest
+DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY = 10  # TPB passed, country social learning was strongest
+DRIVER_COUNTRY_SOCIAL_NORM_LOCAL = 11        # TPB passed, local social norm was strongest
+DRIVER_COUNTRY_SOCIAL_NORM_COUNTRY = 12      # TPB passed, country social norm was strongest
+DRIVER_COUNTRY_PBC = 13                      # TPB passed, PBC (cost affordability) was strongest
+
+# EXPLORATION pathway - discovered via random exploration
+DRIVER_EXPLORATION_ATTITUDE_OWN_LAND = 14    # TPB passed, attitude_own_land was strongest
+DRIVER_EXPLORATION_ATTITUDE_SOCIAL_LOCAL = 15  # TPB passed, local social learning was strongest
+DRIVER_EXPLORATION_ATTITUDE_SOCIAL_COUNTRY = 16  # TPB passed, country social learning was strongest
+DRIVER_EXPLORATION_SOCIAL_NORM_LOCAL = 17    # TPB passed, local social norm was strongest
+DRIVER_EXPLORATION_SOCIAL_NORM_COUNTRY = 18  # TPB passed, country social norm was strongest
+DRIVER_EXPLORATION_PBC = 19                  # TPB passed, PBC (cost affordability) was strongest
 
 DRIVER_NAMES = {
     DRIVER_NONE: "none",
     DRIVER_FALLBACK: "fallback",
-    DRIVER_SOCIAL_ATTITUDE_OWN_LAND: "social_attitude_own_land",
-    DRIVER_SOCIAL_ATTITUDE_SOCIAL: "social_attitude_social",
-    DRIVER_SOCIAL_SOCIAL_NORM: "social_social_norm",
-    DRIVER_SOCIAL_PBC: "social_pbc",
+    # Social pathway (local neighbor inspiration)
+    DRIVER_LOCAL_ATTITUDE_OWN_LAND: "local_attitude_own_land",
+    DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL: "local_attitude_social_local",
+    DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY: "local_attitude_social_country",
+    DRIVER_LOCAL_SOCIAL_NORM_LOCAL: "local_social_norm_local",
+    DRIVER_LOCAL_SOCIAL_NORM_COUNTRY: "local_social_norm_country",
+    DRIVER_LOCAL_PBC: "local_pbc",
+    # Country pathway (country-level inspiration)
+    DRIVER_COUNTRY_ATTITUDE_OWN_LAND: "country_attitude_own_land",
+    DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL: "country_attitude_social_local",
+    DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY: "country_attitude_social_country",
+    DRIVER_COUNTRY_SOCIAL_NORM_LOCAL: "country_social_norm_local",
+    DRIVER_COUNTRY_SOCIAL_NORM_COUNTRY: "country_social_norm_country",
+    DRIVER_COUNTRY_PBC: "country_pbc",
+    # Exploration pathway (random exploration)
     DRIVER_EXPLORATION_ATTITUDE_OWN_LAND: "exploration_attitude_own_land",
-    DRIVER_EXPLORATION_ATTITUDE_SOCIAL: "exploration_attitude_social",
-    DRIVER_EXPLORATION_SOCIAL_NORM: "exploration_social_norm",
+    DRIVER_EXPLORATION_ATTITUDE_SOCIAL_LOCAL: "exploration_attitude_social_local",
+    DRIVER_EXPLORATION_ATTITUDE_SOCIAL_COUNTRY: "exploration_attitude_social_country",
+    DRIVER_EXPLORATION_SOCIAL_NORM_LOCAL: "exploration_social_norm_local",
+    DRIVER_EXPLORATION_SOCIAL_NORM_COUNTRY: "exploration_social_norm_country",
     DRIVER_EXPLORATION_PBC: "exploration_pbc",
 }
 
@@ -708,9 +715,10 @@ class TPB(DecisionModel):
         self._pbc = 0.0          # Perceived behavioral control
 
         # Evaluation time: farmers don't reconsider every year
-        # Initialized to 0 so first evaluation can happen after min_obs_years
-        # After each transition, reset with randomized interval
-        self._years_until_evaluation = 0
+        # Randomize initial evaluation time to desynchronize farmers
+        # (avoids artificial waves of simultaneous evaluation)
+        interval = self.agent.model.config.coupled_config.tpb_thresholds.evaluation_interval
+        self._years_until_evaluation = np.random.randint(0, interval + 1)
 
     # -------------------------------------------------------------------------
     # Properties for external access to TPB components
@@ -769,18 +777,15 @@ class TPB(DecisionModel):
     def reset_evaluation_time(self):
         """Reset evaluation time after a transition decision (transition or stay).
 
-        Uses randomized interval: normal(evaluation_interval, evaluation_interval/2)
-        This creates natural variation - some farmers reconsider after 7 years,
-        others after 13, centered around 10 (if interval=10).
+        Uses fixed evaluation_interval from config. Randomization only happens
+        at initialization to desynchronize farmers - after that, each farmer
+        evaluates at consistent intervals (like real-world planning horizons).
 
-        Called after TPB evaluation completes, regardless of whether transition happened.
+        Called after TPB evaluation completes, regardless of whether transition
+        happened.
         """
-        mean_interval = self.agent.model.config.coupled_config.tpb_thresholds.evaluation_interval
-        std_interval = mean_interval / 2
-
-        self._years_until_evaluation = max(
-            1,
-            int(np.random.normal(mean_interval, std_interval))
+        self._years_until_evaluation = (
+            self.agent.model.config.coupled_config.tpb_thresholds.evaluation_interval  # noqa: E501
         )
 
     def decrement_evaluation_time(self):
@@ -795,10 +800,46 @@ class TPB(DecisionModel):
     # MAIN UPDATE LOGIC
     # =========================================================================
 
+    def _reevaluate_residue_status(self):
+        """Re-evaluate residue component of bundle based on actual litter cover.
+
+        Farmers may organically cross the CA residue threshold (30% soil cover)
+        through their management practices. This method "certifies" or
+        "de-certifies" their CA residue status based on actual outcomes.
+
+        - If litter_cover >= threshold AND bundle residue = 0 → upgrade to 1
+        - If litter_cover < threshold AND bundle residue = 1 → downgrade to 0
+
+        This ensures the bundle reflects actual field conditions, not just
+        intended practices.
+        """
+        ca_threshold = self.agent.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
+        current_residue = self._practice_bundle[2]
+        litter_cover = self.agent.litter_cover
+
+        # Check if status should change
+        if litter_cover >= ca_threshold and current_residue == 0:
+            # Farmer achieved CA residue threshold - certify!
+            new_bundle = (
+                self._practice_bundle[0],
+                self._practice_bundle[1],
+                1,  # Upgrade residue status
+            )
+            self._practice_bundle = new_bundle
+        elif litter_cover < ca_threshold and current_residue == 1:
+            # Farmer fell below CA threshold - de-certify
+            new_bundle = (
+                self._practice_bundle[0],
+                self._practice_bundle[1],
+                0,  # Downgrade residue status
+            )
+            self._practice_bundle = new_bundle
+
     def update(self):
         """Compute proposed bundle and TPB scores for this timestep.
 
         Decision flow:
+        0. Re-evaluate residue status based on actual litter cover
         1. Add current observation to regression accumulators
         2. Update bundle_memory with current trends (for neighbour visibility)
         3. Decay old memories (bounded rationality)
@@ -815,6 +856,12 @@ class TPB(DecisionModel):
         self._transition_blocker = BLOCKER_NONE
         self._transition_driver = DRIVER_NONE
         self._target_pathway = None
+
+        # -----------------------------------------------------------------
+        # Step 0: Re-evaluate residue status based on actual litter cover
+        # -----------------------------------------------------------------
+        # Farmers may cross CA threshold organically - certify/de-certify
+        self._reevaluate_residue_status()
 
         # -----------------------------------------------------------------
         # Step 1: Add current year's observation to regression
@@ -869,11 +916,16 @@ class TPB(DecisionModel):
         # Step 6: Find target bundle (neighbour imitation or exploration)
         # -----------------------------------------------------------------
 
-        # First, try to imitate best-performing neighbour
+        # First, try to imitate best-performing neighbour (local)
         target_bundle = self._most_promising_bundle()
         self._target_pathway = "social"  # Track pathway for transition_driver
 
-        # If no better neighbour, maybe explore randomly
+        # If no better local neighbour, try country-level inspiration
+        if target_bundle is None:
+            target_bundle = self._most_promising_bundle_country()
+            self._target_pathway = "country"
+
+        # If no country inspiration, maybe explore randomly
         if target_bundle is None:
             target_bundle = self._maybe_explore_bundle()
             self._target_pathway = "exploration"
@@ -1132,93 +1184,123 @@ class TPB(DecisionModel):
     def set_tpb_transition_blocker(self):
         """Set transition_blocker to indicate which TPB component is most limiting.
 
-        Called when should_transition() returns False to identify which component
-        (attitude_own_land, attitude_social_learning, social_norm, or pbc)
-        is furthest below the threshold and thus the primary bottleneck.
+        Uses a simple recursive approach:
+        1. First identify which main component (attitude, social_norm, pbc) is lowest
+        2. Then drill down into that component's sub-parts to identify the specific blocker
 
-        Only sets blocker if there's a proposed bundle being evaluated.
+        This is simpler and more interpretable than weighted drag calculations.
         """
         if self._proposed_bundle is None:
             return
 
-        # Get threshold from config
-        tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
-        threshold = tpb_cfg.transition_threshold
-
-        # Calculate gap below threshold (positive = below threshold)
-        gaps = {
-            'attitude': threshold - self._attitude,
-            'social_norm': threshold - self._social_norm,
-            'pbc': threshold - self._pbc,
+        # Level 1: Which main component is the blocker?
+        main_components = {
+            'attitude': self._attitude,
+            'social_norm': self._social_norm,
+            'pbc': self._pbc,
         }
+        main_blocker = min(main_components, key=main_components.get)
 
-        # Find component with largest gap (most below threshold)
-        max_gap_component = max(gaps, key=gaps.get)
-
-        if max_gap_component == 'attitude':
-            # Attitude is limiting - determine which sub-component is lower
+        # Level 2: Drill down into sub-components
+        if main_blocker == 'attitude':
+            # Compare own_land vs social_learning
             if self._attitude_own_land <= self._attitude_social_learning:
                 self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
             else:
-                self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL
-        elif max_gap_component == 'social_norm':
-            self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM
-        else:
+                # Compare local vs country social learning
+                if self._attitude_social_learning_local <= self._attitude_social_learning_country:
+                    self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL
+                else:
+                    self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY
+
+        elif main_blocker == 'social_norm':
+            # Compare local vs country
+            if self._social_norm_local <= self._social_norm_country:
+                self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL
+            else:
+                self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY
+
+        else:  # pbc
+            # PBC is driven by cost affordability (pbc_base captures AFT risk differences)
             self._transition_blocker = BLOCKER_TPB_LOW_PBC
 
     def set_tpb_component_driver(self, pathway: str):
         """Set transition_driver to indicate which TPB component enabled the transition.
 
-        Called when should_transition() returns True to identify which component
-        (attitude_own_land, attitude_social_learning, social_norm, or pbc)
-        is furthest above the threshold and thus the primary enabler.
-
-        This is the mirror of set_tpb_transition_blocker() - identifies strength
-        rather than weakness.
+        Uses a simple recursive approach (mirror of set_tpb_transition_blocker):
+        1. First identify which main component (attitude, social_norm, pbc) is highest
+        2. Then drill down into that component's sub-parts to identify the specific driver
 
         Parameters
         ----------
         pathway : str
-            Either "social" (learned from neighbor) or "exploration" (random).
+            One of "social" (learned from local neighbor), "country" (inspired
+            by country-level data), or "exploration" (random exploration).
         """
         if self._proposed_bundle is None:
             return
 
-        # Get threshold from config
-        tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
-        threshold = tpb_cfg.transition_threshold
+        # Level 1: Which main component is the strongest driver?
+        main_components = {
+            'attitude': self._attitude,
+            'social_norm': self._social_norm,
+            'pbc': self._pbc,
+        }
+        main_driver = max(main_components, key=main_components.get)
 
-        # Calculate margin above threshold (positive = above threshold)
-        margins = {
-            'attitude': self._attitude - threshold,
-            'social_norm': self._social_norm - threshold,
-            'pbc': self._pbc - threshold,
+        # Level 2: Drill down into sub-components
+        if main_driver == 'attitude':
+            # Compare own_land vs social_learning
+            if self._attitude_own_land >= self._attitude_social_learning:
+                sub_driver = 'attitude_own_land'
+            else:
+                # Compare local vs country social learning
+                if self._attitude_social_learning_local >= self._attitude_social_learning_country:
+                    sub_driver = 'attitude_social_local'
+                else:
+                    sub_driver = 'attitude_social_country'
+
+        elif main_driver == 'social_norm':
+            # Compare local vs country
+            if self._social_norm_local >= self._social_norm_country:
+                sub_driver = 'social_norm_local'
+            else:
+                sub_driver = 'social_norm_country'
+
+        else:  # pbc
+            # PBC is driven by cost affordability (pbc_base captures AFT risk differences)
+            sub_driver = 'pbc'
+
+        # Map based on pathway and sub-component
+        driver_maps = {
+            "social": {
+                'attitude_own_land': DRIVER_LOCAL_ATTITUDE_OWN_LAND,
+                'attitude_social_local': DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL,
+                'attitude_social_country': DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY,
+                'social_norm_local': DRIVER_LOCAL_SOCIAL_NORM_LOCAL,
+                'social_norm_country': DRIVER_LOCAL_SOCIAL_NORM_COUNTRY,
+                'pbc': DRIVER_LOCAL_PBC,
+            },
+            "country": {
+                'attitude_own_land': DRIVER_COUNTRY_ATTITUDE_OWN_LAND,
+                'attitude_social_local': DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL,
+                'attitude_social_country': DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY,
+                'social_norm_local': DRIVER_COUNTRY_SOCIAL_NORM_LOCAL,
+                'social_norm_country': DRIVER_COUNTRY_SOCIAL_NORM_COUNTRY,
+                'pbc': DRIVER_COUNTRY_PBC,
+            },
+            "exploration": {
+                'attitude_own_land': DRIVER_EXPLORATION_ATTITUDE_OWN_LAND,
+                'attitude_social_local': DRIVER_EXPLORATION_ATTITUDE_SOCIAL_LOCAL,
+                'attitude_social_country': DRIVER_EXPLORATION_ATTITUDE_SOCIAL_COUNTRY,
+                'social_norm_local': DRIVER_EXPLORATION_SOCIAL_NORM_LOCAL,
+                'social_norm_country': DRIVER_EXPLORATION_SOCIAL_NORM_COUNTRY,
+                'pbc': DRIVER_EXPLORATION_PBC,
+            },
         }
 
-        # Find component with largest margin (most above threshold)
-        max_margin_component = max(margins, key=margins.get)
-
-        if pathway == "social":
-            if max_margin_component == 'attitude':
-                # Attitude is strongest - determine which sub-component is higher
-                if self._attitude_own_land >= self._attitude_social_learning:
-                    self._transition_driver = DRIVER_SOCIAL_ATTITUDE_OWN_LAND
-                else:
-                    self._transition_driver = DRIVER_SOCIAL_ATTITUDE_SOCIAL
-            elif max_margin_component == 'social_norm':
-                self._transition_driver = DRIVER_SOCIAL_SOCIAL_NORM
-            else:
-                self._transition_driver = DRIVER_SOCIAL_PBC
-        elif pathway == "exploration":
-            if max_margin_component == 'attitude':
-                if self._attitude_own_land >= self._attitude_social_learning:
-                    self._transition_driver = DRIVER_EXPLORATION_ATTITUDE_OWN_LAND
-                else:
-                    self._transition_driver = DRIVER_EXPLORATION_ATTITUDE_SOCIAL
-            elif max_margin_component == 'social_norm':
-                self._transition_driver = DRIVER_EXPLORATION_SOCIAL_NORM
-            else:
-                self._transition_driver = DRIVER_EXPLORATION_PBC
+        driver_map = driver_maps.get(pathway, driver_maps["exploration"])
+        self._transition_driver = driver_map[sub_driver]
 
     # =========================================================================
     # APPLY BUNDLE TO AGENT
@@ -1311,6 +1393,56 @@ class TPB(DecisionModel):
             return None
 
         return best_neighbour.behaviour._practice_bundle
+
+    def _most_promising_bundle_country(self):
+        """Find best-performing bundle at COUNTRY level (if better than current).
+
+        Non-local social learning: when no local neighbour is better, farmers
+        may look to successful practices used elsewhere in their country.
+
+        Uses cached country statistics for O(1) lookup.
+
+        Returns
+        -------
+        tuple or None
+            Best country-level bundle, or None if no bundle performs better
+            than current practice or if country data is unavailable.
+        """
+        # Access country cache
+        country = self.agent.cell.country
+        cache = getattr(country, "_country_stats_cache", {})
+
+        if not cache:
+            return None
+
+        bundle_performance = cache.get("bundle_performance", {})
+        if not bundle_performance:
+            return None
+
+        # Get own weighted score from current trend
+        own_score = self._weighted_score(self.current_trend)
+
+        # Find best performing bundle at country level
+        best_bundle = None
+        best_score = own_score  # Must beat our current performance
+
+        for bundle, perf in bundle_performance.items():
+            # Skip our own bundle
+            if bundle == self._practice_bundle:
+                continue
+
+            # Calculate weighted score from country averages
+            country_score = (
+                self.agent.weight_yield * perf.get("avg_yield_slope", 0.0)
+                + self.agent.weight_soil * perf.get("avg_soil_slope", 0.0)
+                + self.agent.weight_moisture * perf.get("avg_moisture_slope", 0.0)
+            )
+
+            if country_score > best_score:
+                best_score = country_score
+                best_bundle = bundle
+
+        return best_bundle
 
     def _weighted_score(self, trend):
         """Combine soil, moisture, yield trends into single utility score.
@@ -1459,8 +1591,13 @@ class TPB(DecisionModel):
             0.0: Different dominant crops or neighbour doesn't grow it
         """
         # Get crop fractions via farmer's _get_from_earth (handles multi-year data)
-        cft_self = self.agent._get_from_earth("cftfrac").values.flatten()
-        cft_neighbour = neighbour._get_from_earth("cftfrac").values.flatten()
+        # Exclude managed grassland - it's not a crop for similarity comparison
+        cft_self = self.agent._get_from_earth(
+            "cftfrac", drop_band=NON_CROPS
+        ).values.flatten()
+        cft_neighbour = neighbour._get_from_earth(
+            "cftfrac", drop_band=NON_CROPS
+        ).values.flatten()
 
         # Find own dominant crop (single argmax - very fast)
         dominant_idx = np.argmax(cft_self)
@@ -1544,8 +1681,8 @@ class TPB(DecisionModel):
     # TPB COMPONENT: ATTITUDE (Social Learning)
     # =========================================================================
 
-    def _compute_attitude_social_learning(self, new_bundle):
-        """Compute attitude from neighbours using the proposed bundle.
+    def _compute_attitude_social_learning_local(self, new_bundle):
+        """Compute attitude from LOCAL neighbours using the proposed bundle.
 
         Social learning (Bandura 1977): farmers learn from observing
         neighbours who use similar practices.
@@ -1556,6 +1693,10 @@ class TPB(DecisionModel):
 
         The slope factor (via sigmoid) discounts neighbours who are declining,
         even if their absolute values are currently high (trap avoidance).
+
+        This is the LOCAL component - uses direct neighbour comparisons with
+        full similarity weighting. See _compute_attitude_social_learning_country()
+        for the country-level component.
 
         Parameters
         ----------
@@ -1642,17 +1783,95 @@ class TPB(DecisionModel):
         # Final sigmoid (maps to (0, 1), consistent with old model)
         return sigmoid(raw_score)
 
+    def _compute_attitude_social_learning_country(self, new_bundle):
+        """Compute attitude from COUNTRY-LEVEL bundle performance.
+
+        Uses cached country statistics to compare own performance against
+        average performance of farmers using the proposed bundle across
+        the entire country.
+
+        No similarity weighting at country level - uses simpler bundle-based
+        grouping for computational efficiency (O(1) vs O(n²)).
+
+        Parameters
+        ----------
+        new_bundle : tuple
+            Bundle being evaluated.
+
+        Returns
+        -------
+        float
+            Attitude score in [0, 1].
+        """
+        # Access country cache
+        country = self.agent.cell.country
+        cache = getattr(country, "_country_stats_cache", {})
+
+        if not cache:
+            return 0.5  # Neutral if no country data
+
+        bundle_performance = cache.get("bundle_performance", {})
+
+        # Get average performance for the proposed bundle
+        bundle_perf = bundle_performance.get(new_bundle)
+        if bundle_perf is None or bundle_perf.get("n_farmers", 0) == 0:
+            return 0.5  # Neutral if no data for this bundle
+
+        # My current absolute values (avoid division by zero)
+        my_yield = max(self.agent.cropyield, 1e-6)
+        my_soil = max(self.agent.soilc, 1e-6)
+        my_moisture = max(self.agent.root_moisture, 1e-6)
+
+        # Compare my performance to country average for this bundle
+        avg_yield = bundle_perf["avg_yield"]
+        avg_soil = bundle_perf["avg_soil"]
+        avg_moisture = bundle_perf["avg_moisture"]
+
+        # Absolute comparisons (ratio - 1)
+        yield_cmp = avg_yield / my_yield - 1 if my_yield > 0 else 0.0
+        soil_cmp = avg_soil / my_soil - 1 if my_soil > 0 else 0.0
+        moisture_cmp = avg_moisture / my_moisture - 1 if my_moisture > 0 else 0.0
+
+        # Slope adjustment using country-level average slopes
+        avg_yield_slope = bundle_perf.get("avg_yield_slope", 0.0)
+        avg_soil_slope = bundle_perf.get("avg_soil_slope", 0.0)
+        avg_moisture_slope = bundle_perf.get("avg_moisture_slope", 0.0)
+
+        # Weighted slope for the bundle's average trajectory
+        weighted_slope = (
+            self.agent.weight_yield * avg_yield_slope
+            + self.agent.weight_soil * avg_soil_slope
+            + self.agent.weight_moisture * avg_moisture_slope
+        )
+        slope_factor = sigmoid(weighted_slope)
+
+        # Adjust comparisons by slope factor
+        yield_adj = yield_cmp * slope_factor
+        soil_adj = soil_cmp * slope_factor
+        moisture_adj = moisture_cmp * slope_factor
+
+        # Weighted sum of comparisons
+        raw_score = (
+            self.agent.weight_yield * yield_adj
+            + self.agent.weight_soil * soil_adj
+            + self.agent.weight_moisture * moisture_adj
+        )
+
+        return sigmoid(raw_score)
+
     # =========================================================================
     # TPB COMPONENT: SOCIAL NORM
     # =========================================================================
 
-    def _compute_social_norm(self, new_bundle):
-        """Compute social norm based on neighbourhood practice distribution.
+    def _compute_social_norm_local(self, new_bundle):
+        """Compute social norm based on LOCAL neighbourhood practice distribution.
 
         Social norm reflects "what others are doing" (descriptive norm).
-        Higher if:
-        - Many neighbours use similar bundles and grow similar crops
-        - The bundle is the most common in neighbourhood
+        Uses similarity-weighted average: higher if neighbours use similar
+        bundles and grow similar crops.
+
+        Follows the simple approach from tillage_farmer.py: fraction of
+        neighbours using the practice → sigmoid transformation.
 
         Parameters
         ----------
@@ -1667,42 +1886,62 @@ class TPB(DecisionModel):
         if not self.agent.neighbourhood:
             return 0.5  # Neutral without neighbours
 
-        # -----------------------------------------------------------------
-        # Base norm: average total similarity to neighbours
-        # -----------------------------------------------------------------
-        # Uses combined bundle + crop similarity
+        # Average similarity to neighbours for this bundle
+        # High similarity = neighbours use similar bundles and crops
         total_similarity = sum(
             self._total_similarity(new_bundle, n)
             for n in self.agent.neighbourhood
         )
-        base_norm = total_similarity / len(self.agent.neighbourhood)
+        avg_similarity = total_similarity / len(self.agent.neighbourhood)
 
-        # -----------------------------------------------------------------
-        # Homogeneity bonus/penalty
-        # -----------------------------------------------------------------
-        # If neighbourhood is homogeneous, conformity pressure is stronger
+        # Shifted sigmoid: adoption threshold acts as the neutrality point
+        # (Granovetter 1978 heterogeneous-threshold diffusion model).
+        # Below threshold -> drag, above -> boost, smoothly transitioning.
+        # Threshold is AFT-specific: pioneers feel "normed" at lower adoption,
+        # traditionalists require broader local uptake to feel normative.
+        threshold = self._get_aft_param("threshold_social_norm_local")
+        return sigmoid(avg_similarity - threshold)
 
-        neighbour_bundles = [n.behaviour._practice_bundle for n in self.agent.neighbourhood]
-        unique_bundles = len(set(neighbour_bundles))
+    def _compute_social_norm_country(self, new_bundle):
+        """Compute social norm based on COUNTRY-LEVEL practice distribution.
 
-        # Homogeneity: 1.0 if all same, lower if diverse
-        homogeneity = 1.0 - (unique_bundles - 1) / max(len(neighbour_bundles), 1)
+        Uses cached country statistics for O(1) lookup. This reflects
+        "what farmers in my country are doing" as a broader social influence.
 
-        # Find most common bundle
-        most_common = max(set(neighbour_bundles), key=neighbour_bundles.count)
+        Follows the simple approach from tillage_farmer.py: fraction of
+        farmers using the practice → sigmoid transformation.
 
-        # Boost if adopting majority bundle; penalize if adopting minority
-        # Asymmetry reflects that social approval is stronger than disapproval
-        # (Cialdini et al. 1990). Values are configurable per AFT.
-        conformity_bonus = self._get_aft_param("conformity_bonus")
-        conformity_penalty = self._get_aft_param("conformity_penalty")
+        Parameters
+        ----------
+        new_bundle : tuple
+            Bundle being evaluated.
 
-        if new_bundle == most_common:
-            boost = homogeneity * conformity_bonus
-        else:
-            boost = -homogeneity * conformity_penalty
+        Returns
+        -------
+        float
+            Social norm score in [0, 1].
+        """
+        # Access country cache
+        country = self.agent.cell.country
+        cache = getattr(country, "_country_stats_cache", {})
 
-        return max(0.0, min(1.0, base_norm + boost))
+        if not cache or cache.get("total_farmers", 0) < 2:
+            return 0.5  # Neutral if no country data or only self
+
+        bundle_counts = cache.get("bundle_counts", {})
+        total_farmers = cache.get("total_farmers", 1)
+
+        # Fraction of farmers using this bundle at country level
+        bundle_count = bundle_counts.get(new_bundle, 0)
+        bundle_fraction = bundle_count / total_farmers
+
+        # Shifted sigmoid: threshold = country-adoption level at which this
+        # bundle feels normative (Granovetter 1978). Thresholds differ per
+        # AFT (pioneers adopt the country signal earlier) and are typically
+        # higher than the local threshold, because country adoption is more
+        # abstract/statistical than direct observation of neighbours.
+        threshold = self._get_aft_param("threshold_social_norm_country")
+        return sigmoid(bundle_fraction - threshold)
 
     # =========================================================================
     # COST CALCULATIONS
@@ -1829,53 +2068,20 @@ class TPB(DecisionModel):
     # TPB COMPONENT: PERCEIVED BEHAVIORAL CONTROL (PBC)
     # =========================================================================
 
-    def _compute_risk_factor(self):
-        """Compute risk factor from AFT type.
-
-        Risk aversion (Chavas & Holt 1996): farmers weight potential losses
-        more heavily than equivalent gains. Higher risk factor means more
-        cautious behavior and lower PBC.
-
-        Currently uses only AFT base risk aversion. Traditionalists are more
-        risk-averse than pioneers.
-
-        Returns
-        -------
-        float
-            Risk factor in [0, 1]. Higher = more risk-averse = lower PBC.
-
-        References
-        ----------
-        Chavas, J.P. & Holt, M.T. (1996). Economic behavior under uncertainty.
-
-        TODO: Optional extension - add capital volatility component
-        --------------------------------------------------------------
-        Could combine base risk with capital volatility (CV over recent years):
-
-            capital_history = self.agent.capital_history  # needs tracking
-            if len(capital_history) >= 3:
-                cv = np.std(capital_history) / max(np.mean(capital_history), 1e-6)
-                volatility_risk = min(cv, 1.0)
-            else:
-                volatility_risk = 0.0
-
-            weight_base = self._get_aft_param("weight_risk_base")
-            weight_volatility = self._get_aft_param("weight_risk_volatility")
-            risk_factor = weight_base * base_risk + weight_volatility * volatility_risk
-
-        This would require:
-        - Adding capital_history tracking in ca_farmer.py
-        - Adding weight_risk_base, weight_risk_volatility to config.yaml
-        """
-        return self._get_aft_param("risk_aversion")
-
     def _pbc_for_bundle(self, new_bundle):
         """Compute Perceived Behavioral Control for a bundle.
 
         PBC reflects "can I actually do this?" - lower when costs are
-        high relative to available capital, and when farmer is risk-averse.
+        high relative to available capital.
 
-        Formula: PBC = pbc_base × cost_factor × (1 - risk_factor)
+        Formula: PBC = pbc_base × cost_factor
+
+        Where:
+        - pbc_base: AFT-specific baseline (pioneers higher, traditionalists lower)
+        - cost_factor: decreases as transition cost approaches disposable capital
+
+        AFT differences in risk aversion are captured via pbc_base, not as a
+        separate multiplicative factor (avoids double-counting).
 
         Parameters
         ----------
@@ -1912,14 +2118,7 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         cost_factor = 1.0 / (1.0 + cost_impact / disposable)
 
-        # -----------------------------------------------------------------
-        # Risk aversion reduces PBC (Chavas & Holt 1996)
-        # -----------------------------------------------------------------
-        # Risk-averse farmers are less confident in their ability to adopt
-        # new practices, especially when capital has been volatile
-        risk_factor = self._compute_risk_factor()
-
-        return self.agent.pbc_base * cost_factor * (1.0 - risk_factor)
+        return self.agent.pbc_base * cost_factor
 
     # =========================================================================
     # COMPUTE FULL TPB SCORE
@@ -1934,28 +2133,54 @@ class TPB(DecisionModel):
         This means PBC acts as a gate: low PBC blocks adoption regardless
         of positive attitude/norms.
 
+        Components are computed at both local (neighbour) and country levels,
+        then combined with configurable weights. Local effects typically
+        dominate (neighbours have more influence), but country-level trends
+        provide broader social signals.
+
         Parameters
         ----------
         new_bundle : tuple
             Bundle being evaluated.
         """
         # -----------------------------------------------------------------
-        # Attitude: own experience + social learning
+        # Attitude: own experience + social learning (local + country)
         # -----------------------------------------------------------------
-        # Store sub-components separately for detailed transition_blocker analysis
+        # Own land attitude (same for local/country - it's your own observation)
         self._attitude_own_land = self._compute_attitude_own_land()
-        self._attitude_social_learning = self._compute_attitude_social_learning(new_bundle)
 
-        # Weighted combination (same approach as tillage_farmer.py)
+        # Social learning: local (neighbours) and country-level
+        self._attitude_social_learning_local = (
+            self._compute_attitude_social_learning_local(new_bundle)
+        )
+        self._attitude_social_learning_country = (
+            self._compute_attitude_social_learning_country(new_bundle)
+        )
+
+        # Combine local and country social learning with configurable weights
+        self._attitude_social_learning = (
+            self.agent.weight_attitude_local * self._attitude_social_learning_local  # noqa: E501
+            + self.agent.weight_attitude_country * self._attitude_social_learning_country  # noqa: E501
+        )
+
+        # Full attitude: own land + combined social learning
         self._attitude = (
             self.agent.weight_own_land * self._attitude_own_land
             + self.agent.weight_social_learning * self._attitude_social_learning
         )
 
         # -----------------------------------------------------------------
-        # Social Norm: what neighbours are doing
+        # Social Norm: local (neighbours) + country-level
         # -----------------------------------------------------------------
-        self._social_norm = self._compute_social_norm(new_bundle)
+        self._social_norm_local = self._compute_social_norm_local(new_bundle)
+        self._social_norm_country = self._compute_social_norm_country(new_bundle)
+
+        # Combine with configurable weights
+        self._social_norm = (
+            self.agent.weight_social_norm_local * self._social_norm_local
+            + self.agent.weight_social_norm_country * self._social_norm_country
+        )
+
         # -----------------------------------------------------------------
         # PBC: can I afford this?
         # -----------------------------------------------------------------
@@ -1969,9 +2194,3 @@ class TPB(DecisionModel):
             self.agent.weight_attitude * self._attitude
             + self.agent.weight_norm * self._social_norm
         ) * self._pbc
-
-        # if self._practice_bundle[0] == 0:
-        #     breakpoint()
-
-        # if self._tpb > 0.5:
-        #     breakpoint()
