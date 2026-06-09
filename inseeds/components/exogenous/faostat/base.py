@@ -16,7 +16,7 @@ When country data is missing, the fallback mechanism tries:
 This ensures complete data coverage even when FAOSTAT has gaps.
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -27,6 +27,7 @@ import pandas as pd
 import xarray as xr
 
 from copan_eval.fao import FaoData, fao_definitions, FaoApiAdapter, FaoCropTranslator
+from ..base import ExogenousSource
 
 logger = logging.getLogger(__name__)
 
@@ -225,26 +226,30 @@ def get_fao_country_code(iso3_code: str) -> str | None:
 # FaoDataset Base Class
 # =============================================================================
 
-class FaoDataset(ABC):
+class FaoDataset(ExogenousSource):
     """Abstract base class for FAO dataset handlers.
     
     Handles downloading, transforming, and caching FAOSTAT data.
     Subclasses define domain-specific behavior.
+    
+    Inherits from ExogenousSource for unified exogenous data access.
+    FAO data is country-level granularity.
     
     Subclass Requirements
     ---------------------
     Must implement:
     - domain: FAOSTAT domain code (e.g., "PP", "CS")
     - elements: Element codes to download
-    - name: Human-readable name
+    - name: Human-readable name (also used as accessor key)
     - output_filename: Output NetCDF filename
     - _get_items(): Item codes to download
     - _post_process(ds): Domain-specific transformations
     
     Optional overrides:
     - _translate_to_lpjml(): Whether to map crops to LPJmL names (default: True)
-    - _generate_dummy_fallback(): Create dummy data when API fails
     """
+    
+    granularity: Literal["cell", "country"] = "country"
 
     @property
     @abstractmethod
@@ -292,10 +297,6 @@ class FaoDataset(ABC):
         """Path to real FAO data file."""
         return Path(sim_path) / "input" / self.output_filename
 
-    def get_dummy_path(self, sim_path: str | Path) -> Path:
-        """Path to dummy data file (used when API fails)."""
-        base = self.output_filename.replace(".nc", "_DUMMY.nc")
-        return Path(sim_path) / "input" / base
 
     # -------------------------------------------------------------------------
     # Download & Transform
@@ -531,12 +532,16 @@ class FaoDataset(ABC):
         Returns
         -------
         Path
-            Path to the data file (real or dummy).
+            Path to the data file.
+            
+        Raises
+        ------
+        RuntimeError
+            If FAO data cannot be downloaded and no real data exists.
         """
         output_path = self.get_path(sim_path)
-        dummy_path = self.get_dummy_path(sim_path)
         
-        # Use existing file if available
+        # Use existing real file if available
         if output_path.exists() and not force_download:
             return output_path
         
@@ -551,36 +556,20 @@ class FaoDataset(ABC):
                 years=years,
                 country_codes=country_codes,
             )
-            # Clean up old dummy if real data now available
-            if dummy_path.exists():
-                dummy_path.unlink()
             return output_path
             
         except Exception as e:
-            # Fall back to dummy data
-            if dummy_path.exists():
-                print(f"WARNING: Using cached dummy data ({e})")
-                return dummy_path
-            
-            print(f"WARNING: FAO API failed, generating dummy data ({e})")
-            self._generate_dummy_fallback(dummy_path, years)
-            return dummy_path
-
-    def _generate_dummy_fallback(self, output_path: Path, years: tuple[int, int]) -> None:
-        """Generate dummy data when FAO API fails. Override in subclasses."""
-        raise NotImplementedError(
-            f"Dummy generation not implemented for {self.name}. "
-            f"Provide data manually at: {output_path}"
-        )
+            # No fallback to dummy data - require real FAO data
+            raise RuntimeError(
+                f"FAO API failed for {self.name}: {e}\n"
+                f"Please ensure FAO API authentication is configured correctly.\n"
+                f"Expected output path: {output_path}"
+            ) from e
 
     # -------------------------------------------------------------------------
     # Status Checks
     # -------------------------------------------------------------------------
     
     def is_available(self, sim_path: str | Path) -> bool:
-        """Check if data (real or dummy) exists."""
-        return self.get_path(sim_path).exists() or self.get_dummy_path(sim_path).exists()
-
-    def is_dummy(self, sim_path: str | Path) -> bool:
-        """Check if only dummy data is available."""
-        return not self.get_path(sim_path).exists() and self.get_dummy_path(sim_path).exists()
+        """Check if real FAO data file exists."""
+        return self.get_path(sim_path).exists()

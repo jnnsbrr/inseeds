@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from inseeds.components.data.fao import ensure_dummy_fao_data
+# Note: ensure_dummy_fao_data was removed with dummy FAO functionality
+# Tests relying on dummy data need to use mocks or real data
 
 
 class TestCAModelWithDummyFAO:
@@ -160,8 +161,8 @@ class TestCAFarmerProfitCalculation:
             pytest.skip("Cannot access cell output data")
         
         # Call revenue calculation
-        if hasattr(farmer, "_calculate_revenue"):
-            revenue = farmer._calculate_revenue()
+        if hasattr(farmer, "calculate_revenue"):
+            revenue = farmer.calculate_revenue()
             assert revenue >= 0
 
     def test_direct_costs_calculation_runs(self, ca_model_instance):
@@ -174,8 +175,8 @@ class TestCAFarmerProfitCalculation:
         farmer = farmers[0]
         
         # Call costs calculation
-        if hasattr(farmer, "_get_current_direct_costs"):
-            costs = farmer._get_current_direct_costs()
+        if hasattr(farmer, "get_current_direct_costs"):
+            costs = farmer.get_current_direct_costs()
             # Costs may be NaN if FAO data extraction fails for test data
             if not math.isnan(costs):
                 assert costs >= 0
@@ -240,12 +241,14 @@ class TestCAFarmerPracticeBundle:
         
         farmer = farmers[0]
         if hasattr(farmer, "behaviour"):
-            bundle_id = farmer.behaviour.practice_bundle
-            assert 0 <= bundle_id <= 7
+            id = farmer.behaviour.practice_bundle.id
+            assert 0 <= id <= 7
 
     def test_practice_bundle_name_is_valid(self, ca_model_instance):
-        """Practice bundle name should be one of the defined names."""
-        from inseeds.components.farming.ca_behaviour import BUNDLE_NAMES
+        """Practice bundle name should be one of the defined display names."""
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        labels = {bundle.label for bundle in ManagementBundle}
         
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
@@ -253,8 +256,8 @@ class TestCAFarmerPracticeBundle:
         
         farmer = farmers[0]
         if hasattr(farmer, "behaviour"):
-            name = farmer.behaviour.practice_bundle_name
-            assert name in BUNDLE_NAMES.values()
+            name = farmer.behaviour.practice_bundle.label
+            assert name in labels
 
 
 class TestFAODataLoadingInModel:
@@ -264,21 +267,18 @@ class TestFAODataLoadingInModel:
         """FAO data should load during model initialization."""
         from inseeds.components.farming.ca_country import CACountry
         
-        # Reset cache
-        CACountry._fao_prices_ds = None
-        CACountry._fao_capital_ds = None
+        # Reset class-level cache
+        CACountry._fao_reference_year = None
         
         # The test_fao_data.py already tests this comprehensively
-        # This is a placeholder to document the behavior
         assert True
 
     def test_fao_data_shared_across_countries(self):
-        """FAO data should be shared across all countries via class-level cache."""
+        """FAO data should be shared via world.exogenous with class-level reference year."""
         from inseeds.components.farming.ca_country import CACountry
         
-        # Verify class-level cache exists
-        assert hasattr(CACountry, "_fao_prices_ds")
-        assert hasattr(CACountry, "_fao_capital_ds")
+        # Verify class-level reference year cache exists
+        assert hasattr(CACountry, "_fao_reference_year")
 
 
 class TestCAFarmerAFTTypes:
@@ -352,10 +352,14 @@ class TestPracticeCosts:
         
         farmer = farmers[0]
         assert hasattr(farmer, "practice_costs")
-        assert isinstance(farmer.practice_costs, dict)
+        from inseeds.components.farming.ca_management import ManagementCosts
+        assert isinstance(farmer.practice_costs, ManagementCosts)
 
     def test_practice_costs_have_direct_and_transition(self, ca_model_instance):
         """Practice costs should have direct and transition components per practice."""
+        from dataclasses import fields
+        from inseeds.components.farming.ca_management import ManagementCosts
+
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
@@ -363,9 +367,10 @@ class TestPracticeCosts:
         farmer = farmers[0]
         if hasattr(farmer, "practice_costs"):
             costs = farmer.practice_costs
-            # Costs are structured as {practice: {direct: X, transition: Y}}
-            for practice, practice_costs in costs.items():
-                assert "direct" in practice_costs or "transition" in practice_costs
+            for f in fields(ManagementCosts):
+                practice_cost = getattr(costs, f.name)
+                assert hasattr(practice_cost, "direct")
+                assert hasattr(practice_cost, "transition")
 
 
 class TestNeighbourhoodStructure:
@@ -447,7 +452,7 @@ class TestFAODataBatchDownload:
 
     def test_ensure_with_multiple_countries(self):
         """ensure() should handle multiple countries."""
-        from inseeds.components.data.fao import FaoProducerPrices
+        from inseeds.components.exogenous.faostat import FaoProducerPrices
         
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
@@ -469,7 +474,7 @@ class TestFAODataBatchDownload:
 
     def test_ensure_with_single_country(self):
         """ensure() should handle single country."""
-        from inseeds.components.data.fao import FaoCapitalStock
+        from inseeds.components.exogenous.faostat import FaoCapitalStock
         
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
@@ -490,7 +495,7 @@ class TestFAODataYearSelection:
 
     def test_years_before_parameter(self):
         """years_before should control how many years are fetched."""
-        from inseeds.components.data.fao import FaoProducerPrices
+        from inseeds.components.exogenous.faostat import FaoProducerPrices
         
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
@@ -514,7 +519,7 @@ class TestFAODataYearSelection:
 
     def test_reference_year_parameter(self):
         """reference_year should control which year is used as reference."""
-        from inseeds.components.data.fao import FaoCapitalStock
+        from inseeds.components.exogenous.faostat import FaoCapitalStock
         
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
@@ -542,7 +547,7 @@ class TestFAOItemFiltering:
 
     def test_producer_prices_filters_to_lpjml_crops(self):
         """Producer prices should only include crops that map to LPJmL CFTs."""
-        from inseeds.components.data.fao import FaoProducerPrices
+        from inseeds.components.exogenous.faostat import FaoProducerPrices
         
         prices = FaoProducerPrices()
         items = prices._get_items()
@@ -555,7 +560,7 @@ class TestFAOItemFiltering:
 
     def test_capital_stock_has_all_three_items(self):
         """Capital stock should include all three capital components."""
-        from inseeds.components.data.fao import FaoCapitalStock
+        from inseeds.components.exogenous.faostat import FaoCapitalStock
         
         capital = FaoCapitalStock()
         items = capital._get_items()
@@ -686,12 +691,14 @@ class TestTPBBundleOperations:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        bundle_id = farmer.behaviour.practice_bundle
-        assert isinstance(bundle_id, int)
-        assert 0 <= bundle_id <= 7
+        id = farmer.behaviour.practice_bundle.id
+        assert isinstance(id, int)
+        assert 0 <= id <= 7
 
-    def test_internal_practice_bundle_is_tuple(self, ca_model_instance):
-        """Internal _practice_bundle should be a tuple of 3 values."""
+    def test_internal_practice_bundle_is_management_bundle(self, ca_model_instance):
+        """Internal practice_bundle should be a ManagementBundle enum member."""
+        from inseeds.components.farming.ca_management import ManagementBundle
+
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
@@ -700,11 +707,11 @@ class TestTPBBundleOperations:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        # Access internal tuple representation
-        bundle = farmer.behaviour._practice_bundle
-        assert isinstance(bundle, tuple)
-        assert len(bundle) == 3
-        assert all(v in (0, 1) for v in bundle)
+        bundle = farmer.behaviour.practice_bundle
+        assert isinstance(bundle, ManagementBundle)
+        assert bundle.tillage in (0, 1)
+        assert bundle.cover_crop in (0, 1)
+        assert bundle.residue_on_field in (0, 1)
 
     def test_farmer_has_practice_attributes(self, ca_model_instance):
         """Farmer should have tillage, cover_crop, residue_on_field."""
@@ -732,12 +739,12 @@ class TestTPBBundleOperations:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        name = farmer.behaviour.practice_bundle_name
+        name = farmer.behaviour.practice_bundle.label
         assert isinstance(name, str)
         assert name in [
-            "conventional", "residue_only", "cover_crop_only",
-            "cover_crop_residue", "notill_only", "notill_residue",
-            "notill_cover_crop", "conservation"
+            "conventional farming", "residue retention", "cover crop",
+            "cover crop + residue retention", "no-till", "no-till + residue retention",
+            "no-till + cover crop", "conservation agriculture"
         ]
 
 
@@ -746,19 +753,11 @@ class TestTPBSimilarityCalculations:
 
     def test_bundle_similarity_calculation(self, ca_model_instance):
         """Bundle similarity should be calculable."""
-        farmers = getattr(ca_model_instance, "_farmers", [])
-        if not farmers:
-            pytest.skip("No farmers")
-        
-        farmer = farmers[0]
-        if not hasattr(farmer, "behaviour"):
-            pytest.skip("Farmer has no behaviour")
-        
-        # Test similarity between bundles
-        if hasattr(farmer.behaviour, "_bundle_similarity"):
-            sim = farmer.behaviour._bundle_similarity((0, 0, 0), (1, 1, 1))
-            assert isinstance(sim, (int, float))
-            assert 0 <= sim <= 1
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        sim = ManagementBundle.notill.similarity(ManagementBundle.covercrop_residue)
+        assert isinstance(sim, (int, float))
+        assert 0 <= sim <= 1
 
     def test_total_similarity_calculation(self, ca_model_instance):
         """Total similarity should combine bundle and crop similarity."""
@@ -771,10 +770,10 @@ class TestTPBSimilarityCalculations:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        if hasattr(farmer.behaviour, "_total_similarity"):
-            # _total_similarity takes (self, own_bundle, neighbour)
-            own_bundle = farmer.behaviour._practice_bundle  # Use internal tuple
-            sim = farmer.behaviour._total_similarity(own_bundle, neighbour)
+        if hasattr(farmer.behaviour, "total_similarity"):
+            # total_similarity takes (self, own_bundle, neighbour)
+            own_bundle = farmer.behaviour.practice_bundle  # Use internal tuple
+            sim = farmer.behaviour.total_similarity(own_bundle, neighbour)
             assert isinstance(sim, (int, float))
             assert 0 <= sim <= 1
 
@@ -793,13 +792,13 @@ class TestTPBAffordabilityChecks:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        if hasattr(farmer.behaviour, "_affordable_bundle"):
+        if hasattr(farmer.behaviour, "affordable_bundle"):
             # Check if current bundle is affordable (use internal tuple)
-            bundle = farmer.behaviour._practice_bundle
+            bundle = farmer.behaviour.practice_bundle
             # Skip if capital is NaN
             if math.isnan(farmer.capital):
                 pytest.skip("Capital is NaN")
-            result = farmer.behaviour._affordable_bundle(bundle)
+            result = farmer.behaviour.affordable_bundle(bundle)
             assert isinstance(result, bool)
 
     def test_bundle_direct_cost_calculation(self, ca_model_instance):
@@ -813,9 +812,9 @@ class TestTPBAffordabilityChecks:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        if hasattr(farmer.behaviour, "_get_bundle_direct_cost"):
-            bundle = farmer.behaviour._practice_bundle  # Use internal tuple
-            cost = farmer.behaviour._get_bundle_direct_cost(bundle)
+        if hasattr(farmer.behaviour, "get_bundle_direct_cost"):
+            bundle = farmer.behaviour.practice_bundle  # Use internal tuple
+            cost = farmer.behaviour.get_bundle_direct_cost(bundle)
             # Cost may be NaN if FAO data extraction fails
             if not math.isnan(cost):
                 assert isinstance(cost, (int, float))
@@ -824,8 +823,8 @@ class TestTPBAffordabilityChecks:
 class TestTPBExplorationBehaviour:
     """Tests for TPB exploration behaviour."""
 
-    def test_is_reasonable_bundle_check(self, ca_model_instance):
-        """Reasonableness check should return boolean."""
+    def test_exploration_method_exists(self, ca_model_instance):
+        """Exploration method should exist (replaces _is_reasonable_bundle)."""
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
@@ -834,10 +833,8 @@ class TestTPBExplorationBehaviour:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        if hasattr(farmer.behaviour, "_is_reasonable_bundle"):
-            # Check if conventional bundle is reasonable
-            result = farmer.behaviour._is_reasonable_bundle((0, 0, 0))
-            assert isinstance(result, bool)
+        # _is_reasonable_bundle was removed, exploration logic now in maybe_explore_bundle
+        assert hasattr(farmer.behaviour, "maybe_explore_bundle")
 
     def test_most_promising_bundle_selection(self, ca_model_instance):
         """Most promising bundle should be a valid bundle tuple."""
@@ -849,11 +846,12 @@ class TestTPBExplorationBehaviour:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        if hasattr(farmer.behaviour, "_most_promising_bundle"):
-            bundle = farmer.behaviour._most_promising_bundle()
+        if hasattr(farmer.behaviour, "most_promising_bundle_local"):
+            from inseeds.components.farming.ca_management import ManagementBundle
+
+            bundle = farmer.behaviour.most_promising_bundle_local()
             if bundle is not None:
-                assert isinstance(bundle, tuple)
-                assert len(bundle) == 3
+                assert isinstance(bundle, ManagementBundle)
 
 
 class TestTPBFallbackBehaviour:
@@ -869,41 +867,35 @@ class TestTPBFallbackBehaviour:
         if not hasattr(farmer, "behaviour"):
             pytest.skip("Farmer has no behaviour")
         
-        if hasattr(farmer.behaviour, "_check_fallback"):
-            result = farmer.behaviour._check_fallback()
+        if hasattr(farmer.behaviour, "check_fallback"):
+            result = farmer.behaviour.check_fallback()
             assert isinstance(result, bool)
 
 
 class TestBundleNameConstants:
-    """Tests for bundle name constants."""
+    """Tests for ManagementBundle enum metadata."""
 
-    def test_bundle_names_dict_has_all_combinations(self):
-        """BUNDLE_NAMES should have all 8 practice combinations."""
-        from inseeds.components.farming.ca_behaviour import BUNDLE_NAMES
-        
-        assert len(BUNDLE_NAMES) == 8
-        
-        # All combinations of (0,1) for 3 practices
+    def test_all_practice_combinations_exist(self):
+        """Each practice triple should map to an enum member."""
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        assert len(ManagementBundle) == 8
+
         for t in (0, 1):
             for c in (0, 1):
                 for r in (0, 1):
-                    assert (t, c, r) in BUNDLE_NAMES
-
-    def test_bundle_tuples_is_reverse_of_names(self):
-        """BUNDLE_TUPLES should be reverse lookup of BUNDLE_NAMES."""
-        from inseeds.components.farming.ca_behaviour import (
-            BUNDLE_NAMES, BUNDLE_TUPLES
-        )
-        
-        for bundle, name in BUNDLE_NAMES.items():
-            assert BUNDLE_TUPLES[name] == bundle
+                    bundle = ManagementBundle.from_practices(t, c, r)
+                    assert bundle.tillage == t
+                    assert bundle.cover_crop == c
+                    assert bundle.residue_on_field == r
 
     def test_bundle_ids_are_0_to_7(self):
-        """BUNDLE_IDS should map bundles to 0-7."""
-        from inseeds.components.farming.ca_behaviour import BUNDLE_IDS
-        
-        assert len(BUNDLE_IDS) == 8
-        assert set(BUNDLE_IDS.values()) == set(range(8))
+        """Each bundle should have a unique ID from 0 to 7."""
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        ids = [bundle.id for bundle in ManagementBundle]
+        assert len(ids) == 8
+        assert set(ids) == set(range(8))
 
 
 class TestSigmoidFunction:

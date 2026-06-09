@@ -43,6 +43,9 @@ class TillageFarmer(Farmer):
     def attitude_own_land(self):
         """Calculate the attitude of the farmer based on their own land"""
         # compare own soil and yield to previous values
+        # Guard against division by zero (can occur in cells with no crops)
+        if self.soilc == 0 or self.cropyield == 0:
+            return 0.5  # Neutral attitude when no data available
         attitude_own_soil = self.soilc_previous / self.soilc - 1
         attitude_own_yield = self.cropyield_previous / self.cropyield - 1
 
@@ -68,12 +71,12 @@ class TillageFarmer(Farmer):
 
         # calculate the difference between the own status and the average
         #   status of the neighbours
-        if np.isnan(yields_diff):
+        if np.isnan(yields_diff) or self.cropyield == 0:
             yield_comparison = 0
         else:
             yield_comparison = yields_diff / self.cropyield - 1
 
-        if np.isnan(soils_diff):
+        if np.isnan(soils_diff) or self.soilc == 0:
             soil_comparison = 0
         else:
             soil_comparison = soils_diff / self.soilc - 1

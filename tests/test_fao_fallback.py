@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from inseeds.components.data.fao.base import (
+from inseeds.components.exogenous.faostat.base import (
     FallbackResult,
     get_value_with_fallback,
 )

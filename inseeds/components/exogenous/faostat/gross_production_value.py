@@ -137,18 +137,3 @@ class FaoGrossProductionValue(FaoDataset):
                 )
 
         return result_ds
-
-    @override
-    def _generate_dummy_fallback(
-        self,
-        output_path: Path,
-        years: tuple[int, int],
-    ) -> None:
-        """Generate dummy crop share data when FAO API fails."""
-        from .dummy import generate_dummy_crop_share
-        generate_dummy_crop_share(
-            years=years,
-            output_path=output_path,
-        )
-        print(f"  Saved DUMMY crop share to: {output_path}")
-        print(f"  ⚠ Delete this file and provide real FAO data for production runs!")

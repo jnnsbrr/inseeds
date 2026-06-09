@@ -10,7 +10,33 @@ from inseeds.components import lpjml
 
 
 class Farmer(TillageFarmer):
-    """Farmer entity type."""
+    """Farmer entity type.
+    
+    Overrides cell properties with simple direct access for performance
+    (matches old inseeds behavior).
+    """
+
+    @property
+    def cell_cropyield(self):
+        """Return the average crop yield of the cell (simple, fast)."""
+        val = self.cell.from_earth.harvestc.values.mean()
+        return max(val, 1e-3)
+
+    @property
+    def cell_soilc(self):
+        """Return the average soil carbon of the cell (simple, fast)."""
+        val = self.cell.from_earth.soilc_agr_layer.values[0].item()
+        return max(val, 1e-3)
+
+    @property
+    def cell_avg_hdate(self):
+        """Return the average harvest date of the cell (simple, fast)."""
+        import numpy as np
+        cftfrac = self.cell.from_earth.cftfrac
+        hdate = self.cell.from_earth.hdate
+        if cftfrac.sum().item() == 0:
+            return 365.0
+        return np.average(hdate.values, weights=cftfrac.values)
 
     output_variables = base.Output(
         aft_id=Variable("AFT ID", "unique identifier for agent"),
@@ -128,8 +154,25 @@ class Model(lpjml.Model):
         return farmers_sorted
 
     def update(self, t):
-        # Update world (which updates all farmers)
-        self.world.update(t)
+        # Cache cell-level values before updating farmers (avoids repeated xarray ops)
+        self._cache_cells()
+        # Update farmers directly using cached list (avoids expensive world.farmers property)
+        for farmer in self._farmers:
+            farmer.update(t)
         self.update_lpjml(t)
         # Collect outputs (if enabled in config)
         self.collect_outputs(t)
+
+    def _cache_cells(self):
+        """Cache computed values on cells to avoid repeated xarray operations.
+        
+        Only caches cells that have farmers (via _farmers list), not all world cells.
+        """
+        from inseeds.components.farming.farmer import cache_yearly
+        # Use set to get unique cells from farmers (avoids iterating all 67k cells)
+        cached_cells = set()
+        for farmer in self._farmers:
+            cell = farmer.cell
+            if cell not in cached_cells:
+                cache_yearly(cell, self)
+                cached_cells.add(cell)

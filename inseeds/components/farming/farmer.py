@@ -1,29 +1,211 @@
 """Farmer entity type class of inseeds_farmer_management"""
 
-# This file is part of pycopancore.
-#
-# Copyright (C) 2016-2017 by COPAN team at Potsdam Institute for Climate
-# Impact Research
-#
-# URL: <http://www.pik-potsdam.de/copan/software>
-# Contact: core@pik-potsdam.de
-# License: BSD 2-clause license
 import numpy as np
 from enum import Enum
 
 import pycopancore.model_components.base as core
 import inseeds.components.base as base
 
-# Bands to exclude from crop calculations - managed grassland as well as
-# biomass grass and tree are not crops
 NON_CROPS = [
-    'rainfed grassland',
-    'irrigated grassland',
-    'rainfed biomass grass',
-    'irrigated biomass grass',
-    'rainfed biomass tree',
-    'irrigated biomass tree'
+    'rainfed grassland', 'irrigated grassland',
+    'rainfed biomass grass', 'irrigated biomass grass',
+    'rainfed biomass tree', 'irrigated biomass tree'
 ]
+
+
+# =============================================================================
+# Cell Cache - unified caching for cell-level values
+# =============================================================================
+
+class CellCache:
+    """Simple cache for cell-level computed values.
+    
+    Usage:
+        cell.cache = CellCache()
+        cell.cache.avg_hdate = 180.0
+        cell.cache.net_farm_size_ha = 30.5
+        cell.cache.gross_farm_size_ha = 50.5
+
+        # Access:
+        value = cell.cache.avg_hdate
+        if "avg_hdate" in cell.cache: ...
+    """
+    
+    def __init__(self):
+        self._data = {}
+    
+    def __setattr__(self, name, value):
+        if name == "_data":
+            super().__setattr__(name, value)
+        else:
+            self._data[name] = value
+    
+    def __getattr__(self, name):
+        if name == "_data":
+            return super().__getattribute__(name)
+        if name not in self._data:
+            raise AttributeError(f"Cache has no '{name}'. Call cache_cell() first?")
+        return self._data[name]
+    
+    def get(self, name, default=None):
+        return self._data.get(name, default)
+    
+    def __contains__(self, name):
+        return name in self._data
+
+
+# =============================================================================
+# Cell data helpers
+# =============================================================================
+
+def get_cell_var(cell, var_name, time_idx=-1, drop_band=None, band=None,
+                 source="from_earth", partial_match=False):
+    """Read variable from cell.from_earth or cell.to_earth with optional slicing.
+    
+    Parameters
+    ----------
+    cell : Cell
+        The cell to read data from.
+    var_name : str
+        Name of the variable to read.
+    time_idx : int, default=-1
+        Time index to select (only if data has multiple time steps).
+    drop_band : list, optional
+        Band names to exclude.
+    band : int, optional
+        Band index to select.
+    source : str, default="from_earth"
+        Data source: "from_earth" (LPJmL output) or "to_earth" (LPJmL input).
+    partial_match : bool, default=False
+        If True, use partial matching for drop_band (e.g., 'biomass grass' drops
+        'rainfed biomass grass' and 'drip irrigated biomass grass').
+        If False (default), use fast exact matching.
+    
+    Returns
+    -------
+    xarray.DataArray
+        The requested variable with slicing applied.
+    """
+    if source == "from_earth":
+        container = cell.from_earth
+    elif source == "to_earth":
+        container = cell.to_earth
+    else:
+        raise ValueError(f"source must be 'from_earth' or 'to_earth', got '{source}'")
+    
+    data = getattr(container, var_name, None)
+    if data is None:
+        raise AttributeError(f"{var_name} not in cell.{source}")
+    if hasattr(data, "time") and len(data.time) > 1:
+        data = data.isel(time=time_idx)
+    if drop_band is not None:
+        if partial_match and "band" in data.dims:
+            bands_to_drop = [
+                b for b in data.band.values
+                if any(pattern in b for pattern in drop_band)
+            ]
+            if bands_to_drop:
+                data = data.drop_sel(band=bands_to_drop)
+        else:
+            data = data.drop_sel(band=drop_band)
+    if band is not None:
+        data = data.isel(band=band)
+    return data
+
+
+def avg_hdate(cell, model):
+    """Weighted mean harvest day-of-year for cell."""
+    hdate = get_cell_var(cell, "hdate")
+    cftfrac = get_cell_var(cell, "cftfrac")
+    cftmap = model.config.cftmap
+    
+    hdate_idx = [i for i, b in enumerate(hdate.band.values) 
+                 if any(x in b for x in cftmap)]
+    cft_idx = [i for i, b in enumerate(cftfrac.band.values) 
+               if b in [hdate.band.values[j] for j in hdate_idx]]
+    
+    if not cft_idx:
+        return 365
+    
+    hdate_sel = hdate.isel(band=hdate_idx)
+    cft_sel = cftfrac.isel(band=cft_idx)
+    
+    if np.sum(cft_sel.values) == 0:
+        return 365
+    return float(np.average(hdate_sel.values, weights=cft_sel.values))
+
+
+def farm_size_ha(cell, net=True, average_over_spinup=False):
+    """Farm size in hectares (cftfrac * area).
+    
+    Parameters
+    ----------
+    cell : Cell
+        The cell to compute farm size for.
+    net : bool, default True
+        If True, subtract non-crop landuse from total landuse.
+    average_over_spinup : bool
+        If True, average cftfrac over spinup years for robust baseline.
+    """
+    if net:
+        landuse = getattr(cell.from_earth, "cftfrac", None).isel(time=-1)
+    else:
+        landuse = get_cell_var(
+            cell,
+            "landuse",
+            source="to_earth",
+            drop_band=NON_CROPS,
+            partial_match=True,
+            time_idx=-1,
+        )
+    
+    total = float(np.sum(landuse.values))
+    area = cell.area
+    area_m2 = float(np.asarray(area.values).mean()) if hasattr(area, "values") else float(area)
+    return total * (area_m2 / 10000.0)
+
+
+def cropyield(cell):
+    """Weighted crop yield (gC/m2)."""
+    harvestc = get_cell_var(cell, "pft_harvestc", drop_band=NON_CROPS)
+    cftfrac = get_cell_var(cell, "cftfrac", drop_band=NON_CROPS)
+    w = cftfrac.values.flatten()
+    v = harvestc.values.flatten()
+    return float((v * w).sum() / w.sum()) if w.sum() > 0 else 0.0
+
+
+def soilc(cell):
+    """Top-layer soil carbon (gC/m2)."""
+    data = get_cell_var(cell, "soilc_agr_layer", band=0)
+    v = data.values
+    return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
+
+
+def root_moisture(cell):
+    """Root zone soil moisture (mm)."""
+    data = get_cell_var(cell, "rootmoist_agr")
+    v = data.values
+    return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
+
+
+def litter_cover(cell):
+    """Litter cover fraction (0-1)."""
+    data = get_cell_var(cell, "litcover_agr")
+    v = data.values
+    return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
+
+
+def cache_yearly(cell, model):
+    """Cache yearly values on cell after LPJmL output refresh."""
+    if not hasattr(cell, "cache"):
+        cell.cache = CellCache()
+    cell.cache.avg_hdate = avg_hdate(cell, model)
+    cell.cache.cropyield = cropyield(cell)
+    cell.cache.soilc = soilc(cell)
+    if "rootmoist_agr" in cell.from_earth:
+        cell.cache.root_moisture = root_moisture(cell)
+    if "litcover_agr" in cell.from_earth:
+        cell.cache.litter_cover = litter_cover(cell)
 
 
 def sigmoid(x):
@@ -83,7 +265,6 @@ class Farmer(core.Individual, base.Individual):
 
         # Same applies for cropyield (as for soilc)
         self.cropyield = self.cell_cropyield
-
         # Optional outputs (only available in some model versions)
         if "rootmoist_agr" in self.cell.from_earth:
             self.root_moisture = self.cell_root_moisture
@@ -154,7 +335,7 @@ class Farmer(core.Individual, base.Individual):
             for neighbour in cell_neighbours.individuals
         ]
 
-    def _get_from_earth(self, var_name, as_scalar=False, band=None, drop_band=None, time_idx=-1):  # noqa: E501
+    def get_from_earth(self, var_name, as_scalar=False, band=None, drop_band=None, time_idx=-1):  # noqa: E501
         """Get variable from cell.from_earth, handling multi-year data.
 
         This is the single entry point for accessing from_earth data.
@@ -226,76 +407,77 @@ class Farmer(core.Individual, base.Individual):
             val = 0.0  # Fallback for test data or missing values
         return val
 
+    def _cached(self, name):
+        """Get cached value if available."""
+        cache = getattr(self.cell, "cache", None)
+        return cache.get(name) if cache else None
+
     @property
     def cell_cropyield(self):
-        """Return the average crop yield of the cell."""
+        """Return the average crop yield of the cell (cache-aware)."""
+        cached = self._cached("cropyield")
+        if cached is not None:
+            return cached
         return (
-            self._get_from_earth(
-                "pft_harvestc",
-                as_scalar=False,
-                drop_band=NON_CROPS)
-                .weighted(
-                    self._get_from_earth(
-                        "cftfrac",
-                        as_scalar=False,
-                        drop_band=NON_CROPS)
-                )
-                .sum("band")
-            ).item()
+            self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS)
+            .weighted(self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS))
+            .sum("band")
+        ).item()
 
     @property
     def cell_pft_yield(self):
-        """Return the average crop yield of the cell."""
-        return self._get_from_earth(
-            "pft_harvestc",
-            as_scalar=True,
-            drop_band=NON_CROPS
-        )
+        """Return average crop yield across PFTs (gC/m²)."""
+        return self.get_from_earth("pft_harvestc", as_scalar=True, drop_band=NON_CROPS)
 
     @property
     def cell_pft_production(self):
-        """Return the average crop yield of the cell."""
-        return (
-            self._get_from_earth(
-                "pft_harvestc",
-                as_scalar=True,
-                drop_band=NON_CROPS) * \
-            self._get_from_earth(
-                "cftfrac",
-                as_scalar=True,
-                drop_band=NON_CROPS) * \
-            self.farm_size
-        )
+        """Return total crop production (gC).
+        
+        Calculated as sum of (yield × crop fraction × area) across all PFTs.
+        """
+        pft_harvestc = self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS)
+        cftfrac = self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS)
+        area_m2 = self.cell.area.item()
+        return float((pft_harvestc * cftfrac * area_m2).sum())
 
     @property
     def cell_soilc(self):
-        """Return the top-layer soil carbon of the cell (gC/m2)."""
-        return self._get_from_earth("soilc_agr_layer", as_scalar=True, band=0)
+        """Return top-layer soil carbon (gC/m2, cache-aware)."""
+        cached = self._cached("soilc")
+        if cached is not None:
+            return cached
+        return self.get_from_earth("soilc_agr_layer", as_scalar=True, band=0)
 
     @property
     def cell_root_moisture(self):
-        """Return the average rootzone soil moisture of the cells."""
-        return self._get_from_earth("rootmoist_agr", as_scalar=True)
+        """Return rootzone soil moisture (cache-aware)."""
+        cached = self._cached("root_moisture")
+        if cached is not None:
+            return cached
+        return self.get_from_earth("rootmoist_agr", as_scalar=True)
 
     @property
     def cell_litter_cover(self):
-        """Return fractional soil cover from litter on agricultural stands (0-1)."""
-        return self._get_from_earth("litcover_agr", as_scalar=True)
+        """Return fractional soil cover from litter (0-1, cache-aware)."""
+        cached = self._cached("litter_cover")
+        if cached is not None:
+            return cached
+        return self.get_from_earth("litcover_agr", as_scalar=True)
 
     @property
     def cell_runoff(self):
         """Return runoff of cell (mm/yr) from LPJmL."""
-        return self._get_from_earth("runoff", as_scalar=True)
+        return self.get_from_earth("runoff", as_scalar=True)
 
     @property
     def cell_leaching(self):
         """Return N leaching (gN/m2/yr) from LPJmL (whole cell)."""
-        return self._get_from_earth("leaching", as_scalar=True)
+        return self.get_from_earth("leaching", as_scalar=True)
 
     @property
     def cell_fertilizer(self):
         """Return N fertilizer input (gN/m2/yr) from LPJmL."""
-        return self._get_from_earth("nfert_agr", as_scalar=True)
+        return self.get_from_earth("nfert_agr", as_scalar=True)
 
     @property
     def cell_irrig(self):
@@ -306,13 +488,16 @@ class Farmer(core.Individual, base.Individual):
         This happens automatically in LPJmL; tracking here enables
         connecting irrigation savings to profit/capital.
         """
-        return self._get_from_earth("irrig", as_scalar=True)
+        return self.get_from_earth("irrig", as_scalar=True)
 
     @property
-    def farm_size(self):
+    def net_farm_size(self):
         """Return farm size in hectares (sum of cftfrac * area).
 
         Calculated as the sum of crop functional type fractions times cell area.
+        Uses cached value if available (set during initialization to average
+        over spinup years for robust baseline).
+
         Used for:
         - Scaling maintenance costs
         - Calculating total profit (yield × area × price)
@@ -324,68 +509,23 @@ class Farmer(core.Individual, base.Individual):
             Farm size in hectares (ha). Cell area from pycopanlpjml is in m²,
             converted to ha (1 ha = 10,000 m²).
         """
-        cftfrac = (
-            self._get_from_earth("cftfrac")
-            .drop_sel(band=NON_CROPS)
-        )
+        cached = self._cached("farm_size_ha")
+        if cached is not None:
+            return cached
+        return farm_size_ha(self.cell, net=True)
 
-        # Sum of all crop fractions
-        total_cftfrac = float(np.sum(cftfrac.values))
-
-        # Get area from cell (pycopanlpjml provides this from world.area)
-        # Area is in m², convert to hectares (1 ha = 10,000 m²)
-        area = self.cell.area
-        if hasattr(area, "values"):
-            area_m2 = float(np.asarray(area.values).mean())
-        else:
-            area_m2 = float(area)
-
-        area_ha = area_m2 / 10000.0
-
-        return total_cftfrac * area_ha
+    @property
+    def gross_farm_size(self):
+        """Return farm size in hectares (sum of cftfrac * area)."""
+        return farm_size_ha(self.cell, net=False)
 
     @property
     def cell_avg_hdate(self):
-        """Return the average harvest date of the cell."""
-        hdate_data = (
-            self._get_from_earth("hdate")
-        )
-        cftfrac_data = (
-            self._get_from_earth("cftfrac")
-        )
-
-        # Get band values for both variables
-        hdate_bands = hdate_data.band.values
-        cftfrac_bands = cftfrac_data.band.values
-
-        # Find crop indices in hdate bands that match cftmap
-        hdate_crop_idx = [
-            i
-            for i, item in enumerate(hdate_bands)
-            if any(x in item for x in self.model.config.cftmap)
-        ]
-
-        # Find matching bands in cftfrac (same crop names)
-        hdate_crop_names = [hdate_bands[i] for i in hdate_crop_idx]
-        cftfrac_crop_idx = [
-            i
-            for i, item in enumerate(cftfrac_bands)
-            if item in hdate_crop_names
-        ]
-
-        if len(cftfrac_crop_idx) == 0:
-            return 365
-
-        # Get the selected data
-        hdate_selected = hdate_data.isel(band=hdate_crop_idx)
-        cftfrac_selected = cftfrac_data.isel(band=cftfrac_crop_idx)
-
-        if np.sum(cftfrac_selected.values) == 0:
-            return 365
-        else:
-            return np.average(
-                hdate_selected.values, weights=cftfrac_selected.values
-            )
+        """Return average harvest date (cache-aware)."""
+        cached = self._cached("avg_hdate")
+        if cached is not None:
+            return cached
+        return avg_hdate(self.cell, self.model)
 
     def set_lpjml(self, attribute):
         """Set the mapped variables from the farmers to the LPJmL input."""
@@ -395,16 +535,31 @@ class Farmer(core.Individual, base.Individual):
             lpjml_attribute = [lpjml_attribute]
 
         for single_var in lpjml_attribute:
-            self.cell.to_earth[single_var][:] = getattr(self, attribute)
+            da = self.cell.to_earth[single_var]
+            value = getattr(self, attribute)
+            # Handle both 0D (scalar) and 1D+ arrays
+            if da.ndim == 0:
+                da.values[()] = value
+            else:
+                da[:] = value
 
     def update(self, t):
         super().update(t)
 
-        # update cell-level observations from LPJmL output
-        self.avg_hdate = self.cell_avg_hdate
+        # update cell-level observations from LPJmL output (using cached values)
+        # avg_hdate is set once at init and used only for deterministic update order
         self.cropyield = self.cell_cropyield
         self.soilc = self.cell_soilc
-        if "rootmoist_agr" in self.cell.from_earth:
-            self.root_moisture = self.cell_root_moisture
-        if "litcover_agr" in self.cell.from_earth:
-            self.litter_cover = self.cell_litter_cover
+        # Use cached values if available (check once during init, not every year)
+        cache = getattr(self.cell, "cache", None)
+        if cache is not None:
+            if "root_moisture" in cache:
+                self.root_moisture = cache.root_moisture
+            if "litter_cover" in cache:
+                self.litter_cover = cache.litter_cover
+        else:
+            # Fallback to direct access (slower)
+            if "rootmoist_agr" in self.cell.from_earth:
+                self.root_moisture = self.cell_root_moisture
+            if "litcover_agr" in self.cell.from_earth:
+                self.litter_cover = self.cell_litter_cover

@@ -19,7 +19,7 @@ class Country(Region):
         """Initialize an instance of Country."""
         super().__init__(**kwargs)
 
-    def _get_from_earth(self, var_name, drop_band=None):
+    def get_from_earth(self, var_name, drop_band=None):
         """Get variable from country's from_earth, handling multi-year data.
 
         Automatically selects the most recent time step if multiple exist.
@@ -51,16 +51,21 @@ class Country(Region):
 
     @property
     def farmers(self):
-        """Return farmers from this country's cells.
+        """Return farmers from this country's cells, sorted by harvest date.
 
-        Uses SocialSystem.individuals from lpjml.Country.
+        Includes Farmer and all subclasses (e.g., CAFarmer).
+        Cached and sorted on first access - the order is deterministic and
+        reflects the agricultural calendar (early harvesters first).
         """
-        farmers = {
-            farmer
-            for farmer in self.individuals
-            if farmer.__class__.__name__ == "Farmer"
-        }
-        return farmers
+        if not hasattr(self, "_farmers_cache"):
+            # One-time expensive lookup (MRO traversal + string matching)
+            farmers_set = {
+                ind for ind in self.individuals
+                if any("Farmer" in c.__name__ for c in ind.__class__.__mro__)
+            }
+            # Sort once by avg_hdate for deterministic order
+            self._farmers_cache = sorted(farmers_set, key=lambda f: f.avg_hdate)
+        return self._farmers_cache
 
     @property
     def cropland_area(self):
@@ -77,30 +82,33 @@ class Country(Region):
         """
         if not hasattr(self, "_cropland_area"):
             # Exclude managed grassland - it's not a crop
-            cftfrac = self._get_from_earth("cftfrac", drop_band=NON_CROPS)  # noqa: E501
+            cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS)
             area = self.area
             total_cftfrac = cftfrac.sum("band")
 
-            # Area from pycopanlpjml is in m², convert to hectares (1 ha = 10,000 m²)  # noqa: E501
-            if hasattr(area, "values"):
-                area_m2 = np.asarray(area.values)
-            else:
-                area_m2 = np.asarray(area)
+            # Extract values and squeeze singleton dimensions (e.g., band dim of size 1)
+            # This is critical: terr_area has shape (n_cells, 1) due to nbands=1,
+            # while cftfrac after sum has shape (n_cells,). Without squeeze,
+            # numpy broadcasting would create incorrect results.
+            area_values = area.values if hasattr(area, "values") else np.asarray(area)
+            cftfrac_values = total_cftfrac.values
+            area_values = np.squeeze(area_values)
+            cftfrac_values = np.squeeze(cftfrac_values)
 
-            area_ha = area_m2 / 10000.0
-            cropland_ha = float((total_cftfrac.values * area_ha).sum())
-
+            # Area from lpjml is in m², convert to hectares (1 ha = 10,000 m²)
+            area_ha = area_values / 10000.0
+            cropland_ha = float((cftfrac_values * area_ha).sum())
             self._cropland_area = max(cropland_ha, 1.0)
         return self._cropland_area
 
 
     def update(self, t):
-        """Update country and its farmers."""
+        """Update country and its farmers.
+        
+        inseeds handles entity updates - pycopanlpjml.Region.update() is a no-op.
+        """
         super().update(t)
 
-        farmers_sorted = sorted(
-            self.farmers, key=lambda farmer: farmer.avg_hdate
-        )
-
-        for farmer in farmers_sorted:
+        for farmer in self.farmers:
             farmer.update(t)
+

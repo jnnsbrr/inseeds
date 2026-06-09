@@ -1,4 +1,4 @@
-"""Tests for ResidueData class."""
+"""Tests for ResidueSource class (MADRaT residue data)."""
 
 import tempfile
 from pathlib import Path
@@ -7,11 +7,16 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from inseeds.components.data.residue import ResidueData
+from inseeds.components.exogenous.madrat import ResidueSource
 
 
-class TestResidueDataExtraction:
+class TestResidueSourceExtraction:
     """Test residue fraction extraction from MADRaT data."""
+
+    @pytest.fixture
+    def source(self):
+        """Create a ResidueSource instance."""
+        return ResidueSource()
 
     @pytest.fixture
     def mock_madrat_data(self, tmp_path):
@@ -47,10 +52,10 @@ class TestResidueDataExtraction:
         )
 
         # Save to temp directory
-        ds_burnt.to_netcdf(tmp_path / ResidueData.BURNT_FILE)
-        ds_prod.to_netcdf(tmp_path / ResidueData.PRODUCTION_FILE)
-        ds_removed.to_netcdf(tmp_path / ResidueData.REMOVED_FILE)
-        ds_recycled.to_netcdf(tmp_path / ResidueData.RECYCLED_FILE)
+        ds_burnt.to_netcdf(tmp_path / ResidueSource.BURNT_FILE)
+        ds_prod.to_netcdf(tmp_path / ResidueSource.PRODUCTION_FILE)
+        ds_removed.to_netcdf(tmp_path / ResidueSource.REMOVED_FILE)
+        ds_recycled.to_netcdf(tmp_path / ResidueSource.RECYCLED_FILE)
 
         return tmp_path
 
@@ -66,9 +71,9 @@ class TestResidueDataExtraction:
             }
         )
 
-    def test_extract_fractions_returns_dataset(self, mock_madrat_data, mock_grid):
+    def test_extract_fractions_returns_dataset(self, source, mock_madrat_data, mock_grid):
         """Test that _extract_fractions returns xr.Dataset with expected variables."""
-        result = ResidueData._extract_fractions(
+        result = source._extract_fractions(
             mock_grid, year=2015, data_path=mock_madrat_data
         )
 
@@ -77,18 +82,18 @@ class TestResidueDataExtraction:
         assert "frac_removed" in result.data_vars
         assert "frac_recycled" in result.data_vars
 
-    def test_extract_fractions_has_cell_dimension(self, mock_madrat_data, mock_grid):
+    def test_extract_fractions_has_cell_dimension(self, source, mock_madrat_data, mock_grid):
         """Test that output is indexed by cell."""
-        result = ResidueData._extract_fractions(
+        result = source._extract_fractions(
             mock_grid, year=2015, data_path=mock_madrat_data
         )
 
         assert "cell" in result.dims
         assert len(result.cell) == 2
 
-    def test_fractions_sum_to_one(self, mock_madrat_data, mock_grid):
+    def test_fractions_sum_to_one(self, source, mock_madrat_data, mock_grid):
         """Test that burnt + removed + recycled ≈ 1."""
-        result = ResidueData._extract_fractions(
+        result = source._extract_fractions(
             mock_grid, year=2015, data_path=mock_madrat_data
         )
 
@@ -96,9 +101,9 @@ class TestResidueDataExtraction:
         # Fractions sum to 1 for each cell (may have CFT dimension)
         np.testing.assert_array_almost_equal(total.values, np.ones_like(total.values), decimal=5)
 
-    def test_fractions_are_normalized(self, mock_madrat_data, mock_grid):
+    def test_fractions_are_normalized(self, source, mock_madrat_data, mock_grid):
         """Test that fractions are between 0 and 1."""
-        result = ResidueData._extract_fractions(
+        result = source._extract_fractions(
             mock_grid, year=2015, data_path=mock_madrat_data
         )
 
@@ -110,8 +115,13 @@ class TestResidueDataExtraction:
         assert (result.frac_recycled <= 1).all()
 
 
-class TestResidueDataEnsure:
+class TestResidueSourceEnsure:
     """Test the ensure/cache pattern."""
+
+    @pytest.fixture
+    def source(self):
+        """Create a ResidueSource instance."""
+        return ResidueSource()
 
     @pytest.fixture
     def mock_madrat_data(self, tmp_path):
@@ -121,10 +131,10 @@ class TestResidueDataEnsure:
         longitude = np.array([5.0])
 
         for name, var in [
-            (ResidueData.BURNT_FILE, "residues_burnt"),
-            (ResidueData.PRODUCTION_FILE, "residues_production"),
-            (ResidueData.REMOVED_FILE, "residues_removed"),
-            (ResidueData.RECYCLED_FILE, "residues_recycled"),
+            (ResidueSource.BURNT_FILE, "residues_burnt"),
+            (ResidueSource.PRODUCTION_FILE, "residues_production"),
+            (ResidueSource.REMOVED_FILE, "residues_removed"),
+            (ResidueSource.RECYCLED_FILE, "residues_recycled"),
         ]:
             data = np.ones((1, 1, 1, 1), dtype=np.float32) * 0.25
             ds = xr.Dataset(
@@ -146,45 +156,45 @@ class TestResidueDataEnsure:
             }
         )
 
-    def test_ensure_creates_cache_file(self, mock_madrat_data, mock_grid, tmp_path, monkeypatch):
+    def test_ensure_creates_cache_file(self, source, mock_madrat_data, mock_grid, tmp_path, monkeypatch):
         """Test that ensure() creates cache file."""
         sim_path = tmp_path / "simulation"
         (sim_path / "input").mkdir(parents=True)
 
         # Monkeypatch the default data path
-        monkeypatch.setattr(ResidueData, "DEFAULT_DATA_PATH", mock_madrat_data)
+        monkeypatch.setattr(ResidueSource, "DEFAULT_DATA_PATH", mock_madrat_data)
 
-        cache_path = ResidueData.ensure(sim_path, mock_grid, reference_year=2015)
+        cache_path = source.ensure(sim_path, mock_grid, reference_year=2015)
 
         assert cache_path.exists()
-        assert cache_path.name == ResidueData.CACHE_FILE
+        assert cache_path.name == ResidueSource.CACHE_FILE
 
-    def test_ensure_returns_existing_cache(self, mock_madrat_data, mock_grid, tmp_path, monkeypatch):
+    def test_ensure_returns_existing_cache(self, source, mock_madrat_data, mock_grid, tmp_path, monkeypatch):
         """Test that ensure() returns existing cache without regenerating."""
         sim_path = tmp_path / "simulation"
         (sim_path / "input").mkdir(parents=True)
 
-        monkeypatch.setattr(ResidueData, "DEFAULT_DATA_PATH", mock_madrat_data)
+        monkeypatch.setattr(ResidueSource, "DEFAULT_DATA_PATH", mock_madrat_data)
 
         # First call creates cache
-        cache_path1 = ResidueData.ensure(sim_path, mock_grid, reference_year=2015)
+        cache_path1 = source.ensure(sim_path, mock_grid, reference_year=2015)
         mtime1 = cache_path1.stat().st_mtime
 
         # Second call should return existing (same mtime)
-        cache_path2 = ResidueData.ensure(sim_path, mock_grid, reference_year=2015)
+        cache_path2 = source.ensure(sim_path, mock_grid, reference_year=2015)
         mtime2 = cache_path2.stat().st_mtime
 
         assert mtime1 == mtime2
 
-    def test_ensure_overwrite_regenerates(self, mock_madrat_data, mock_grid, tmp_path, monkeypatch):
+    def test_ensure_overwrite_regenerates(self, source, mock_madrat_data, mock_grid, tmp_path, monkeypatch):
         """Test that ensure(overwrite=True) regenerates cache even when it exists."""
         sim_path = tmp_path / "simulation"
         (sim_path / "input").mkdir(parents=True)
 
-        monkeypatch.setattr(ResidueData, "DEFAULT_DATA_PATH", mock_madrat_data)
+        monkeypatch.setattr(ResidueSource, "DEFAULT_DATA_PATH", mock_madrat_data)
 
         # First call creates cache
-        cache_path = ResidueData.ensure(sim_path, mock_grid, reference_year=2015)
+        cache_path = source.ensure(sim_path, mock_grid, reference_year=2015)
         assert cache_path.exists()
 
         # Delete and verify it gets regenerated with overwrite=True
@@ -202,7 +212,7 @@ class TestResidueDataEnsure:
         old_stdout = sys.stdout
         sys.stdout = captured
 
-        ResidueData.ensure(sim_path, mock_grid, reference_year=2015, overwrite=True)
+        source.ensure(sim_path, mock_grid, reference_year=2015, overwrite=True)
 
         sys.stdout = old_stdout
         output = captured.getvalue()
@@ -211,13 +221,18 @@ class TestResidueDataEnsure:
         assert cache_path.exists()
 
 
-class TestResidueDataWithRealData:
+class TestResidueSourceWithRealData:
     """Integration tests with real MADRaT data (skip if not available)."""
+
+    @pytest.fixture
+    def source(self):
+        """Create a ResidueSource instance."""
+        return ResidueSource()
 
     @pytest.fixture
     def real_data_available(self):
         """Check if real MADRaT data is available."""
-        return (ResidueData.DEFAULT_DATA_PATH / ResidueData.BURNT_FILE).exists()
+        return (ResidueSource.DEFAULT_DATA_PATH / ResidueSource.BURNT_FILE).exists()
 
     @pytest.fixture
     def netherlands_grid(self):
@@ -230,12 +245,12 @@ class TestResidueDataWithRealData:
             }
         )
 
-    def test_real_data_extraction(self, real_data_available, netherlands_grid):
+    def test_real_data_extraction(self, source, real_data_available, netherlands_grid):
         """Test extraction from real MADRaT data."""
         if not real_data_available:
             pytest.skip("Real MADRaT data not available")
 
-        result = ResidueData._extract_fractions(netherlands_grid, year=2015)
+        result = source._extract_fractions(netherlands_grid, year=2015)
 
         # Check structure
         assert "frac_burnt" in result.data_vars
@@ -259,7 +274,7 @@ class TestResidueDataWithRealData:
         assert 0 <= mean_removed <= 1
         assert 0 <= mean_recycled <= 1
 
-    def test_real_data_ensure_and_load(self, real_data_available, netherlands_grid, tmp_path):
+    def test_real_data_ensure_and_load(self, source, real_data_available, netherlands_grid, tmp_path):
         """Test full ensure/load cycle with real data."""
         if not real_data_available:
             pytest.skip("Real MADRaT data not available")
@@ -268,7 +283,7 @@ class TestResidueDataWithRealData:
         (sim_path / "input").mkdir(parents=True)
 
         # Ensure cache
-        cache_path = ResidueData.ensure(sim_path, netherlands_grid, reference_year=2015)
+        cache_path = source.ensure(sim_path, netherlands_grid, reference_year=2015)
         assert cache_path.exists()
 
         # Load and verify

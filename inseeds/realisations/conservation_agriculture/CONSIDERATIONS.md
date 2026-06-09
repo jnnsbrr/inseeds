@@ -381,7 +381,7 @@ def market_adjusted_profit(self, yield_value):
 def calculate_subsidies(self):
     """Calculate annual subsidies for CA practices."""
     subsidy = 0.0
-    bundle = self.behaviour._practice_bundle
+    bundle = self.behaviour.practice_bundle
     
     if bundle[0] == 1:  # No-till
         subsidy += self.region.notill_subsidy_per_ha * self.farm_size
@@ -494,7 +494,7 @@ class EconomicParameters:
 def validate_adoption_curve(model_results, empirical_data):
     """Compare model adoption curve to empirical data."""
     # S-curve fitting
-    model_adoption = model_results.groupby('year')['practice_bundle'].apply(
+    model_adoption = model_results.groupby('year')['practice_bundle.id'].apply(
         lambda x: (x > 0).mean()  # Fraction adopting any CA practice
     )
     

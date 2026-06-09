@@ -35,7 +35,7 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
 
         with open(f"{test_path}/data/lpjml_output.pkl", "rb") as out:
             data = pickle.load(out)
-        # Fill NaN in harvestc so farmer._get_from_earth does not raise
+        # Fill NaN in harvestc so farmer.get_from_earth does not raise
         if "harvestc" in data.data_vars:
             harvestc = data["harvestc"]
             vals = harvestc.values
@@ -181,7 +181,6 @@ def ca_model_instance(test_path):
     import numpy as np
     from pycoupler.config import read_yaml, CoupledConfig
     from inseeds.realisations.conservation_agriculture import Model
-    from inseeds.components.data.fao import ensure_dummy_fao_data
 
     # Load fresh lpjml data (don't use shared session fixture)
     with open(f"{test_path}/data/lpjml.pkl", "rb") as lpj:
@@ -191,9 +190,9 @@ def ca_model_instance(test_path):
     # Path to the CA config.yaml
     config_path = Path(__file__).parent.parent / "inseeds" / "realisations" / "conservation_agriculture" / "config.yaml"
     
-    # Use test data directory for FAO data
+    # Use test data directory for simulation
     sim_path = Path(test_path) / "data" / "ca_test_sim"
-    ensure_dummy_fao_data(sim_path, years=(2016, 2020))
+    sim_path.mkdir(parents=True, exist_ok=True)
     
     # Load the config using pycopanlpjml's proper config loading
     coupled_config = read_yaml(str(config_path), CoupledConfig)

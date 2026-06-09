@@ -1,9 +1,9 @@
-"""Tests for FAO data module (FaoProducerPrices, FaoCapitalStock, ensure, dummy fallback).
+"""Tests for FAO data module (FaoProducerPrices, FaoCapitalStock).
 
 These tests cover the FAO API integration path including:
-- ensure() with dummy fallback when API fails
-- Path resolution (real vs dummy files)
-- ConservationAgricultureFarmer loading FAO data
+- Path resolution
+- ensure() using existing files
+- is_available() helper
 """
 
 import tempfile
@@ -13,89 +13,27 @@ from unittest.mock import MagicMock, patch
 import pytest
 import xarray as xr
 
-from inseeds.components.data.fao import (
+from inseeds.components.exogenous.faostat import (
     FaoProducerPrices,
     FaoCapitalStock,
-    ensure_dummy_fao_data,
 )
 
 
 class TestFaoPaths:
     """Test path resolution for FAO datasets."""
 
-    def test_get_path_and_get_dummy_path(self):
-        """Real and dummy paths use correct naming."""
+    def test_get_path(self):
+        """Real paths use correct naming."""
         prices = FaoProducerPrices()
         capital = FaoCapitalStock()
         sim_path = Path("/tmp/sim")
 
         assert prices.get_path(sim_path) == sim_path / "input" / "fao_pft_prices.nc"
-        assert prices.get_dummy_path(sim_path) == sim_path / "input" / "fao_pft_prices_DUMMY.nc"
-
         assert capital.get_path(sim_path) == sim_path / "input" / "fao_capital_stock.nc"
-        assert capital.get_dummy_path(sim_path) == sim_path / "input" / "fao_capital_stock_DUMMY.nc"
-
-
-class TestFaoEnsureDummyFallback:
-    """Test ensure() creates dummy data when API fails."""
-
-    def test_producer_prices_ensure_creates_dummy_when_api_fails(self):
-        """FaoProducerPrices.ensure() creates _DUMMY.nc when prepare raises."""
-        prices = FaoProducerPrices()
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            input_dir = sim_path / "input"
-            input_dir.mkdir(parents=True)
-
-            with patch.object(prices, "prepare", side_effect=RuntimeError("API unavailable")):
-                path = prices.ensure(
-                    sim_path,
-                    reference_year=2012,
-                    years_before=2,
-                )
-
-            assert path == prices.get_dummy_path(sim_path)
-            assert path.exists()
-            assert "_DUMMY" in path.name
-
-            ds = xr.open_dataset(path)
-            assert "5532" in ds.data_vars  # Producer price element code
-            assert "area_code" in ds.dims
-            assert "time" in ds.dims or "npft" in ds.dims
-            ds.close()
-
-    def test_capital_stock_ensure_creates_dummy_when_api_fails(self):
-        """FaoCapitalStock.ensure() creates _DUMMY.nc when prepare raises."""
-        capital = FaoCapitalStock()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            input_dir = sim_path / "input"
-            input_dir.mkdir(parents=True)
-
-            with patch.object(capital, "prepare", side_effect=RuntimeError("API unavailable")):
-                path = capital.ensure(
-                    sim_path,
-                    reference_year=2012,
-                    years_before=2,
-                )
-
-            assert path == capital.get_dummy_path(sim_path)
-            assert path.exists()
-            assert "_DUMMY" in path.name
-
-            ds = xr.open_dataset(path)
-            assert "ncs" in ds.data_vars  # Net Capital Stocks
-            assert "gfcf" in ds.data_vars  # Gross Fixed Capital Formation
-            assert "cfc" in ds.data_vars  # Consumption of Fixed Capital
-            assert "depreciation_rate" in ds.data_vars
-            assert "investment_rate" in ds.data_vars
-            assert "area_code" in ds.dims
-            ds.close()
 
 
 class TestFaoEnsureUsesExistingFiles:
-    """Test ensure() uses existing real or dummy files."""
+    """Test ensure() uses existing real files."""
 
     def test_ensure_uses_existing_real_file(self):
         """When real data exists, ensure() returns it without calling prepare."""
@@ -114,28 +52,9 @@ class TestFaoEnsureUsesExistingFiles:
             mock_prepare.assert_not_called()
             assert path == full_real
 
-    def test_ensure_tries_download_when_only_dummy_exists(self):
-        """When only dummy data exists, ensure() tries to download real data first."""
-        prices = FaoProducerPrices()
-        dummy_path = Path("input") / "fao_pft_prices_DUMMY.nc"
-
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            full_dummy = sim_path / dummy_path
-            full_dummy.parent.mkdir(parents=True)
-            full_dummy.touch()
-
-            # Mock prepare to fail (simulating API unavailable)
-            with patch.object(prices, "prepare", side_effect=RuntimeError("API unavailable")):
-                path = prices.ensure(sim_path)
-
-            # Should fall back to existing dummy
-            assert path == full_dummy
-            assert path.exists()
-
 
 class TestFaoIsAvailable:
-    """Test is_available() and is_dummy() helpers."""
+    """Test is_available() helper."""
 
     def test_is_available_real(self):
         """is_available True when real file exists."""
@@ -145,17 +64,6 @@ class TestFaoIsAvailable:
             (sim_path / "input").mkdir(parents=True)
             (sim_path / "input" / "fao_pft_prices.nc").touch()
             assert prices.is_available(sim_path) is True
-            assert prices.is_dummy(sim_path) is False
-
-    def test_is_available_dummy(self):
-        """is_available True when only dummy file exists."""
-        prices = FaoProducerPrices()
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            (sim_path / "input").mkdir(parents=True)
-            (sim_path / "input" / "fao_pft_prices_DUMMY.nc").touch()
-            assert prices.is_available(sim_path) is True
-            assert prices.is_dummy(sim_path) is True
 
     def test_is_available_false(self):
         """is_available False when no file exists."""
@@ -163,84 +71,22 @@ class TestFaoIsAvailable:
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
             assert prices.is_available(sim_path) is False
-            assert prices.is_dummy(sim_path) is False
 
 
-class TestEnsureDummyFaoData:
-    """Test ensure_dummy_fao_data convenience function."""
+class TestFaoEnsureRaisesOnApiFailure:
+    """Test ensure() raises RuntimeError when API fails and no data exists."""
 
-    def test_ensure_dummy_creates_both_files(self):
-        """ensure_dummy_fao_data creates both producer prices and capital stock."""
+    def test_ensure_raises_when_api_fails(self):
+        """ensure() should raise RuntimeError when API fails."""
+        prices = FaoProducerPrices()
+        
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
-            paths = ensure_dummy_fao_data(sim_path, data_type="both", years=(2010, 2012))
-
-            assert "producer_prices" in paths
-            assert "capital_stock" in paths
-            assert paths["producer_prices"].exists()
-            assert paths["capital_stock"].exists()
-            assert "_DUMMY" in paths["producer_prices"].name
-            assert "_DUMMY" in paths["capital_stock"].name
-
-
-class TestCACountryFaoLoading:
-    """Test that CACountry loads FAO data correctly at country level."""
-
-    def test_ca_country_loads_fao_data_with_dummy(self):
-        """CACountry loads dummy FAO data once per country."""
-        from inseeds.components.farming.ca_country import CACountry
-        from inseeds.components.data.fao.dummy import generate_dummy_gpv
-
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            # Create dummy FAO data files
-            dummy_paths = ensure_dummy_fao_data(sim_path, data_type="both", years=(2010, 2015))
-
-            # Create dummy crop share (GPV) data
-            crop_share_path = Path(sim_path) / "input" / "fao_crop_share_DUMMY.nc"
-            crop_share_path.parent.mkdir(parents=True, exist_ok=True)
-            generate_dummy_gpv(years=(2010, 2015), output_path=crop_share_path)
-
-            # Create minimal mock model with config
-            model = MagicMock()
-            model.config.sim_path = str(sim_path)
-
-            # Create country instance (skip full super().__init__)
-            country = object.__new__(CACountry)
-            country.model = model
-            country.country_code = "NLD"
-            country._cropland_area = 5000.0  # Pre-set cropland area in ha
-            country._neighbour_codes = []  # No neighbours for this test
-
-            # Clear class-level cache to ensure fresh load
-            CACountry._fao_prices_ds = None
-            CACountry._fao_capital_ds = None
-            CACountry._fao_crop_share_ds = None
-
-            # Pre-load the datasets into class cache to avoid API calls
-            CACountry._fao_prices_ds = xr.open_dataset(dummy_paths["producer_prices"])
-            CACountry._fao_capital_ds = xr.open_dataset(dummy_paths["capital_stock"])
-            CACountry._fao_crop_share_ds = xr.open_dataset(crop_share_path)
-
-            # Call the extraction methods directly (bypassing ensure())
-            country._extract_capital_parameters("NLD", reference_year=2020)
-            country._extract_prices("NLD", reference_year=2020)
-
-            # Verify country has FAO-derived attributes (internal attributes)
-            assert hasattr(country, "_depreciation_rate")
-            assert hasattr(country, "_initial_capital_per_ha")
-            assert hasattr(country, "_pft_prices")
-            assert country._depreciation_rate > 0
-            assert country._initial_capital_per_ha > 0
-            assert country._pft_prices is not None
-
-            # Clean up
-            CACountry._fao_prices_ds.close()
-            CACountry._fao_capital_ds.close()
-            CACountry._fao_crop_share_ds.close()
-            CACountry._fao_prices_ds = None
-            CACountry._fao_capital_ds = None
-            CACountry._fao_crop_share_ds = None
+            (sim_path / "input").mkdir(parents=True)
+            
+            with patch.object(prices, "prepare", side_effect=RuntimeError("API unavailable")):
+                with pytest.raises(RuntimeError, match="FAO API failed"):
+                    prices.ensure(sim_path, reference_year=2020)
 
 
 # =============================================================================
@@ -251,56 +97,62 @@ class TestCACountryStatsCache:
     """Tests for CACountry country-level statistics caching."""
 
     def test_compute_country_stats_method_exists(self):
-        """CACountry should have _compute_country_stats method."""
+        """CACountry should compute management performance stats."""
         from inseeds.components.farming.ca_country import CACountry
-        assert hasattr(CACountry, "_compute_country_stats")
+        assert hasattr(CACountry, "compute_management_performance")
 
     def test_country_stats_cache_structure(self):
-        """Country stats cache should have expected structure."""
-        expected_keys = ["year", "bundle_counts", "bundle_performance", "total_farmers"]
-        
-        cache = {
-            "year": 2020,
-            "bundle_counts": {(0, 0, 0): 5, (1, 1, 1): 3},
-            "bundle_performance": {
-                (0, 0, 0): {
-                    "avg_yield": 5.0,
-                    "avg_soil": 10.0,
-                    "avg_moisture": 0.5,
-                    "avg_yield_slope": 0.01,
-                    "avg_soil_slope": 0.02,
-                    "avg_moisture_slope": 0.0,
-                    "n_farmers": 5,
-                },
-            },
-            "total_farmers": 8,
-        }
-        
-        for key in expected_keys:
-            assert key in cache
+        """Country stats cache should store a performance store object."""
+        from inseeds.components.farming.ca_management import (
+            ManagementBundle,
+            RegionManagementPerformance,
+            RegionManagementPerformanceStore,
+        )
+
+        store = RegionManagementPerformanceStore(
+            year=2020,
+            total_farmers=8,
+            bundle_counts={ManagementBundle.notill: 5.0, ManagementBundle.conservation: 3.0},
+        )
+        store._bundles[ManagementBundle.notill] = RegionManagementPerformance(
+            yield_sum=25.0,
+            soilc_sum=50.0,
+            moisture_sum=2.5,
+            yield_trend_sum=0.05,
+            soilc_trend_sum=0.10,
+            moisture_trend_sum=0.0,
+            count=5,
+        )
+
+        assert store.year == 2020
+        assert store.total_farmers == 8
+        assert store.bundle_counts[ManagementBundle.notill] == 5.0
 
     def test_bundle_performance_has_required_fields(self):
-        """Bundle performance should have all required metric fields."""
-        required_fields = [
-            "avg_yield", "avg_soil", "avg_moisture",
-            "avg_yield_slope", "avg_soil_slope", "avg_moisture_slope",
-            "n_farmers",
-        ]
-        
-        sample_perf = {
-            "avg_yield": 5.0,
-            "avg_soil": 10.0,
-            "avg_moisture": 0.5,
-            "avg_yield_slope": 0.01,
-            "avg_soil_slope": 0.02,
-            "avg_moisture_slope": 0.0,
-            "n_farmers": 5,
-        }
-        
-        for field in required_fields:
-            assert field in sample_perf
+        """Per-bundle performance should expose soilc-based averages."""
+        from inseeds.components.farming.ca_management import (
+            RegionManagementPerformance,
+        )
+
+        perf = RegionManagementPerformance(
+            yield_sum=25.0,
+            soilc_sum=50.0,
+            moisture_sum=2.5,
+            yield_trend_sum=0.05,
+            soilc_trend_sum=0.10,
+            moisture_trend_sum=0.0,
+            count=5,
+        )
+
+        assert perf.avg_yield == 5.0
+        assert perf.avg_soilc == 10.0
+        assert perf.avg_moisture == 0.5
+        assert perf.avg_yield_trend == 0.01
+        assert perf.avg_soilc_trend == 0.02
+        assert perf.count == 5
 
     def test_update_method_exists(self):
-        """CACountry should have update method that calls _compute_country_stats."""
+        """CACountry should have update method that computes management performance."""
         from inseeds.components.farming.ca_country import CACountry
         assert hasattr(CACountry, "update")
+        assert hasattr(CACountry, "compute_management_performance")

@@ -12,13 +12,8 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
-from inseeds.components.farming.ca_behaviour import (
-    DecisionModel,
-    TPB,
-    BUNDLE_NAMES,
-    BUNDLE_IDS,
-    sigmoid,
-)
+from inseeds.components.farming.ca_behaviour import DecisionModel, TPB, sigmoid
+from inseeds.components.farming.ca_management import ManagementBundle
 
 
 class TestDecisionModelInterface:
@@ -36,12 +31,9 @@ class TestDecisionModelInterface:
         assert hasattr(DecisionModel, "should_transition")
 
     def test_decision_model_has_properties(self):
-        """DecisionModel should have required properties."""
-        assert hasattr(DecisionModel, "practice_bundle")
-        assert hasattr(DecisionModel, "practice_bundle_name")
-        assert hasattr(DecisionModel, "proposed_bundle")
-        assert hasattr(DecisionModel, "proposed_bundle_name")
-        assert hasattr(DecisionModel, "current_trend")
+        """DecisionModel should expose bundle and TPB output properties."""
+        assert hasattr(DecisionModel, "proposed_bundle_id")
+        assert hasattr(DecisionModel, "proposed_bundle_label")
 
 
 class TestTPBStructure:
@@ -73,14 +65,12 @@ class TestTPBPropertyAccess:
         assert True
 
     def test_tpb_practice_bundle_uses_bundle_ids(self):
-        """practice_bundle property should use BUNDLE_IDS mapping."""
-        # Verified through implementation
-        assert len(BUNDLE_IDS) == 8
+        """practice_bundle.id should expose numeric bundle IDs."""
+        assert len(ManagementBundle) == 8
 
-    def test_tpb_practice_bundle_name_uses_bundle_names(self):
-        """practice_bundle_name property should use BUNDLE_NAMES mapping."""
-        # Verified through implementation
-        assert len(BUNDLE_NAMES) == 8
+    def test_tpb_practice_bundle_name_uses_names(self):
+        """practice_bundle.label should expose human-readable labels."""
+        assert len({b.label for b in ManagementBundle}) == 8
 
 
 class TestTPBWeights:
@@ -199,18 +189,21 @@ class TestPracticeAffordability:
 
     def test_direct_costs_affect_affordability(self):
         """Direct costs should affect practice affordability."""
-        # Verified through _get_current_direct_costs usage
+        # Verified through get_current_direct_costs usage
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert hasattr(ConservationAgricultureFarmer, "_get_current_direct_costs")
+        assert hasattr(ConservationAgricultureFarmer, "get_current_direct_costs")
 
 
 class TestBundleTracking:
     """Tests for practice bundle tracking and history."""
 
-    def test_current_trend_property_exists(self):
-        """DecisionModel should track current trend."""
-        assert hasattr(DecisionModel, "current_trend")
+    def test_agroecological_state_has_trends(self):
+        """ManagementPerformanceTracker should expose relative trends."""
+        from inseeds.components.farming.ca_management import ManagementPerformanceTracker
+
+        assert hasattr(ManagementPerformanceTracker, "trend")
+        assert hasattr(ManagementPerformanceTracker, "weighted_score")
 
     def test_record_transition_method_exists(self):
         """DecisionModel should have record_transition method."""
@@ -245,12 +238,8 @@ class TestProposedBundleGeneration:
     """Tests for proposed bundle generation logic."""
 
     def test_proposed_bundle_property_exists(self):
-        """TPB should have proposed_bundle property."""
-        assert hasattr(TPB, "proposed_bundle")
-
-    def test_proposed_bundle_name_property_exists(self):
-        """TPB should have proposed_bundle_name property."""
-        assert hasattr(TPB, "proposed_bundle_name")
+        """TPB should have proposed_bundle_id property."""
+        assert hasattr(TPB, "proposed_bundle_id")
 
     def test_update_method_exists(self):
         """TPB should have update method to generate proposals."""
@@ -277,76 +266,75 @@ class TestTPBAttitudeCalculation:
     """Tests for TPB attitude calculation methods."""
 
     def test_attitude_social_learning_local_method_exists(self):
-        """_compute_attitude_social_learning_local method should exist."""
-        assert hasattr(TPB, "_compute_attitude_social_learning_local")
+        """compute_attitude_social_learning_local method should exist."""
+        assert hasattr(TPB, "compute_attitude_social_learning_local")
 
     def test_attitude_social_learning_country_method_exists(self):
-        """_compute_attitude_social_learning_country method should exist."""
-        assert hasattr(TPB, "_compute_attitude_social_learning_country")
+        """compute_attitude_social_learning_country method should exist."""
+        assert hasattr(TPB, "compute_attitude_social_learning_country")
 
     def test_compute_tpb_for_bundle_method_exists(self):
-        """_compute_tpb_for_bundle method should exist."""
-        assert hasattr(TPB, "_compute_tpb_for_bundle")
+        """compute_tpb_for_bundle method should exist."""
+        assert hasattr(TPB, "compute_tpb_for_bundle")
 
 
 class TestTPBSocialNormCalculation:
     """Tests for TPB social norm calculation methods."""
 
     def test_compute_social_norm_local_method_exists(self):
-        """_compute_social_norm_local method should exist."""
-        assert hasattr(TPB, "_compute_social_norm_local")
+        """compute_social_norm_local method should exist."""
+        assert hasattr(TPB, "compute_social_norm_local")
 
     def test_compute_social_norm_country_method_exists(self):
-        """_compute_social_norm_country method should exist."""
-        assert hasattr(TPB, "_compute_social_norm_country")
+        """compute_social_norm_country method should exist."""
+        assert hasattr(TPB, "compute_social_norm_country")
 
     def test_bundle_similarity_method_exists(self):
-        """_bundle_similarity method should exist."""
-        assert hasattr(TPB, "_bundle_similarity")
+        """ManagementBundle should expose similarity()."""
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        assert hasattr(ManagementBundle, "similarity")
+        assert callable(ManagementBundle.similarity)
 
     def test_crop_similarity_method_exists(self):
-        """_crop_similarity method should exist."""
-        assert hasattr(TPB, "_crop_similarity")
+        """crop_similarity method should exist."""
+        assert hasattr(TPB, "crop_similarity")
 
     def test_total_similarity_method_exists(self):
-        """_total_similarity method should exist."""
-        assert hasattr(TPB, "_total_similarity")
+        """total_similarity method should exist."""
+        assert hasattr(TPB, "total_similarity")
 
 
 class TestTPBPBCCalculation:
     """Tests for TPB perceived behavioral control calculation."""
 
     def test_pbc_for_bundle_method_exists(self):
-        """_pbc_for_bundle method should exist."""
-        assert hasattr(TPB, "_pbc_for_bundle")
+        """pbc_for_bundle method should exist."""
+        assert hasattr(TPB, "pbc_for_bundle")
 
     def test_affordable_bundle_method_exists(self):
-        """_affordable_bundle method should exist."""
-        assert hasattr(TPB, "_affordable_bundle")
+        """affordable_bundle method should exist."""
+        assert hasattr(TPB, "affordable_bundle")
 
     def test_get_bundle_direct_cost_method_exists(self):
-        """_get_bundle_direct_cost method should exist."""
-        assert hasattr(TPB, "_get_bundle_direct_cost")
+        """get_bundle_direct_cost method should exist."""
+        assert hasattr(TPB, "get_bundle_direct_cost")
 
     def test_total_transition_cost_method_exists(self):
-        """_total_transition_cost method should exist."""
-        assert hasattr(TPB, "_total_transition_cost")
+        """total_transition_cost method should exist."""
+        assert hasattr(TPB, "total_transition_cost")
 
 
 class TestTPBBundleProposal:
     """Tests for bundle proposal logic."""
 
     def test_maybe_explore_bundle_method_exists(self):
-        """_maybe_explore_bundle method should exist."""
-        assert hasattr(TPB, "_maybe_explore_bundle")
+        """maybe_explore_bundle method should exist."""
+        assert hasattr(TPB, "maybe_explore_bundle")
 
     def test_most_promising_bundle_method_exists(self):
-        """_most_promising_bundle method should exist."""
-        assert hasattr(TPB, "_most_promising_bundle")
-
-    def test_is_reasonable_bundle_method_exists(self):
-        """_is_reasonable_bundle method should exist."""
-        assert hasattr(TPB, "_is_reasonable_bundle")
+        """most_promising_bundle_local method should exist."""
+        assert hasattr(TPB, "most_promising_bundle_local")
 
 
 class TestTPBTransitioningLogic:
@@ -357,8 +345,8 @@ class TestTPBTransitioningLogic:
         assert hasattr(TPB, "should_transition")
 
     def test_check_fallback_method_exists(self):
-        """_check_fallback method should exist."""
-        assert hasattr(TPB, "_check_fallback")
+        """check_fallback method should exist."""
+        assert hasattr(TPB, "check_fallback")
 
 
 class TestTPBMemoryAndHistory:
@@ -380,7 +368,7 @@ class TestTPBExploration:
 
     def test_exploration_uses_maybe_explore_bundle(self):
         """TPB should have exploration method."""
-        assert hasattr(TPB, "_maybe_explore_bundle")
+        assert hasattr(TPB, "maybe_explore_bundle")
 
 
 class TestTPBConfidenceAndLearning:
@@ -421,20 +409,12 @@ class TestTPBSimilarityWeights:
         assert hasattr(TPB, "__init__")
 
 
-class TestBundleReasonablenessChecks:
-    """Tests for bundle reasonableness validation."""
-
-    def test_is_reasonable_bundle_method_exists(self):
-        """_is_reasonable_bundle method should exist."""
-        assert hasattr(TPB, "_is_reasonable_bundle")
-
-
 class TestBundleFailureTracking:
     """Tests for tracking failed bundle attempts."""
 
     def test_failure_tracking_via_exploration(self):
         """TPB should track bundle failures via exploration logic."""
-        assert hasattr(TPB, "_maybe_explore_bundle")
+        assert hasattr(TPB, "maybe_explore_bundle")
 
 
 class TestTPBHysteresis:
@@ -490,16 +470,16 @@ class TestTPBCountryLevelMethods:
     """Tests for country-level spreading methods."""
 
     def test_compute_social_norm_country_method_exists(self):
-        """TPB should have _compute_social_norm_country method."""
-        assert hasattr(TPB, "_compute_social_norm_country")
+        """TPB should have compute_social_norm_country method."""
+        assert hasattr(TPB, "compute_social_norm_country")
 
     def test_compute_attitude_social_learning_country_method_exists(self):
-        """TPB should have _compute_attitude_social_learning_country method."""
-        assert hasattr(TPB, "_compute_attitude_social_learning_country")
+        """TPB should have compute_attitude_social_learning_country method."""
+        assert hasattr(TPB, "compute_attitude_social_learning_country")
 
     def test_most_promising_bundle_country_method_exists(self):
-        """TPB should have _most_promising_bundle_country method."""
-        assert hasattr(TPB, "_most_promising_bundle_country")
+        """TPB should have most_promising_bundle_country method."""
+        assert hasattr(TPB, "most_promising_bundle_country")
 
 
 class TestTPBCountryLevelWeights:
@@ -533,23 +513,23 @@ class TestSocialNormThresholds:
     """Tests for Granovetter-style adoption thresholds in social norm."""
 
     def test_threshold_local_is_read_from_config(self):
-        """_compute_social_norm_local should use threshold_social_norm_local."""
+        """compute_social_norm_local should use threshold_social_norm_local."""
         # Locate the method source and check it queries the AFT parameter.
         import inspect
-        source = inspect.getsource(TPB._compute_social_norm_local)
+        source = inspect.getsource(TPB.compute_social_norm_local)
         assert "threshold_social_norm_local" in source
 
     def test_threshold_country_is_read_from_config(self):
-        """_compute_social_norm_country should use threshold_social_norm_country."""
+        """compute_social_norm_country should use threshold_social_norm_country."""
         import inspect
-        source = inspect.getsource(TPB._compute_social_norm_country)
+        source = inspect.getsource(TPB.compute_social_norm_country)
         assert "threshold_social_norm_country" in source
 
     def test_thresholds_are_shifted_sigmoid(self):
         """Both methods should apply a shifted sigmoid (fraction - threshold)."""
         import inspect
-        src_local = inspect.getsource(TPB._compute_social_norm_local)
-        src_country = inspect.getsource(TPB._compute_social_norm_country)
+        src_local = inspect.getsource(TPB.compute_social_norm_local)
+        src_country = inspect.getsource(TPB.compute_social_norm_country)
         assert "sigmoid(" in src_local
         assert "sigmoid(" in src_country
         # Should no longer subtract the hardcoded 0.5
@@ -662,19 +642,19 @@ class TestTPBCountryLevelDriverCodes:
             DRIVER_COUNTRY_PBC,
         ])
 
-    def test_driver_social_pathway_has_local_country_variants(self):
-        """DRIVER_SOCIAL_* codes should include local/country variants."""
+    def test_driver_local_pathway_has_local_country_variants(self):
+        """DRIVER_LOCAL_* codes should include local/country variants."""
         from inseeds.components.farming.ca_behaviour import (
-            DRIVER_SOCIAL_ATTITUDE_SOCIAL_LOCAL,
-            DRIVER_SOCIAL_ATTITUDE_SOCIAL_COUNTRY,
-            DRIVER_SOCIAL_SOCIAL_NORM_LOCAL,
-            DRIVER_SOCIAL_SOCIAL_NORM_COUNTRY,
+            DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL,
+            DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY,
+            DRIVER_LOCAL_SOCIAL_NORM_LOCAL,
+            DRIVER_LOCAL_SOCIAL_NORM_COUNTRY,
         )
         assert all(isinstance(d, int) for d in [
-            DRIVER_SOCIAL_ATTITUDE_SOCIAL_LOCAL,
-            DRIVER_SOCIAL_ATTITUDE_SOCIAL_COUNTRY,
-            DRIVER_SOCIAL_SOCIAL_NORM_LOCAL,
-            DRIVER_SOCIAL_SOCIAL_NORM_COUNTRY,
+            DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL,
+            DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY,
+            DRIVER_LOCAL_SOCIAL_NORM_LOCAL,
+            DRIVER_LOCAL_SOCIAL_NORM_COUNTRY,
         ])
 
     def test_driver_exploration_pathway_has_local_country_variants(self):

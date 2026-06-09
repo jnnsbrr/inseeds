@@ -13,17 +13,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from inseeds.components.data.fao import (
+from inseeds.components.exogenous.faostat import (
     FaoProducerPrices,
     FaoCapitalStock,
-    ensure_dummy_fao_data,
 )
-from inseeds.components.farming.ca_behaviour import (
-    BUNDLE_NAMES,
-    BUNDLE_IDS,
-    BUNDLE_TUPLES,
-    sigmoid,
-)
+from inseeds.components.farming.ca_behaviour import sigmoid
+from inseeds.components.farming.ca_management import ManagementBundle
 
 
 class TestSigmoidFunction:
@@ -58,40 +53,71 @@ class TestSigmoidFunction:
 class TestBundleDefinitions:
     """Tests for CA practice bundle definitions."""
 
-    def test_bundle_names_has_8_bundles(self):
-        """BUNDLE_NAMES should define all 8 possible bundles."""
-        assert len(BUNDLE_NAMES) == 8
-        assert all(isinstance(k, tuple) and len(k) == 3 for k in BUNDLE_NAMES.keys())
-        assert all(all(p in (0, 1) for p in k) for k in BUNDLE_NAMES.keys())
+    def test_all_bundles_have_unique_ids(self):
+        """Each bundle should have a unique numeric ID (0-7)."""
+        ids = [bundle.id for bundle in ManagementBundle]
+        assert len(ids) == 8
+        assert set(ids) == set(range(8))
 
-    def test_bundle_ids_matches_names(self):
-        """BUNDLE_IDS should have same keys as BUNDLE_NAMES."""
-        assert set(BUNDLE_IDS.keys()) == set(BUNDLE_NAMES.keys())
-        assert all(0 <= v <= 7 for v in BUNDLE_IDS.values())
-        assert len(set(BUNDLE_IDS.values())) == 8  # All unique
+    def test_all_bundles_have_unique_keys(self):
+        """Each bundle should have a unique internal key."""
+        keys = [bundle.key for bundle in ManagementBundle]
+        assert len(keys) == len(set(keys))
+        assert keys == [
+            "notill",
+            "notill_residue",
+            "notill_covercrop",
+            "conservation",
+            "conventional",
+            "residue",
+            "covercrop",
+            "covercrop_residue",
+        ]
 
-    def test_bundle_tuples_is_reverse_lookup(self):
-        """BUNDLE_TUPLES should be reverse of BUNDLE_NAMES."""
-        assert len(BUNDLE_TUPLES) == len(BUNDLE_NAMES)
-        for name, tup in BUNDLE_TUPLES.items():
-            assert BUNDLE_NAMES[tup] == name
+    def test_all_bundles_have_valid_practices(self):
+        """All bundles should use binary practice flags."""
+        for bundle in ManagementBundle:
+            assert bundle.tillage in (0, 1)
+            assert bundle.cover_crop in (0, 1)
+            assert bundle.residue_on_field in (0, 1)
 
     def test_conventional_bundle(self):
         """Conventional bundle should be (1,0,0) with ID 4."""
-        # tillage=1 is conventional tillage, tillage=0 is no-till
-        assert BUNDLE_NAMES[(1, 0, 0)] == "conventional"
-        assert BUNDLE_IDS[(1, 0, 0)] == 4
+        bundle = ManagementBundle.conventional
+        assert bundle.label == "conventional farming"
+        assert bundle.id == 4
+        assert bundle.key == "conventional"
 
     def test_full_ca_bundle(self):
         """Full CA bundle should be (0,1,1) with ID 3."""
-        # CA = no-till (0) + cover crops (1) + residue retention (1)
-        assert BUNDLE_NAMES[(0, 1, 1)] == "conservation"
-        assert BUNDLE_IDS[(0, 1, 1)] == 3
+        bundle = ManagementBundle.conservation
+        assert bundle.label == "conservation agriculture"
+        assert bundle.id == 3
+        assert bundle.key == "conservation"
 
-    def test_all_bundles_have_unique_names(self):
-        """All bundle names should be unique."""
-        names = list(BUNDLE_NAMES.values())
-        assert len(names) == len(set(names))
+    def test_all_bundles_have_unique_labels(self):
+        """All bundle labels should be unique."""
+        labels = [bundle.label for bundle in ManagementBundle]
+        assert len(labels) == len(set(labels))
+
+    def test_enum_value_is_practice_triple_only(self):
+        """Enum .value should be the practice triple only."""
+        assert ManagementBundle.notill.value == (0, 0, 0)
+        assert ManagementBundle.conventional.value == (1, 0, 0)
+
+    def test_class_level_listings(self):
+        """Class methods should expose all bundle metadata."""
+        assert len(ManagementBundle.all_bundles()) == 8
+        assert ManagementBundle.all_ids() == tuple(range(8))
+        assert ManagementBundle.all_keys()[0] == "notill"
+
+    def test_from_practices_returns_existing_member(self):
+        """from_practices should return a fully initialized enum member."""
+        bundle = ManagementBundle.from_practices(1, 0, 0)
+        assert bundle is ManagementBundle.conventional
+        assert bundle.id == 4
+        assert bundle.key == "conventional"
+        assert bundle.label == "conventional farming"
 
 
 class TestFAODataBatchingOptimization:
@@ -181,9 +207,8 @@ class TestCACountryFAOBatching:
         """CACountry class should have class-level cache attributes."""
         from inseeds.components.farming.ca_country import CACountry
         
-        # Verify class-level attributes exist
-        assert hasattr(CACountry, "_fao_prices_ds")
-        assert hasattr(CACountry, "_fao_capital_ds")
+        # Verify class-level reference year cache exists
+        assert hasattr(CACountry, "_fao_reference_year")
 
     def test_ca_country_has_fao_properties(self):
         """CACountry should have properties for FAO-derived parameters."""
@@ -245,24 +270,23 @@ class TestCACountryFAOExtraction:
     """Tests for country-specific FAO data extraction."""
 
     def test_ca_country_has_extraction_methods(self):
-        """CACountry should have methods for extracting FAO parameters."""
+        """CACountry should have methods for loading FAO parameters."""
         from inseeds.components.farming.ca_country import CACountry
         
-        # Check that extraction methods exist
-        assert hasattr(CACountry, "_extract_capital_parameters")
-        assert hasattr(CACountry, "_extract_prices")
+        # Check that FAO loading and price extraction methods exist
+        assert hasattr(CACountry, "_ensure_fao_data")
+        assert hasattr(CACountry, "extract_prices")
 
 
 class TestFAODataCaching:
     """Tests for FAO data caching behavior."""
 
     def test_fao_data_cached_at_class_level(self):
-        """FAO datasets should be cached at class level, not instance level."""
+        """FAO reference year should be cached at class level."""
         from inseeds.components.farming.ca_country import CACountry
         
-        # Verify class-level attributes exist
-        assert hasattr(CACountry, "_fao_prices_ds")
-        assert hasattr(CACountry, "_fao_capital_ds")
+        # Verify class-level reference year cache exists (data now accessed via world.exogenous)
+        assert hasattr(CACountry, "_fao_reference_year")
 
 
 class TestFAODummyDataFallback:
@@ -285,30 +309,12 @@ class TestFAODummyDataFallback:
             
             assert path.exists()
 
-    def test_dummy_data_has_correct_structure(self):
-        """Dummy data should have same structure as real data."""
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            ensure_dummy_fao_data(sim_path, years=(2016, 2020))
-            
-            import xarray as xr
-            
-            # Check producer prices
-            prices_path = sim_path / "input" / "fao_pft_prices_DUMMY.nc"
-            ds_prices = xr.open_dataset(prices_path)
-            assert "5532" in ds_prices
-            assert "npft" in ds_prices.dims
-            assert "time" in ds_prices.dims
-            assert "area_code" in ds_prices.dims
-            ds_prices.close()
-            
-            # Check capital stock
-            capital_path = sim_path / "input" / "fao_capital_stock_DUMMY.nc"
-            ds_capital = xr.open_dataset(capital_path)
-            assert "depreciation_rate" in ds_capital
-            assert "investment_rate" in ds_capital
-            assert "ncs" in ds_capital
-            ds_capital.close()
+    def test_real_data_required(self):
+        """Real FAO data is now required (dummy data functionality was removed)."""
+        # Dummy data functionality was removed - real FAO data must be pre-downloaded
+        # This test documents the new behavior: ensure() requires real data or API access
+        from inseeds.components.exogenous.faostat import FaoProducerPrices
+        assert hasattr(FaoProducerPrices, "ensure")
 
 
 class TestCAFarmerProfitComponents:
@@ -319,13 +325,13 @@ class TestCAFarmerProfitComponents:
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
         # Verify the method exists
-        assert hasattr(ConservationAgricultureFarmer, "_calculate_revenue")
+        assert hasattr(ConservationAgricultureFarmer, "calculate_revenue")
 
     def test_direct_costs_method_exists(self):
         """Direct costs calculation method should exist."""
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert hasattr(ConservationAgricultureFarmer, "_get_current_direct_costs")
+        assert hasattr(ConservationAgricultureFarmer, "get_current_direct_costs")
 
     def test_capital_dynamics_methods_exist(self):
         """Capital dynamics methods should exist."""
@@ -334,7 +340,7 @@ class TestCAFarmerProfitComponents:
         # Check for property descriptor (not direct attribute)
         assert "min_capital" in dir(ConservationAgricultureFarmer)
         assert hasattr(ConservationAgricultureFarmer, "update")
-        assert hasattr(ConservationAgricultureFarmer, "_update_capital")
+        assert hasattr(ConservationAgricultureFarmer, "update_capital")
 
 
 class TestCABehaviourStructure:
@@ -371,10 +377,10 @@ class TestCAFarmerCoverCropLogic:
     """Tests for cover crop type selection logic."""
 
     def test_indicate_cover_crop_type_method_exists(self):
-        """_indicate_cover_crop_type method should exist."""
+        """indicate_cover_crop_type method should exist."""
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert hasattr(ConservationAgricultureFarmer, "_indicate_cover_crop_type")
+        assert hasattr(ConservationAgricultureFarmer, "indicate_cover_crop_type")
 
     def test_cover_crop_type_returns_valid_values(self):
         """Cover crop type should be 1 (non-legume) or 2 (legume)."""
@@ -383,7 +389,7 @@ class TestCAFarmerCoverCropLogic:
         # The method should return 1 or 2 based on environmental conditions
         # This is tested through the method signature
         import inspect
-        sig = inspect.signature(ConservationAgricultureFarmer._indicate_cover_crop_type)
+        sig = inspect.signature(ConservationAgricultureFarmer.indicate_cover_crop_type)
         # Method should take only self
         assert len(sig.parameters) == 1
 

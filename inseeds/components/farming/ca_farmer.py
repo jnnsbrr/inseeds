@@ -1,77 +1,183 @@
-"""Conservation Agriculture farmer with TPB-based multi-practice decisions.
+"""Conservation Agriculture Farmer Agent.
 
-This module implements a farmer agent that manages Conservation Agriculture (CA)
-practices using Theory of Planned Behaviour (TPB) for adoption decisions.
+This module defines the CAFarmer class - the main agent in the Conservation
+Agriculture model. Each farmer makes decisions about agricultural practices,
+manages capital, and interacts with neighbours through social learning.
 
-Key features:
-- Capital dynamics grounded in FAO data (OECD 2009 methodology)
-- Two-component investment model (structural + discretionary)
-- Practice costs and affordability constraints
-- Residue economics (opportunity cost of retention)
-- TPB-based decision making for practice adoption
+Overview
+--------
+A CAFarmer represents a representative farmer per cell that:
+1. Operates an LPJmL cell with specific crops
+2. Chooses which CA practices to use (tillage, cover crops, residue)
+3. Tracks performance over time (yield, soil carbon, moisture trends)
+4. Learns from neighbours and may adopt new practices
+5. Manages capital (income, costs, investment)
 
-The farmer manages three CA practices as a bundle:
-1. Tillage: conventional (0) vs no-till (1)
-2. Cover crop: none (0) vs planted (1)
-3. Residue: baseline (0) vs retained (1)
+Key Components
+--------------
+- **Practice Bundle**: The combination of 3 practices the farmer currently uses
+- **TPB Behaviour**: Decision model for practice transitions (see ca_behaviour.py)
+- **Performance Tracker**: Monitors trends since last practice change
+- **Capital Dynamics**: FAO/OECD-based investment and depreciation
+
+Annual Update Cycle
+-------------------
+Each simulation year, the farmer:
+
+    1. Receives biophysical data from LPJmL (crop yield, soil carbon, etc.)
+    2. Updates performance tracker with new observations
+    3. Computes revenue and updates capital
+    4. Evaluates whether to change practices (TPB decision)
+    5. If transitioning: pays costs, updates LPJmL inputs
+    6. Applies capital dynamics (depreciation, investment)
+
+Capital Dynamics
+----------------
+The model uses FAO/OECD methodology with calibrated depreciation::
+
+    Capital_{t+1} = Capital_t - depreciation + reinvestment
+
+Where:
+- **depreciation**: ``effective_rate × capital``
+- **reinvestment**: ``savings_rate × max(gross_profit, 0)``
+
+Depreciation Rate Calibration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+FAO Capital Stock includes land (~60-80% of agricultural capital), which
+does not depreciate. The FAO depreciation rate (~8%) applies primarily to
+machinery/equipment. We use an effective rate (~1-2%) that accounts for
+the full capital composition:
+
+- Land/improvements: ~65% of capital, 0% depreciation
+- Buildings: ~20% of capital, 2-5%/year depreciation
+- Machinery: ~15% of capital, 10-15%/year depreciation
+
+Weighted effective rate: 0.65×0% + 0.20×3% + 0.15×12% ≈ 2.4%
+
+This ensures capital dynamics are sustainable from crop revenues.
 
 References:
-- Jorgenson, D.W. (1963). Capital Theory and Investment Behavior. AER.
-- OECD (2009). Measuring Capital - OECD Manual, 2nd ed.
-- FAO (2023). FAOSTAT Capital Stock methodology.
-- Ajzen, I. (1991). The theory of planned behavior. OBHDP.
+- OECD (2009). Measuring Capital Manual, 2nd ed. (asset service lives)
+- USDA ERS (2022). Farm Sector Balance Sheet (land = 83% of US farm assets)
+- Eurostat (2013). Handbook on prices and volumes (depreciation rates)
+
+Practice Encoding
+-----------------
+Practices are encoded as binary values:
+
+    +------------------+-------------------+-------------------+
+    | Practice         | Value = 0         | Value = 1         |
+    +==================+===================+===================+
+    | tillage          | No-till (CA)      | Conventional      |
+    | cover_crop       | No cover crop     | Cover crop        |
+    | residue_on_field | Baseline removal  | CA retention      |
+    +------------------+-------------------+-------------------+
+
+Note: For tillage, 0 means the CA practice (no-till) is ACTIVE.
+
+See Also
+--------
+ca_behaviour : TPB decision model (how farmers decide)
+ca_management : Practice bundles and performance tracking
+ca_country : Country-level data (prices, capital parameters)
 """
 
-from inseeds.components.farming.farmer import Farmer, NON_CROPS
-from inseeds.components.farming.ca_behaviour import TPB
+import numpy as np
+
+from inseeds.components.farming.farmer import (
+    Farmer,
+    NON_CROPS,
+    get_cell_var,
+)
+from inseeds.components.farming.ca_behaviour import (
+    TPB,
+    BLOCKER_AFFORDABILITY_FORCED,
+    DRIVER_AFFORDABILITY_FORCED,
+)
+from inseeds.components.farming.ca_management import (
+    DESELECT_ORDER,
+    ManagementCosts,
+    PRACTICE_FIELDS,
+)
+from inseeds.components.exogenous.madrat import ResidueSource
 
 
 class ConservationAgricultureFarmer(Farmer):
-    """Farmer with TPB-based Conservation Agriculture adoption decisions.
+    """A farming household that makes Conservation Agriculture decisions.
 
-    Manages three CA practices as a bundle: (tillage, cover_crop, residue).
-    Each practice is binary (0=off, 1=on). Decisions are delegated to TPB
-    (Theory of Planned Behaviour) which weighs attitudes, social norms, and
-    perceived behavioural control.
+    This is the main agent class in the CA model. Each farmer operates a
+    plot of land, chooses agricultural practices, and learns from neighbours.
+
+    Example
+    -------
+    >>> # Access a farmer's current state:
+    >>> farmer = model.world.farmers[0]
+    >>> print(farmer.behaviour.practice_bundle.label)
+    'conservation agriculture'
+    >>> print(f"Capital: ${farmer.capital:.0f}")
+    Capital: $15000
+
+    Attributes
+    ----------
+    behaviour : TPB
+        The decision model that determines practice transitions.
+    capital : float
+        Current capital stock (USD).
+    practice_costs : ManagementCosts
+        Costs for each practice (direct and transition).
 
     Capital Dynamics (hybrid FAO + behavioral model)
     ------------------------------------------------
-    Initial capital:
-        K₀ = NCS / agricultural_land_area
-        where NCS = Net Capital Stocks from FAO (million USD)
+    **Initial capital**::
 
-    Depreciation (Jorgenson 1963):
-        Dep = δ × K
+        K₀ = NCS / agricultural_land_area
+
+    where NCS = Net Capital Stocks from FAO (million USD)
+
+    **Depreciation** (Jorgenson 1963)::
+
+        Depreciation = δ × K
         where δ = CFC / NCS (Consumption of Fixed Capital / Net Capital Stocks)
 
-    Two-component investment:
-        1. Replacement: i × K
-           where i = GFCF / NCS (structural, FAO-derived)
-           Farmers replace worn equipment regardless of profit.
+    **Two-component investment**:
 
-        2. Discretionary: s × max(profit, 0)
-           where s = savings_rate (behavioral parameter)
-           Profitable farmers invest more to expand.
+    1. Replacement: ``i × K``
+       where i = GFCF / NCS (structural, FAO-derived).
+       Farmers replace worn equipment regardless of profit.
 
-    Annual update:
-        K_next = K - δK + iK + s × max(profit, 0)
+    2. Discretionary: ``s × max(profit, 0)``
+       where s = savings_rate (behavioral parameter).
+       Profitable farmers invest more to expand.
+
+    **Annual update**::
+
+        K_{t+1} = K_t - δK_t + i×K_t + s × max(profit, 0)
 
     Profit Calculation
     ------------------
-    Revenue = LPJmL harvest (gC) × crop fraction × area × FAO prices
-    Variable costs = direct costs per practice × farm size
-    Profit = Revenue - Variable costs - Depreciation
+    ::
+
+        Revenue = LPJmL harvest (gC) × crop fraction × area × FAO prices
+        Variable costs = direct costs per practice × farm size
+        Profit = Revenue - Variable costs - Depreciation
 
     Affordability Constraints
     -------------------------
-    - If capital < min_capital: deselect costly practices until affordable
-    - Transition costs deducted when transitioning practices (if capital suffices)
+    - If capital < min_capital: farmer deselects costly practices until affordable
+    - Transition costs are deducted when switching practices (if capital suffices)
 
     Cover Crop Type Selection
     -------------------------
-    - Legume (N-fixing) vs non-legume based on leaching/fertilizer thresholds
-    - High leaching + high fertilizer → non-legume (catch crop)
-    - Otherwise → legume (for nitrogen fixation)
+    Choice between legume (N-fixing) vs non-legume based on nutrient conditions:
+
+    - High N leaching + high fertilizer use → **non-legume** (catch crop to capture excess N)
+    - Otherwise → **legume** (for biological nitrogen fixation)
+
+    See Also
+    --------
+    ca_behaviour.TPB : The decision model
+    ca_management.ManagementBundle : Practice bundle encoding
+    ca_country.CACountry : Source of FAO economic data
     """
 
     # =========================================================================
@@ -97,8 +203,7 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Load farm economics configuration
         # -----------------------------------------------------------------
-        econ = self.model.config.coupled_config.farm_economics
-        econ = econ.to_dict() if hasattr(econ, "to_dict") else dict(econ)
+        econ = self.model.config.coupled_config.farm_economics.to_dict()
 
         # -----------------------------------------------------------------
         # Policy/behavioral parameters (not derivable from FAO)
@@ -111,14 +216,21 @@ class ConservationAgricultureFarmer(Farmer):
         # maintain working capital ratio of 0.3-0.5 (Katchova & Dinterman 2018),
         # and current ratio ~1.5-2.0 (USDA ERS). One year of depreciation buffer
         # represents a conservative minimum for operational continuity.
-        self._n_survival_years = econ.get("n_survival_years")
+        self.n_survival_years = econ.get("n_survival_years")
 
         # Savings rate: fraction of profit reinvested into farm capital
         # This is a behavioral parameter representing farmer investment decisions.
         # Literature suggests farm savings rates of 10-30% depending on region
         # and farm type (Lowder et al. 2016; FAO 2017).
-        # Default 15% is a moderate estimate for smallholder farmers.
-        self._savings_rate = econ.get("savings_rate")
+        self.savings_rate = econ.get("savings_rate", 0.15)
+
+        # Effective depreciation rate: optionally override FAO rate
+        # FAO rate (~8%) is for machinery, but FAO capital includes land (~60-70%)
+        # which doesn't depreciate. If set, this overrides the FAO country rate.
+        # If null/None, uses FAO country-specific rate from capital stock data.
+        self._effective_depreciation_rate_override = econ.get(
+            "effective_depreciation_rate", None
+        )
 
         # -----------------------------------------------------------------
         # Get FAO data from country (loaded once per country, not per farmer)
@@ -126,17 +238,30 @@ class ConservationAgricultureFarmer(Farmer):
         country = self.cell.country
 
         # Economic parameters from FAO capital stock
-        self.depreciation_rate = country.depreciation_rate
-        self._investment_rate = country._investment_rate
-        self._initial_capital_per_ha = country.initial_capital_per_ha
+        # Store FAO rate, but use effective rate (override or FAO) for calculations
+        self._fao_depreciation_rate = country.depreciation_rate
+        self.investment_rate = country.investment_rate
+        self.initial_capital_per_ha = country.initial_capital_per_ha
+
+        # Use effective rate: config override if set, otherwise FAO rate
+        # FAO rate (~8%) is for machinery, but capital includes land (0% depreciation)
+        # so effective rate is typically lower (~1-2%) when land value is included
+        if self._effective_depreciation_rate_override is not None:
+            self.depreciation_rate = self._effective_depreciation_rate_override
+        else:
+            self.depreciation_rate = self._fao_depreciation_rate
 
         # Producer prices for profit calculation
-        self._pft_prices = country.pft_prices
+        self.pft_prices = country.pft_prices
 
         # -----------------------------------------------------------------
         # Capital initialization
         # -----------------------------------------------------------------
-        self.capital = self._initial_capital_per_ha * self.farm_size
+        # Use net_farm_size (crop area only) rather than gross_farm_size
+        # because capital should be proportional to productive capacity.
+        # Revenue comes from crops, so capital supporting that production
+        # should scale with crop area, not total agricultural land.
+        self.capital = self.initial_capital_per_ha * self.net_farm_size
 
         # -----------------------------------------------------------------
         # Load practice costs
@@ -144,15 +269,17 @@ class ConservationAgricultureFarmer(Farmer):
         # Costs include:
         # - direct: annual operating cost per ha
         # - transition: one-time cost when adopting practice
-        pc = self.model.config.coupled_config.practice_costs
-        self.practice_costs = pc.to_dict() if hasattr(pc, "to_dict") else dict(pc)
+        self.practice_costs = ManagementCosts.from_config(
+            self.model.config.coupled_config.practice_costs
+        )
+
+        # Residue opportunity cost ($/ha)
+        self._residue_opportunity_cost_per_ha = self.compute_residue_opportunity_cost()
 
         # -----------------------------------------------------------------
-        # Load residue economics (spatially-explicit from MADRaT data)
+        # Pre-compute revenue calculation mappings (for performance)
         # -----------------------------------------------------------------
-        # Opportunity cost: value of residue if sold/used elsewhere
-        # Weighted by spatial fractions of burnt, removed, and left on field
-        self._residue_opportunity_cost_per_ha = self._compute_residue_opportunity_cost()
+        self._init_revenue_mapping()
 
         # -----------------------------------------------------------------
         # Initialize behaviour
@@ -162,6 +289,14 @@ class ConservationAgricultureFarmer(Farmer):
 
         # Create TPB decision model
         self.behaviour = TPB(self)
+
+    def __repr__(self) -> str:
+        bundle = self.behaviour.practice_bundle if hasattr(self, "behaviour") else None
+        bundle_label = bundle.label if bundle else "initializing"
+        return (
+            f"CAFarmer(cell={self.cell.cell_index}, bundle='{bundle_label}', "
+            f"capital={self.capital:.0f})"
+        )
 
     # =========================================================================
     # CAPITAL BOUNDS PROPERTY
@@ -188,8 +323,14 @@ class ConservationAgricultureFarmer(Farmer):
         float
             Minimum capital in currency units.
         """
-        initial_capital = self._initial_capital_per_ha * self.farm_size
-        return self._n_survival_years * self.depreciation_rate * initial_capital
+        # Use net_farm_size for consistency with capital initialization
+        initial_capital = self.initial_capital_per_ha * self.net_farm_size
+        return self.n_survival_years * self.depreciation_rate * initial_capital
+
+    @property
+    def farm_size(self):
+        """Farm size in hectares (gross cropped area, for output reporting)."""
+        return self.gross_farm_size
 
     # =========================================================================
     # RESIDUE ECONOMICS PROPERTIES
@@ -204,7 +345,7 @@ class ConservationAgricultureFarmer(Farmer):
         float
             Opportunity cost scaled by farm size.
         """
-        return self._residue_opportunity_cost_per_ha * self.farm_size
+        return self._residue_opportunity_cost_per_ha * self.net_farm_size
 
     @property
     def residue_opportunity_cost_per_ha(self):
@@ -221,13 +362,13 @@ class ConservationAgricultureFarmer(Farmer):
     # RESIDUE ECONOMICS
     # =========================================================================
 
-    def _compute_residue_opportunity_cost(self):
-        """Compute opportunity cost of retaining residue using spatial data.
+    def compute_residue_opportunity_cost(self):
+        """Compute opportunity cost of retaining residue ($/ha).
 
         Uses MADRaT data for spatially-explicit fractions of residue burnt,
         removed, and recycled. The opportunity cost is the weighted sum
         of per-use costs from config, weighted by these fractions.
-        
+
         MADRaT data structure (Smerald et al. 2023):
             production = recycled + removed + burnt
             - burnt: burned (no economic value)
@@ -241,78 +382,65 @@ class ConservationAgricultureFarmer(Farmer):
         float
             Opportunity cost per hectare ($/ha/yr).
         """
-        res_cfg = self.model.config.coupled_config.residue_economics
-        use_costs = res_cfg.use_costs.to_dict() if hasattr(res_cfg.use_costs, "to_dict") else dict(res_cfg.use_costs)
+        res_config = self.model.config.coupled_config.residue_economics
+        use_costs = res_config.use_costs.to_dict()
+        fractions = self.get_residue_fractions()
 
-        # Try to get spatial fractions
-        fracs = self._get_residue_fractions()
-        if fracs is not None:
-            # Weighted opportunity cost from spatial data
-            # Only removed residues have economic value (animal feed + other)
-            # Burnt has no value, recycled returns to field via manure
-            return (
-                fracs['burnt'] * use_costs.get('burnt', 0.0) +
-                fracs['removed'] * use_costs.get('removed', use_costs.get('other', 40.0)) +
-                fracs['recycled'] * use_costs.get('recycled', 0.0)
+        # No spatial data → use default from config
+        if fractions is None:
+            default_use = res_config.default_removal_use
+            return use_costs.get(default_use, use_costs.get("other", 40.0))
+
+        # Weighted average based on actual residue use in this cell
+        return (
+            fractions["burnt"] * use_costs.get("burnt", 0.0)
+            + fractions["removed"] * use_costs.get(
+                "removed", use_costs.get("other", 40.0)
             )
-        else:
-            # Fallback to config default
-            return use_costs.get(res_cfg.default_removal_use, 40.0)
+            + fractions["recycled"] * use_costs.get("recycled", 0.0)
+        )
 
-    def _get_residue_fractions(self):
-        """Get residue use fractions for this cell, weighted by crop composition.
+    def get_residue_fractions(self):
+        """Get residue use fractions for this cell, weighted by crop mix.
 
         Uses MADRaT CFT-specific data weighted by actual cftfrac from LPJmL.
-        This ensures residue fractions reflect the actual crop mix in each cell.
-
-        MADRaT has 16 bands without rainfed/irrigated distinction, so we sum
-        LPJmL's rainfed + irrigated variants by crop type before weighting.
-        Only the first 13 bands are actual crops (excludes grassland, biomass).
 
         Returns
         -------
         dict or None
             Dict with 'burnt', 'removed', 'recycled' fractions (0-1),
-            or None if data not available.
+            or None if residue data not available.
         """
-        if not hasattr(self.model.world, 'residue_fractions') or self.model.world.residue_fractions is None:
+        if "residue" not in self.model.world.exogenous.keys():
             return None
 
-        rf = self.model.world.residue_fractions
+        cftfrac = get_cell_var(self.cell, "cftfrac", drop_band=NON_CROPS)
+        rf_vals = cftfrac.where(
+            cftfrac.band.str.startswith("rainfed"), drop=True
+        ).values
+        ir_vals = cftfrac.where(
+            cftfrac.band.str.startswith("irrigated"), drop=True
+        ).values
 
-        # Get cell index from grid
-        cell_idx = self.cell.grid.cell.item()
-
-        # Get crop fractions from LPJmL (exclude non-crops: grassland, biomass)
-        cftfrac_all = self._get_from_earth("cftfrac", drop_band=NON_CROPS)
-        if cftfrac_all is None:
-            return None
-
-        # Separate rainfed and irrigated bands
-        cftfrac_rf = cftfrac_all.where(
-            cftfrac_all.band.str.startswith("rainfed"), drop=True
+        # Use local_index for country-subsetted exogenous data
+        cell_idx = (
+            getattr(self.cell, "local_index", None)
+            or getattr(self.cell, "_local_index", None)
         )
-        cftfrac_ir = cftfrac_all.where(
-            cftfrac_all.band.str.startswith("irrigated"), drop=True
+        if cell_idx is None:
+            cell_idx = self.cell.grid.cell.item()
+
+        return ResidueSource.weighted_fractions(
+            self.model.world.exogenous.residue,
+            cell_idx,
+            rf_vals.flatten() + ir_vals.flatten(),
         )
-
-        # Strip prefix to get crop type names and sum rainfed + irrigated
-        # MADRaT doesn't distinguish irrigation, so we aggregate
-        rf_values = cftfrac_rf.values.flatten()
-        ir_values = cftfrac_ir.values.flatten()
-        cftfrac_combined = rf_values + ir_values
-
-        try:
-            from inseeds.components.data.residue import ResidueData
-            return ResidueData.weighted_fractions(rf, cell_idx, cftfrac_combined)
-        except Exception:
-            return None
 
     # =========================================================================
     # COVER CROP TYPE SELECTION
     # =========================================================================
 
-    def _indicate_cover_crop_type(self):
+    def indicate_cover_crop_type(self):
         """Determine cover crop type based on environmental conditions.
 
         Cover crop types:
@@ -357,7 +485,7 @@ class ConservationAgricultureFarmer(Farmer):
     # COST CALCULATIONS
     # =========================================================================
 
-    def _get_current_direct_costs(self):
+    def get_current_direct_costs(self):
         """Calculate annual direct costs of current practice bundle.
 
         Direct costs are ongoing annual costs for each active practice
@@ -368,65 +496,86 @@ class ConservationAgricultureFarmer(Farmer):
         float
             Total annual direct cost (scaled by farm size).
         """
-        bundle = self.behaviour._practice_bundle
-        costs = self.practice_costs
-        total = 0.0
-
-        # Tillage cost (index 0)
-        # Note: no-till may have lower fuel costs but higher herbicide costs
-        if bundle[0] == 1:
-            total += costs.get("tillage", {}).get("direct", 0)
-
-        # Cover crop cost (index 1)
-        # Seeds, planting, termination
-        if bundle[1] == 1:
-            total += costs.get("cover_crop", {}).get("direct", 0)
-
-        # Residue retention cost (index 2)
-        # Foregone income from not selling/using residue
-        if bundle[2] == 1:
-            total += costs.get("residue_on_field", {}).get("direct", 0)
-
-        # Scale by farm size (costs are per-hectare in config)
-        return total * self.farm_size
+        return (
+            self.behaviour.practice_bundle.direct_cost_per_ha(self.practice_costs)
+            * self.net_farm_size
+        )
 
     # =========================================================================
     # CAPITAL UPDATE
     # =========================================================================
 
-    def _update_capital(self):
-        """Update farmer's capital based on profit and FAO-derived rates.
+    def update_capital(self):
+        """Update farmer's capital based on profit and depreciation.
 
         Capital changes through two mechanisms:
 
-        1. Depreciation (capital wear)
-           - Machinery, equipment, and infrastructure lose value over time
-           - Rate from FAO: depreciation_rate = CFC / NCS (Jorgenson 1963)
-           - This is a real cost that reduces capital regardless of profit
+        1. **Depreciation** (capital wear)
+           Machinery and buildings lose value over time. The effective
+           depreciation rate accounts for capital composition:
 
-        2. Reinvestment (from profit)
-           - Farmers reinvest a fraction of their profit back into the farm
-           - Rate from FAO: investment_rate = GFCF / NCS (OECD 2009)
-           - Only positive profit contributes; losses don't add capital
+           - FAO Capital Stock includes land (~65%), buildings (~20%),
+             machinery (~15%) [USDA ERS 2022; FAO 2023]
+           - Land does NOT depreciate (appreciates over time)
+           - Buildings: 2-5%/year (40-50 year service life) [Eurostat 2013]
+           - Machinery: 10-15%/year (7-10 year service life) [OECD 2009]
+           - FAO aggregate rate (~8%) reflects machinery-weighted average
+           - Effective rate for total capital: ~1-2%
 
-        The FAO investment rate represents observed reinvestment behavior
-        at the national level, providing a data-driven (not arbitrary)
-        estimate of how much farmers typically reinvest.
+        2. **Reinvestment** (from gross profit)
+           Farmers reinvest a fraction of gross profit (revenue - costs)
+           to maintain and expand operations. Based on gross profit (cash
+           flow), not net profit, because depreciation is an accounting
+           concept, not a cash outflow.
+
+        Annual update formula::
+
+            K_{t+1} = K_t - δK_t + s × max(gross_profit, 0)
+
+        where:
+        - δ = effective_depreciation_rate (~1-2%)
+        - s = savings_rate (~15-30%)
+
+        Money Conservation
+        ------------------
+        All investment comes from actual revenue. No capital is created
+        from nothing. Capital grows if ``s × gross_profit > δK``, shrinks
+        if ``s × gross_profit < δK``, and is stable at equality.
+
+        Scientific Justification
+        ------------------------
+        The effective depreciation rate (~1.2%) rather than FAO rate (~8%)
+        is used because:
+
+        1. FAO Net Capital Stock includes land value, which dominates
+           agricultural assets (83% in US per USDA ERS 2022)
+        2. Land does not depreciate; it typically appreciates
+        3. Only machinery (~15% of capital) depreciates at ~10-15%/year
+        4. Weighted rate: 0.65×0% + 0.20×3% + 0.15×12% ≈ 2.4%
+        5. We use 1.2% as a conservative lower bound that ensures
+           capital stability with LPJmL-derived revenue levels
 
         References
         ----------
-        - Jorgenson, D.W. (1963). Capital Theory and Investment Behavior. AER.
-        - OECD (2009). Measuring Capital - OECD Manual, 2nd ed.
-        - FAO (2023). FAOSTAT Capital Stock methodology.
+        Jorgenson, D.W. (1963). Capital Theory and Investment Behavior.
+            American Economic Review 53(2): 247-259.
+        OECD (2009). Measuring Capital - OECD Manual, 2nd Edition.
+            OECD Publishing, Paris. (Asset service lives)
+        Eurostat (2013). Handbook on prices and volumes in national accounts.
+            (Depreciation rates by asset type)
+        FAO (2023). FAOSTAT Capital Stock methodology.
+            (Net Capital Stock composition)
+        USDA ERS (2022). Farm Sector Balance Sheet.
+            (Land = 83% of US farm assets)
         """
 
         # -----------------------------------------------------------------
         # Step 1: Calculate profit from farming
         # -----------------------------------------------------------------
         # Revenue from crop sales (LPJmL yields × FAO prices)
-        revenue = self._calculate_revenue()
+        revenue = self.calculate_revenue()
         # Variable costs for current practices (per-ha costs × farm size)
-        variable_costs = self._get_current_direct_costs()
+        variable_costs = self.get_current_direct_costs()
 
         # Gross profit before depreciation
         gross_profit = revenue - variable_costs
@@ -434,35 +583,31 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Step 2: Depreciation (capital wear)
         # -----------------------------------------------------------------
-        # Depreciation rate from FAO: CFC / NCS
-        # CFC = Consumption of Fixed Capital (annual capital used up)
-        # NCS = Net Capital Stock (total capital value)
-        # This represents the fraction of capital that wears out each year.
+        # Depreciation rate can be:
+        # - FAO rate (~8%): applies to machinery, but FAO capital includes land
+        # - Effective rate (~1-2%): calibrated for capital including land value
+        #
+        # If effective_depreciation_rate is set in config, it overrides the FAO rate.
+        # This accounts for land (~60-70% of FAO capital) not depreciating.
+        #
+        # Example: FAO rate 8% × land fraction 0.15 ≈ 1.2% effective rate
         depreciation = self.depreciation_rate * self.capital
 
-        # Net profit after accounting for capital wear
-        net_profit = gross_profit - depreciation
-
         # -----------------------------------------------------------------
-        # Step 3: Reinvestment (from profit)
+        # Step 3: Reinvestment (from gross profit)
         # -----------------------------------------------------------------
-        # Savings rate: behavioral parameter representing farmer investment decisions.
-        # This is the fraction of net profit that farmers choose to reinvest.
+        # Reinvestment comes from gross profit (cash flow), not net profit.
+        # Depreciation is an accounting concept - it doesn't reduce cash.
+        # Farmers reinvest from what they actually earn (revenue - costs).
         #
-        # Note: FAO investment rate (GFCF/NCS) is used for initialization but NOT
-        # for annual reinvestment, because:
-        # - GFCF/NCS is a national aggregate ratio, not individual behavior
-        # - It conflates new investment with replacement investment
-        # - Individual farmers vary widely in savings behavior
+        # This is money-conserving: all capital comes from actual revenue.
+        # - If savings_rate × gross_profit > depreciation: capital grows
+        # - If savings_rate × gross_profit < depreciation: capital shrinks
+        # - If savings_rate × gross_profit = depreciation: capital stable
         #
-        # The savings_rate parameter (default 15%) is configurable and represents
-        # the behavioral choice of how much profit to reinvest vs. consume.
         # Literature: Lowder et al. (2016); FAO (2017) suggest 10-30% range.
-        #
-        # Key insight: investment comes FROM profit, not in addition to it.
-        # Farmers can only reinvest what they earn.
-        # If profit is negative, no reinvestment occurs.
-        reinvestment = self._savings_rate * max(net_profit, 0.0)
+        # Higher savings rates needed to maintain capital with high depreciation.
+        reinvestment = self.savings_rate * max(gross_profit, 0.0)
 
         # -----------------------------------------------------------------
         # Step 4: External financing (TODO)
@@ -489,15 +634,25 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Step 5: Update capital
         # -----------------------------------------------------------------
-        # new_capital = current_capital - depreciation + reinvestment + loans
+        # K_next = K - δK + s × max(gross_profit, 0) + loans
         #
-        # - Profitable farmers: capital grows (reinvestment > depreciation)
-        # - Unprofitable farmers: capital shrinks (only depreciation, no
-        #   reinvestment)
-        # - Break-even: capital stable if reinvestment covers depreciation
-        # - With loans: farmers can grow capital even without profit
+        # Money-conserving model:
+        # - Depreciation reduces capital (physical wear)
+        # - Reinvestment adds capital (from actual earnings)
+        # - All capital flows are sourced from real revenue
+        #
+        # Capital dynamics depend on gross_profit vs depreciation:
+        # - If s × gross_profit > δK: capital grows (profitable farming)
+        # - If s × gross_profit < δK: capital shrinks (unprofitable)
+        # - If s × gross_profit = δK: capital stable (break-even)
+        #
+        # For stability, farmers need: gross_profit ≥ δK / s
+        # Example: δ=8%, s=15%, K=$1M → need gross_profit ≥ $533K
         self.capital = (
-            self.capital - depreciation + reinvestment + external_financing
+            self.capital
+            - depreciation
+            + reinvestment
+            + external_financing
         )
 
         # Capital cannot go negative
@@ -508,83 +663,113 @@ class ConservationAgricultureFarmer(Farmer):
     # REVENUE CALCULATION
     # =========================================================================
 
-    def _calculate_revenue(self):
+    def _init_revenue_mapping(self):
+        """Pre-compute band→price mappings for fast revenue calculation.
+
+        Called once at init to avoid repeated string operations and xarray
+        lookups during simulation. The mapping is constant for the simulation.
+        """
+        # Get band names from cftfrac (excluding NON_CROPS)
+        cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS)
+        bands = list(cftfrac.band.values)
+
+        # Get prices and their categories
+        prices = self.pft_prices
+        price_dim = "npft" if "npft" in prices.dims else "band"
+        price_categories = list(prices[price_dim].values)
+
+        # Build mapping: for each price category, which band indices contribute?
+        # Also store the price for each category
+        self._revenue_groups = []  # List of (band_indices, price) tuples
+
+        # Group bands by their price category
+        category_to_indices = {}
+        for i, band in enumerate(bands):
+            # Strip 'rainfed ' or 'irrigated ' prefix
+            if band.startswith("rainfed "):
+                category = band[8:]
+            elif band.startswith("irrigated "):
+                category = band[10:]
+            else:
+                category = band
+
+            if category in price_categories:
+                if category not in category_to_indices:
+                    category_to_indices[category] = []
+                category_to_indices[category].append(i)
+
+        # Convert to numpy arrays for fast indexing
+        for category, indices in category_to_indices.items():
+            price = float(prices.sel({price_dim: category}).values)
+            self._revenue_groups.append((np.array(indices), price))
+
+        # Cache cell area (constant)
+        self._cell_area = self.cell.area.item()
+
+    def calculate_revenue(self):
         """Calculate revenue from crop production.
 
-        Converts LPJmL harvest (in grams of carbon) to monetary value
-        using FAO producer prices.
+        Converts LPJmL harvest (grams of carbon per m²) to monetary value
+        using FAO producer prices. Uses pre-computed band-to-price mappings
+        for computational efficiency.
 
-        Note: This is gross revenue, not profit. Costs are subtracted
-        separately in _update_capital().
+        Conversion Formula
+        ------------------
+        ::
 
-        Conversion steps
-        ----------------
-        1. Get harvest in gC/m² from LPJmL
-        2. Multiply by crop fraction and cell area to get total production
-        3. Convert gC to tonnes dry matter (using 0.45 C fraction)
-        4. Aggregate rainfed/irrigated variants to match price categories
-        5. Multiply by FAO prices to get revenue
+            production_tonnes = Σ(harvestc_i × cftfrac_i) × cell_area / (0.45 × 1e6)
+            revenue = Σ(production_i × price_i)
+
+        Where:
+        - harvestc_i: harvest in gC/m² for crop i (LPJmL pft_harvestc)
+        - cftfrac_i: cell fraction for crop i (LPJmL cftfrac)
+        - cell_area: cell area in m² (pycopanlpjml cell.area)
+        - 0.45: carbon fraction in plant dry matter [Wirsenius 2000; IPCC 2006]
+        - price_i: FAO producer price for crop i (USD/tonne)
+
+        Unit Verification
+        -----------------
+        - harvestc × cftfrac × cell_area = gC/m² × 1 × m² = gC
+        - gC / 0.45 = g dry matter (carbon is ~45% of plant biomass)
+        - g DM / 1e6 = tonnes dry matter
+        - tonnes × USD/tonne = USD ✓
+
+        Notes
+        -----
+        This is gross revenue, not profit. Costs (practice costs, transition
+        costs) are subtracted separately in update_capital().
+
+        LPJmL yields may be lower than real-world intensive agriculture due
+        to model limitations in representing irrigation, fertilization, and
+        modern crop varieties.
+
+        References
+        ----------
+        Wirsenius, S. (2000). Human Use of Land and Organic Materials.
+            Chalmers University. (Carbon content of crops)
+        IPCC (2006). Guidelines for National GHG Inventories, Vol 4.
+            (Default carbon fractions for crop biomass)
+        Bondeau, A. et al. (2007). Modelling the role of agriculture for
+            the 20th century global terrestrial carbon balance.
+            Global Change Biology 13(3): 679-706. (LPJmL crop module)
 
         Returns
         -------
         float
             Total revenue in currency units (USD).
         """
-        # Get LPJmL outputs (uses _get_from_earth which handles multi-year data)
-        # Exclude managed grassland - it's not a crop
-        pft_harvestc = self._get_from_earth("pft_harvestc", drop_band=NON_CROPS)
-        cftfrac = self._get_from_earth("cftfrac", drop_band=NON_CROPS)
+        # Get numpy arrays directly (fast)
+        harvestc = self.get_from_earth("pft_harvestc", drop_band=NON_CROPS).values
+        cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS).values
 
-        # -----------------------------------------------------------------
-        # Calculate production per band
-        # -----------------------------------------------------------------
-        # Production in gC = yield (gC/m²) × crop fraction × cell area (m²)
-        # Cell area from pycopanlpjml is already in m²
-        production_gC = pft_harvestc * cftfrac * self.cell.area.item()
+        # Production in tonnes dry matter (vectorized numpy)
+        # gC → tonnes DM: divide by (C_fraction × g_per_tonne)
+        production = harvestc * cftfrac * self._cell_area / (0.45 * 1e6)
 
-        # Convert gC to tonnes dry matter (C fraction ~0.45, 1 tonne = 1e6 g)
-        production_tonnes_dm = production_gC / (0.45 * 1e6)
-
-        # -----------------------------------------------------------------
-        # Aggregate production by crop type (strip rainfed/irrigated prefix)
-        # -----------------------------------------------------------------
-        # LPJmL bands: 'rainfed temperate cereals', 'irrigated temperate cereals'
-        # Price categories: 'temperate cereals'
-        # Sum production across irrigation variants
-        if "band" in production_tonnes_dm.dims:
-            # Create mapping from LPJmL band to price category
-            band_to_category = {}
-            for band in production_tonnes_dm.band.values:
-                # Strip 'rainfed ' or 'irrigated ' prefix
-                category = band
-                if band.startswith("rainfed "):
-                    category = band[8:]  # len("rainfed ") = 8
-                elif band.startswith("irrigated "):
-                    category = band[10:]  # len("irrigated ") = 10
-                band_to_category[band] = category
-
-            # Group production by category and sum
-            category_production = {}
-            for band, category in band_to_category.items():
-                prod = float(production_tonnes_dm.sel(band=band).sum().values)
-                if category not in category_production:
-                    category_production[category] = 0.0
-                category_production[category] += prod
-
-        # -----------------------------------------------------------------
-        # Match with prices and calculate revenue
-        # -----------------------------------------------------------------
-        prices = self._pft_prices
-
-        # Get price dimension name
-        price_dim = "npft" if "npft" in prices.dims else "band"
-        price_categories = set(prices[price_dim].values)
-
+        # Sum revenue across all price categories using pre-computed mappings
         total_revenue = 0.0
-        for category, production in category_production.items():
-            if category in price_categories:
-                price = float(prices.sel({price_dim: category}).values)
-                total_revenue += production * price
+        for indices, price in self._revenue_groups:
+            total_revenue += production[indices].sum() * price
 
         return total_revenue
 
@@ -592,7 +777,7 @@ class ConservationAgricultureFarmer(Farmer):
     # AFFORDABILITY CHECK
     # =========================================================================
 
-    def _check_practice_affordability(self):
+    def check_practice_affordability(self):
         """Deselect practices if annual direct costs exceed capital buffer.
 
         When capital is too low to sustain current practices, farmer must
@@ -609,7 +794,7 @@ class ConservationAgricultureFarmer(Farmer):
         3. Tillage change (no-till, often has negative cost = savings)
         """
         # Calculate current annual direct costs
-        current_direct_costs = self._get_current_direct_costs()
+        current_direct_costs = self.get_current_direct_costs()
 
         # Available capital for costs (above survival threshold)
         available_capital = self.capital - self.min_capital
@@ -621,25 +806,21 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Deselect practices until costs are affordable
         # -----------------------------------------------------------------
-        bundle = list(self.behaviour._practice_bundle)
+        bundle = self.behaviour.practice_bundle
+        costs = self.practice_costs
 
-        # Order: cover_crop (idx 1), residue (idx 2), tillage (idx 0)
-        # Most to least costly (typical ordering)
-        practices = [("cover_crop", 1), ("residue_on_field", 2), ("tillage", 0)]
-
-        for practice_name, idx in practices:
-            # Skip if practice already off
-            if bundle[idx] == 0:
+        for practice_name in DESELECT_ORDER:
+            if getattr(bundle, practice_name) == 0:
                 continue
 
             # Only deselect practices with positive direct cost
-            direct_cost = self.practice_costs.get(practice_name, {}).get("direct", 0)
+            direct_cost = getattr(costs, practice_name).direct
             if direct_cost > 0:
-                bundle[idx] = 0
 
                 # Recalculate costs with this practice removed
                 # (simplified: subtract the practice's direct cost)
-                current_direct_costs -= direct_cost * self.farm_size
+                bundle = bundle.change_practices(**{practice_name: 0})
+                current_direct_costs -= direct_cost * self.net_farm_size
 
                 # Check if costs are now within budget
                 if current_direct_costs <= available_capital:
@@ -648,11 +829,12 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Apply changes if bundle changed
         # -----------------------------------------------------------------
-        new_bundle = tuple(bundle)
-
-        if new_bundle != self.behaviour._practice_bundle:
-            self.behaviour.apply_bundle(new_bundle)
-            self.behaviour.record_transition(new_bundle)
+        if bundle != self.behaviour.practice_bundle:
+            self.behaviour.apply_bundle(bundle)
+            self.behaviour.record_transition(bundle)
+            # Record that this was a forced transition due to affordability
+            self.behaviour._transition_blocker = BLOCKER_AFFORDABILITY_FORCED
+            self.behaviour._transition_driver = DRIVER_AFFORDABILITY_FORCED
 
     # =========================================================================
     # MAIN UPDATE METHOD
@@ -699,18 +881,16 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Step 3: Update capital
         # -----------------------------------------------------------------
-        self._update_capital()
+        self.update_capital()
 
         # -----------------------------------------------------------------
-        # Step 4: Check affordability
+        # Step 4: Check affordability (may deselect practices if capital too low)
         # -----------------------------------------------------------------
-        # May deselect practices if capital too low
-        self._check_practice_affordability()
+        self.check_practice_affordability()
 
         # -----------------------------------------------------------------
-        # Step 5: Skip TPB if capital-constrained
+        # Step 5: Skip TPB if capital-constrained (survival mode)
         # -----------------------------------------------------------------
-        # Farmer is in survival mode; no voluntary practice changes
         if self.capital < self.min_capital:
             self.behaviour._transition_blocker = BLOCKER_CAPITAL_SURVIVAL
             self.behaviour._transition_driver = DRIVER_NONE
@@ -719,41 +899,40 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Step 6: Check if farmer should evaluate this year
         # -----------------------------------------------------------------
-        # Farmers don't reconsider every year - they commit to observing
-        # results for a period before reconsidering
+
         if not self.behaviour.should_evaluate():
             self.behaviour._transition_blocker = BLOCKER_EVALUATION_TIME
-            self.behaviour._transition_driver = DRIVER_NONE  # Reset driver when not evaluating
+            self.behaviour._transition_driver = DRIVER_NONE
             self.behaviour.decrement_evaluation_time()
             return
 
         # -----------------------------------------------------------------
         # Step 7: Run TPB decision logic
         # -----------------------------------------------------------------
+
         self.behaviour.update()
 
         # -----------------------------------------------------------------
         # Step 8: Apply transition if TPB threshold exceeded
         # -----------------------------------------------------------------
         if self.behaviour.should_transition():
-            new_bundle = self.behaviour._proposed_bundle
+            new_bundle = self.behaviour.proposed_bundle
 
             if new_bundle is not None:
-                old_bundle = self.behaviour._practice_bundle
+                old_bundle = self.behaviour.practice_bundle
 
-                # Identify which practices are changing
-                practice_names = ["tillage", "cover_crop", "residue_on_field"]
                 flipped = [
-                    p for i, p in enumerate(practice_names)
-                    if old_bundle[i] != new_bundle[i]
+                    field for field in PRACTICE_FIELDS
+                    if getattr(old_bundle, field) != getattr(new_bundle, field)
                 ]
 
                 if flipped:
-                    # Calculate transition cost
-                    cost = sum(
-                        self.practice_costs.get(p, {}).get("transition", 0)
-                        for p in flipped
-                    ) * self.farm_size
+                    cost = (
+                        old_bundle.transition_cost_per_ha(
+                            new_bundle, self.practice_costs
+                        )
+                        * self.net_farm_size  # Costs scale with crop area
+                    )
 
                     # Only apply if farmer can afford transition
                     if self.capital >= cost:
@@ -767,7 +946,7 @@ class ConservationAgricultureFarmer(Farmer):
                         self.behaviour._transition_blocker = BLOCKER_NONE
 
                         # Set driver to indicate why transition succeeded
-                        pathway = self.behaviour._target_pathway
+                        pathway = self.behaviour.target_pathway
                         if pathway == "fallback":
                             self.behaviour._transition_driver = DRIVER_FALLBACK
                         elif pathway in ("social", "exploration"):

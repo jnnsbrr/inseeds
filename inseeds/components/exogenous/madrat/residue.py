@@ -1,9 +1,9 @@
 """MADRaT crop residue usage data handler.
 
 Provides spatially-explicit fractions of residue burnt, removed, and
-recycled at 0.5° resolution from Smerald et al. (2023) data.
+recycled at 0.5 degree resolution from Smerald et al. (2023) data.
 
-Data structure (from Jens):
+Data structure:
     production = recycled + removed + burnt
     
     - burnt: residues burned (no economic value)
@@ -15,22 +15,26 @@ are weighted by the actual crop composition (cftfrac) from LPJmL.
 """
 
 from pathlib import Path
+from typing import Literal
+
 import numpy as np
 import xarray as xr
 
-from copan_eval.common import CopanData, GridDimensionType
+from ..base import ExogenousSource
 
 
-class ResidueData(CopanData[GridDimensionType]):
+class ResidueSource(ExogenousSource):
     """Handler for MADRaT crop residue fraction data.
     
-    Follows the ensure/cache pattern used by FAO data handlers.
-    Uses copan-eval CopanData base class for consistency.
+    Inherits from ExogenousSource for unified exogenous data access.
+    Residue data is cell-level granularity.
     
     The cached data retains CFT-specific fractions (dims: cell, cft).
     At runtime, use `weighted_fractions()` to compute cell-specific
     values weighted by actual crop composition.
     """
+    
+    granularity: Literal["cell", "country"] = "cell"
     
     # Global source paths (cluster)
     DEFAULT_DATA_PATH = Path("/p/projects/copan/data/inseeds/input")
@@ -45,13 +49,17 @@ class ResidueData(CopanData[GridDimensionType]):
     # Cache filename
     CACHE_FILE = "residue_fractions.nc"
     
-    @classmethod
+    @property
+    def name(self) -> str:
+        return "residue"
+    
     def ensure(
-        cls,
+        self,
         sim_path: str | Path,
-        grid: xr.Dataset,
+        grid: xr.Dataset | None = None,
         reference_year: int = 2015,
         overwrite: bool = False,
+        **kwargs,
     ) -> Path:
         """Ensure residue fractions are available for the simulation grid.
         
@@ -60,7 +68,7 @@ class ResidueData(CopanData[GridDimensionType]):
         sim_path : str | Path
             Simulation path (cache saved to {sim_path}/input/).
         grid : xr.Dataset
-            LPJmL grid (world.grid) with lat/lon coordinates.
+            LPJmL grid with lat/lon coordinates.
         reference_year : int
             Year to extract (default 2015, latest available).
         overwrite : bool
@@ -71,49 +79,35 @@ class ResidueData(CopanData[GridDimensionType]):
         Path
             Path to cached NetCDF file.
         """
-        cache_path = Path(sim_path) / "input" / cls.CACHE_FILE
+        cache_path = Path(sim_path) / "input" / self.CACHE_FILE
         
         if cache_path.exists() and not overwrite:
             return cache_path
         
+        if grid is None:
+            raise ValueError("grid is required to extract residue fractions")
+        
         print(f"Extracting residue fractions for {len(grid.cell)} cells...")
-        fractions = cls._extract_fractions(grid, reference_year)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        fractions = self._extract_fractions(grid, reference_year)
         fractions.to_netcdf(cache_path)
         return cache_path
     
-    @classmethod
     def _extract_fractions(
-        cls,
+        self,
         grid: xr.Dataset,
         year: int,
         data_path: Path | None = None,
     ) -> xr.Dataset:
-        """Extract CFT-specific fractions for grid cells.
-        
-        Parameters
-        ----------
-        grid : xr.Dataset
-            LPJmL grid with lat/lon coordinates.
-        year : int
-            Reference year to extract.
-        data_path : Path, optional
-            Path to MADRaT files (uses DEFAULT_DATA_PATH if None).
-            
-        Returns
-        -------
-        xr.Dataset
-            Dataset with frac_burnt, frac_removed, frac_recycled
-            variables indexed by (cell, cft). CFT dimension retained
-            for runtime weighting by actual crop composition.
-        """
+        """Extract CFT-specific fractions for grid cells."""
         if data_path is None:
-            data_path = cls.DEFAULT_DATA_PATH
+            data_path = self.DEFAULT_DATA_PATH
         
         # Load global data
-        burnt = xr.open_dataset(data_path / cls.BURNT_FILE)
-        production = xr.open_dataset(data_path / cls.PRODUCTION_FILE)
-        removed = xr.open_dataset(data_path / cls.REMOVED_FILE)
-        recycled = xr.open_dataset(data_path / cls.RECYCLED_FILE)
+        burnt = xr.open_dataset(data_path / self.BURNT_FILE)
+        production = xr.open_dataset(data_path / self.PRODUCTION_FILE)
+        removed = xr.open_dataset(data_path / self.REMOVED_FILE)
+        recycled = xr.open_dataset(data_path / self.RECYCLED_FILE)
 
         # Select year (or nearest available)
         burnt = burnt.sel(time=year, method="nearest")
@@ -194,14 +188,13 @@ class ResidueData(CopanData[GridDimensionType]):
         -------
         dict
             Dict with 'burnt', 'removed', 'recycled' weighted fractions.
-            Fractions sum to 1 (or close to 1).
         """
         # Get CFT-specific fractions for this cell
         burnt_cft = residue_ds.frac_burnt.isel(cell=cell_idx).values
         removed_cft = residue_ds.frac_removed.isel(cell=cell_idx).values
         recycled_cft = residue_ds.frac_recycled.isel(cell=cell_idx).values
         
-        # Use only the crop types present in cftfrac (already filtered upstream)
+        # Use only the crop types present in cftfrac
         n_crops = len(cftfrac)
         burnt_cft = burnt_cft[:n_crops]
         removed_cft = removed_cft[:n_crops]
@@ -209,33 +202,23 @@ class ResidueData(CopanData[GridDimensionType]):
         
         weights = np.asarray(cftfrac, dtype=np.float64)
         
-        # Identify CFTs with valid MADRaT data (fractions sum > 0)
-        # CFTs without production in MADRaT have all zeros
+        # Identify CFTs with valid MADRaT data
         cft_has_data = (burnt_cft + removed_cft + recycled_cft) > 0
-        
-        # Zero out weights for CFTs without MADRaT data
         weights = weights * cft_has_data
         
-        # Normalize weights (sum to 1, handle zero case)
+        # Normalize weights
         weight_sum = np.nansum(weights)
         if weight_sum > 0:
             weights = weights / weight_sum
         else:
-            # Fallback: use equal weights across CFTs with data
             n_valid = np.sum(cft_has_data)
             if n_valid > 0:
                 weights = cft_has_data.astype(float) / n_valid
             else:
-                # No valid data at all - return zeros
                 return {'burnt': 0.0, 'removed': 0.0, 'recycled': 1.0}
         
-        # Compute weighted averages
-        frac_burnt = float(np.sum(burnt_cft * weights))
-        frac_removed = float(np.sum(removed_cft * weights))
-        frac_recycled = float(np.sum(recycled_cft * weights))
-        
         return {
-            'burnt': frac_burnt,
-            'removed': frac_removed,
-            'recycled': frac_recycled,
+            'burnt': float(np.sum(burnt_cft * weights)),
+            'removed': float(np.sum(removed_cft * weights)),
+            'recycled': float(np.sum(recycled_cft * weights)),
         }

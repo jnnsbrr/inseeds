@@ -1,456 +1,332 @@
 # Conservation Agriculture Realisation: Model Summary
 
-This document describes the theoretical basis of the **Conservation Agriculture (CA)** realisation and contrasts it with the **Regenerative Tillage** realisation. Both use Theory of Planned Behaviour (TPB; Ajzen 1991) as their decision framework. The CA realisation extends TPB with multi-practice decisions, trend-based learning, adaptive management, capital dynamics, and similarity-weighted social learning.
+This document describes the **Conservation Agriculture (CA)** realisation of InSEEDS. The model couples farmer decision-making based on Theory of Planned Behaviour (TPB; Ajzen 1991) with LPJmL crop model outputs.
 
 ---
 
-## 1. Overview
+## 1. Architecture Overview
 
-| Dimension | Regenerative Tillage | Conservation Agriculture |
-|-----------|----------------------|---------------------------|
-| **Practices** | Tillage only (0/1) | Three: tillage, cover crop, residue retention |
-| **Decision unit** | Binary flip | 8 practice bundles (all combinations) |
-| **Attitude formation** | Year-to-year comparison (soil C, yield) | Trend-based (annual rates of change over observation period) |
-| **Social learning** | Compare to average of neighbours with *other* strategy | Similarity-weighted: bundle similarity, crop similarity, confidence |
-| **Social norm** | Proportion of neighbours using no-till | Similarity-weighted prevalence + conformity pressure |
-| **PBC** | Heuristic decay after transition | Economics-based: cost-capital ratio × risk aversion |
-| **Economics** | None | FAO-based capital dynamics (depreciation, investment, profit) |
-| **Memory** | Previous year only | Per-bundle memory with temporal decay |
-| **Fallback** | None | Revert after sustained decline (adaptive management) |
-| **Agent heterogeneity** | Pioneer vs traditionalist (AFT)e | Pioneer vs traditionalist (AFT) |
-| **Spatial structure** | Cells only | Countries → Cells → Farmers (hierarchical) |
+The realisation has a hierarchical structure:
 
----
+```
+Model
+ └── World
+      ├── Countries (CACountry)
+      │    ├── FAO economic data (capital, prices, depreciation)
+      │    └── Country-level statistics for social learning
+      │
+      └── Cells
+           └── Farmers (CAFarmer)
+                ├── Capital dynamics
+                ├── Practice bundle state
+                └── TPB decision model (ca_behaviour.TPB)
+```
 
-## 2. Shared Foundation: Theory of Planned Behaviour
-
-Both realisations implement the TPB intention equation (Ajzen 1991):
-
-**I = (w_att × A + w_norm × SN) × PBC**
-
-where:
-- **A** (Attitude): the farmer's evaluation of adopting a practice, formed from own experience and social learning
-- **SN** (Subjective Norm): perceived social pressure based on what neighbours do
-- **PBC** (Perceived Behavioural Control): perceived ability to perform the behaviour
-
-PBC enters multiplicatively. A farmer with positive attitude and supportive norms but low PBC (e.g. unaffordable transition) will not adopt. This captures the empirical finding that intention requires both motivation and perceived capability (Ajzen 1991).
+| Component | File | Purpose |
+|-----------|------|---------|
+| `CACountry` | `ca_country.py` | Country-level FAO data, capital parameters, prices |
+| `CAFarmer` | `ca_farmer.py` | Farmer agent with capital, costs, revenue |
+| `TPB` | `ca_behaviour.py` | Decision model: bundles, social learning, attitude, norms, PBC |
+| `Country` | `region.py` | Base class with cropland area calculation |
+| `FaoDataset` | `data/fao/base.py` | Abstract base for FAO data handlers |
 
 ---
 
-## 3. Regenerative Tillage: Baseline Model
+## 2. Practice Bundles
 
-### 3.1 Decision structure
+Conservation Agriculture is represented as a combinatorial decision over three binary practices:
 
-The farmer chooses between conventional tillage (0) and no-till (1). Decisions are re-evaluated at fixed intervals (`strategy_transition_duration`), staggered randomly across agents to avoid synchronisation artefacts.
+| Practice | 0 | 1 |
+|----------|---|---|
+| **Tillage** | No-till (CA) | Conventional tillage |
+| **Cover crop** | None | Planted |
+| **Residue** | Baseline removal | Retained on field |
 
-### 3.2 Attitude
+This yields 8 possible bundles:
 
-Attitude has two sources, weighted by `weight_own_land` and `weight_social_learning`:
+| ID | Tillage | Cover | Residue | Name |
+|----|---------|-------|---------|------|
+| 0 | No-till | No | No | `notill_only` |
+| 1 | No-till | No | Yes | `notill_residue` |
+| 2 | No-till | Yes | No | `notill_cover_crop` |
+| 3 | No-till | Yes | Yes | `conservation` (full CA) |
+| 4 | Conv | No | No | `conventional` |
+| 5 | Conv | No | Yes | `residue_only` |
+| 6 | Conv | Yes | No | `cover_crop_only` |
+| 7 | Conv | Yes | Yes | `cover_crop_residue` |
 
-1. **Own-land experience**: Compare current soil carbon and crop yield to the values stored at the time of the last transition. A sigmoid maps the relative change to (0, 1). This captures experiential learning but is sensitive to single-year noise.
-
-2. **Social learning**: Compare own soil C and yield to the average of neighbours who use the *other* strategy. If neighbours using no-till outperform, attitude toward no-till increases. This follows a simple observational learning logic but does not weight neighbours by relevance.
-
-### 3.3 Social norm
-
-Proportion of neighbours using no-till. A sigmoid centred at 0.5 maps this to (0, 1): when more than half of neighbours use no-till, the norm favours adoption.
-
-### 3.4 PBC
-
-PBC is a heuristic variable:
-- Starts at 1.0 (full perceived control)
-- Drops by a fixed amount (−0.25) after each transition
-- Minimum value of 0.5
-
-There is no explicit economic or cost model. PBC loosely captures "adjustment difficulty" but is not grounded in economic constraints.
-
-### 3.5 Limitations motivating the CA extension
-
-- **Single practice**: CA is defined by three pillars (minimum soil disturbance, permanent soil cover, crop diversification; Kassam et al. 2009), not by tillage alone.
-- **No memory beyond one year**: Farmers cannot detect trends or distinguish noise from signal.
-- **No economic constraints**: Adoption is not limited by capital, cost, or risk.
-- **No adaptive fallback**: Once transitioned, there is no mechanism to revert if outcomes deteriorate.
-- **Undifferentiated social learning**: All neighbours contribute equally, regardless of crop similarity or experience duration.
+Full Conservation Agriculture (bundle 3) requires all three practices: no-till + cover crops + residue retention.
 
 ---
 
-## 4. Conservation Agriculture: Theoretical Extensions
+## 3. Theory of Planned Behaviour (TPB)
 
-### 4.1 Multi-practice bundle decisions
+The TPB model (`ca_behaviour.TPB`) implements the intention equation:
 
-Conservation Agriculture requires the joint adoption of minimum soil disturbance, permanent soil cover, and crop rotation/diversification (Kassam et al. 2009). The CA model represents this as a combinatorial decision over three binary practices (tillage, cover crop, residue retention), yielding 8 possible bundles:
+**TPB = (w_att × Attitude + w_norm × SocialNorm) × PBC**
 
-| ID | Tillage | Cover crop | Residue | Name |
-|----|---------|------------|---------|------|
-| 0 | Conv | No | Baseline | `conventional` |
-| 1 | Conv | No | Retained | `residue_only` |
-| 2 | Conv | Yes | Baseline | `cover_crop_only` |
-| 3 | Conv | Yes | Retained | `cover_crop_residue` |
-| 4 | No-till | No | Baseline | `notill_only` |
-| 5 | No-till | No | Retained | `notill_residue` |
-| 6 | No-till | Yes | Baseline | `notill_cover_crop` |
-| 7 | No-till | Yes | Retained | `conservation` |
+PBC enters multiplicatively: a farmer with positive attitude and supportive norms but low PBC (cannot afford transition) will not adopt.
 
-This captures that practices interact: no-till without residue cover exposes soil (see §4.11), and full CA requires all three simultaneously. Farmers do not merely toggle a single transition; they navigate a space of complementary and competing practices.
+### 3.1 Attitude
 
-### 4.2 Trend-based learning
+Attitude combines two sources, weighted by AFT parameters (`weight_own_land`, `weight_social_learning`):
 
-The Regenerative Tillage model compares current values to the previous year, making it susceptible to inter-annual climate variability. The CA model instead evaluates **annual rates of change** in soil carbon, root-zone moisture, and crop yield since the last practice transition:
+1. **Own-land experience** (`compute_attitude_own_land`): Trend-based evaluation of soil carbon, root moisture, and crop yield since last transition. Uses linear regression over observation period to filter inter-annual noise. Declining performance → higher attitude toward change.
 
-> trend_x = (x_current − x_at_transition) / years_since_transition
+2. **Social learning** (`compute_attitude_social_learning_local/country`): Performance comparison with neighbours using the proposed bundle.
+   - **Local**: Weighted by bundle similarity + crop similarity (AFT params: `weight_bundle_similarity`, `weight_crop_similarity`)
+   - **Country**: Uses cached country statistics comparing own performance to country average for the proposed bundle
 
-This has several consequences:
-- **Noise reduction**: Trends average over multiple years, filtering out single-year fluctuations from weather or market shocks.
-- **Minimum observation period**: Farmers must observe a new practice for at least `min_observation_years` (typically 3) before reconsidering. This reflects the empirical finding that CA benefits often take several years to materialise (Pittelkow et al. 2015).
-- **Comparability**: Trends are normalised to annual rates, allowing comparison across bundles with different durations.
+Local vs country contributions are weighted by `weight_attitude_local` and `weight_attitude_country`.
 
-Performance is summarised as a weighted score across the three indicators (soil C, moisture, yield), with weights reflecting farmer priorities. This score is normalised to the local neighbourhood range (min–max scaling) to enable cross-farm comparison.
+### 3.2 Social Norm
 
-### 4.3 Bundle memory and bounded rationality
+Social norm reflects "what others are doing" (descriptive norm).
 
-Farmers maintain a **per-bundle memory** recording the observed trends, duration, year of last update, and failure count for each of the 8 bundles they have tried. This allows them to draw on past experience when evaluating alternatives.
+- **Local** (`compute_social_norm_local`): Similarity-weighted average across neighbours → sigmoid transformation with AFT-specific threshold (`threshold_social_norm_local`)
+- **Country** (`compute_social_norm_country`): Fraction of farmers using the bundle → sigmoid with threshold (`threshold_social_norm_country`)
 
-Memories **decay after a configurable period** (default: 30 years). This implements bounded rationality (Simon 1955): agents do not have perfect recall. Old experiences lose relevance as environmental conditions (climate, markets, technology) change. Once a memory expires, the farmer treats the bundle as unexplored, allowing re-evaluation under current conditions.
+Local vs country contributions are weighted by `weight_social_norm_local` and `weight_social_norm_country`.
 
-When evaluating a candidate bundle, the farmer's **own-experience attitude** is the remembered trend weighted by **confidence** (duration / confidence_years). Short experience → low confidence → attitude falls back toward neutral (0.5). This avoids strong beliefs from brief trials.
+The sigmoid threshold model (Granovetter 1978): below threshold → social drag; above threshold → social boost.
 
-### 4.4 Target bundle selection
+### 3.3 Perceived Behavioral Control (PBC)
 
-Before computing TPB, the farmer must identify a **target bundle** to evaluate. This is a two-stage process: neighbour imitation, then (if no better neighbour exists) random exploration.
+PBC is economics-based:
 
-**Stage 1: Imitate best-performing neighbour**
+> PBC = pbc_base × cost_factor
 
-The farmer scans all neighbours and identifies those with higher performance scores (weighted combination of soil C, moisture, and yield trends). Among better-performing neighbours, the one with the **largest performance gap** is selected. The target bundle is then set to that neighbour's current practice bundle.
+Where:
+- **pbc_base**: AFT-specific baseline (pioneers: 0.85, traditionalists: 0.65)
+- **cost_factor**: `1 / (1 + cost_impact / disposable_capital)`
 
-This implements observational learning (Bandura 1977): farmers adopt practices they observe working well for others. By selecting the *best* neighbour rather than a random better one, the model captures aspiration toward high performers.
+PBC approaches 0 as costs approach available capital. AFT differences are captured via `pbc_base`.
 
-If no neighbour outperforms the focal farmer, Stage 2 is triggered.
+---
 
-**Stage 2: Random exploration (innovation diffusion)**
+## 4. Decision Flow
 
-When no neighbour is better, the farmer may still explore a new bundle with some probability. This captures innovation without social influence — the "pioneer" behaviour that seeds diffusion processes (Rogers 2003).
+Each year, TPB executes:
 
-Exploration probability depends on:
+1. **Re-evaluate residue status** — Update bundle based on actual litter cover vs CA threshold (30%)
+2. **Add observation** — Update regression accumulators (soil C, moisture, yield)
+3. **Update bundle memory** — Store current trends for neighbour visibility
+4. **Decay old memories** — Bounded rationality (`memory_decay_years`)
+5. **Check minimum observation** — Require sufficient data before reconsidering (`min_observation_years`)
+6. **Check fallback** — Revert if sustained decline (`fallback_years` consecutive years below baseline)
+7. **Find target bundle**:
+   - Try local neighbour imitation (best-performing neighbour's bundle)
+   - If none better, try country-level best performer
+   - If still none, maybe explore randomly (innovation diffusion)
+8. **Adjust for affordability** — Reduce to partial bundle if full target unaffordable
+9. **Compute TPB components** — Attitude, social norm, PBC
+10. **Transition decision** — Compare TPB to threshold
 
-1. **Farmer type**: Pioneers have higher base probability (5%) than traditionalists (1%).
-2. **Current performance**: Poor performers (normalised score < 0.3) double their exploration probability — they are "searching for better options".
-3. **Experience**: Exploration probability ramps from 0.5× (early, cautious) to 1.5× (experienced, confident) over `confidence_years`. This reflects that farmers with longer experience on their current bundle are more willing to experiment.
+### 4.1 Thresholds (Global, not AFT-specific)
 
-The exploration probability is capped at 15% to prevent excessive randomness.
+| Threshold | Value | Purpose |
+|-----------|-------|---------|
+| `transition_threshold` | 0.5 | TPB score to adopt new bundle |
+| `revert_threshold` | 0.6 | TPB score to revert (higher = hysteresis) |
+| `evaluation_interval` | 0 | Years between re-evaluations |
 
-**Bundle filtering**
+### 4.2 Transition Blockers
 
-Not all bundles are valid exploration targets:
-- The current bundle is excluded (no point exploring what you already do)
-- Bundles that have **failed too many times** (failure_count ≥ max_failures, default 2) are excluded — the farmer has learned to avoid them
-- **Agronomically unreasonable** bundles (e.g. no-till without residue when residue is cheap) are excluded (see §4.11)
+The model tracks why transitions don't happen:
 
-From the remaining valid bundles, one is selected uniformly at random.
+| Blocker | Meaning |
+|---------|---------|
+| `min_obs_years` | Not enough observation time yet |
+| `no_target` | No better neighbour + exploration didn't trigger |
+| `target_same` | Target bundle equals current (already optimal) |
+| `tpb_low_pbc` | TPB failed due to cost/capital constraints |
+| `tpb_low_social_norm_local/country` | TPB failed due to low social norm |
+| `tpb_low_attitude_*` | TPB failed due to low attitude |
+| `capital_survival` | Capital below survival threshold |
 
-**No target → no transition**
+### 4.3 Transition Drivers
 
-If neither neighbour imitation nor exploration yields a target bundle, no transition is proposed and TPB is set to 0. The farmer continues with the current bundle.
+When transitions succeed, the model tracks the enabling factor:
 
-### 4.6 Similarity-weighted social learning
+| Driver | Meaning |
+|--------|---------|
+| `local_*` | Inspired by local neighbour |
+| `country_*` | Inspired by country-level performer |
+| `exploration_*` | Discovered via random exploration |
+| `fallback` | Reverted due to sustained decline |
 
-Social learning theory (Bandura 1977) predicts that individuals learn preferentially from models they perceive as similar and successful. The CA model implements this through three weighting dimensions:
+---
 
-1. **Bundle similarity**: fraction of practices that match between the focal farmer and the neighbour. A neighbour using (1,1,1) is more informative for evaluating (1,1,0) than a neighbour using (0,0,0). This reflects that practice-specific experience is more transferable between similar management systems.
+## 5. Capital Dynamics (CAFarmer)
 
-2. **Crop similarity**: whether the neighbour grows the same dominant crop at a similar area share. Neighbours facing similar agronomic conditions provide more relevant information. This is a fast heuristic (argmax comparison) rather than a full portfolio distance.
+### 5.1 Initial Capital
 
-3. **Confidence weighting**: the neighbour's duration on their current bundle modulates the reliability of their signal. A neighbour who has used a bundle for 10 years provides a more stable signal than one who transitioned last year.
+Capital per hectare is derived from FAO Net Capital Stocks:
 
-The combined weight (similarity × confidence) determines each neighbour's contribution to the focal farmer's attitude. The total similarity is a configurable weighted average of bundle and crop similarity (default: 60% bundle, 40% crop).
+> K₀/ha = (NCS × ag_share × crop_share) / cropland_area
 
-In contrast, the Regenerative Tillage model groups neighbours by strategy (conventional vs no-till) and compares to the average of the *other* group, without weighting by relevance or experience.
+Where:
+- **NCS**: Net Capital Stocks for "Agriculture, Forestry and Fishing" (million USD)
+- **ag_share**: Agriculture fraction of AFF (country-specific static table)
+- **crop_share**: Field crops fraction of agriculture (from FAO GPV data)
 
-### 4.7 Social norm with conformity pressure
+### 5.2 Annual Update
 
-The **descriptive social norm** (Cialdini et al. 1990) — "what others do" — is computed as the average total similarity (bundle + crop) to neighbours. A bundle that many similar neighbours use has a higher norm score.
+> K_{t+1} = K_t − δK_t + s × max(profit, 0)
 
-On top of this, the model adds **conformity pressure** based on neighbourhood homogeneity. When most neighbours use the same bundle (low diversity of practices), conformity pressure is high:
-- Adopting the **majority bundle** receives a bonus (up to +0.2)
-- Adopting a **minority bundle** receives a penalty (up to −0.1)
+Where:
+- **δ**: Depreciation rate (CFC / NCS from FAO)
+- **s**: Savings rate (default 0.15)
+- **profit**: Revenue − variable costs − depreciation
 
-This asymmetry reflects empirical findings that deviating from established local practices carries higher social cost than conforming (Cialdini & Goldstein 2004). In the farming context, this captures phenomena such as peer scepticism toward innovators, shared equipment and knowledge networks favouring the majority practice, and reduced social support for non-conformists.
+### 5.3 Revenue Calculation
 
-Neighbourhood homogeneity is measured as 1 − (unique_bundles − 1) / N_neighbours. This means conformity pressure is strongest when all neighbours use the same bundle and weakest in diverse neighbourhoods.
+1. Get per-PFT harvest from LPJmL (gC/m²)
+2. Multiply by crop fraction and cell area
+3. Convert gC to tonnes dry matter (0.45 C fraction)
+4. Aggregate irrigation variants to match FAO price categories
+5. Multiply by FAO producer prices (USD/tonne)
 
-The Regenerative Tillage model's social norm is simply the proportion of neighbours using no-till, without conformity pressure or similarity weighting.
+### 5.4 Practice Costs (from config)
 
-### 4.8 Adaptive management and fallback
+| Practice | Transition ($/ha) | Direct ($/ha/yr) |
+|----------|-------------------|------------------|
+| No-till | 70 | -50 (savings) |
+| Cover crop | 25 | 75 |
+| Residue retention | 10 | 50 |
 
-Adaptive management (Holling 1978; Walters 1986) treats management interventions as experiments: if outcomes deteriorate, the intervention should be revised. The CA model implements this through a **fallback mechanism**:
+When capital falls below minimum threshold (`n_survival_years × δ × K₀`), costly practices are dropped: cover crop first (highest direct cost), then residue, then no-till.
 
-1. After a grace period (`min_observation_years`), the model tracks consecutive years where performance falls below the **baseline score recorded at transition time**.
-2. If performance declines for `fallback_years` consecutive years (default: 5), the farmer **reverts to the previous bundle**.
-3. The failed bundle's **failure count** is incremented. Bundles that have failed more than `max_failures` times (default: 2) are excluded from future exploration.
+---
 
-Comparing against the baseline at transition time (rather than the previous year) avoids false positives from gradual trends and focuses on whether the transition itself led to improvement. The grace period allows time for transition effects (e.g. soil biology adjustment after no-till adoption) before evaluation begins.
+## 6. FAO Data Integration (CACountry)
 
-Fallback bypasses TPB: it is an emergency response, not a planned behaviour change. TPB intention is set to 1.0 directly, ensuring the reversion occurs.
+### 6.1 Data Sources
 
-The Regenerative Tillage model has no fallback mechanism. Once transitioned, a farmer can only transition again after the next evaluation interval.
+| Dataset | FAO Domain | Variables |
+|---------|------------|-----------|
+| Capital Stock | CS | NCS, GFCF, CFC |
+| Producer Prices | PP | Prices by crop |
+| Gross Production Value | QV | GPV crops, GPV agriculture |
 
-### 4.9 Capital dynamics and affordability
+### 6.2 Tiered Fallback
 
-The Regenerative Tillage model has no economic dimension. The CA model introduces **capital dynamics** grounded in FAO data and standard capital accounting (OECD 2009; Jorgenson 1963):
+When country data is missing (`get_value_with_fallback`):
 
-**Initial capital**:
+1. **Country**: Expanding time window (up to 20 years back)
+2. **Neighbours**: Mean from neighbouring countries
+3. **Global**: Mean across all available countries
 
-> K₀ = (NCS × crop_share) / agricultural_land_area
+### 6.3 Crop Capital Share
 
-where:
-- NCS = Net Capital Stocks from FAO (country-specific, in million USD)
-- crop_share = fraction of agricultural capital attributable to field crops
+FAO Capital Stock covers "Agriculture, Forestry and Fishing". For field crops:
 
-**Capital scaling**: FAO's Capital Stock (CS) domain reports total capital for "Agriculture, Forestry and Fishing" combined, including livestock, greenhouses, and fishing infrastructure. Since LPJmL simulates only field crops, we scale capital by a country-specific **crop_capital_share** derived from FAO Gross Production Value (QV domain):
+> crop_capital_share = ag_share_of_aff × crop_share_of_ag
 
-> crop_share ≈ GPV_crops / GPV_agriculture
+Where:
+- **ag_share_of_aff**: Country-specific static table (e.g., NLD: 0.95, USA: 0.60)
+- **crop_share_of_ag**: GPV_crops / GPV_agriculture from FAO QV domain
 
-This scaling is essential for realistic depreciation/revenue ratios. For example:
-- Netherlands: crop_share = 0.18 (dairy and horticulture dominate)
-- India: crop_share = 0.70 (crop-dominated agriculture)
-- Default: crop_share = 0.85 (for countries without specific data)
+### 6.4 Caching
 
-See `inseeds/components/data/fao/crop_capital_share.py` for country-specific values and methodology.
+FAO data is cached at class level. Pre-download via `CACountry.preload_fao_data()` before multi-country simulations.
 
-**Annual capital update**:
+---
 
-> K_{t+1} = K_t − δ K_t + s × max(π_t, 0)
+## 7. Residue Economics
 
-where:
-- δ = CFC / NCS: **depreciation rate** from FAO Consumption of Fixed Capital. This captures the annual wear of machinery, equipment, and infrastructure (Jorgenson 1963).
-- π_t = revenue − variable_costs − depreciation: **net profit**. Revenue is computed from LPJmL harvest (gC) converted to monetary value via FAO producer prices.
-- s = **savings rate** (behavioral parameter, default 15%): fraction of net profit reinvested into farm capital. Literature suggests 10-30% depending on region and farm type (Lowder et al. 2016; FAO 2017).
+### 7.1 Opportunity Cost
 
-Only positive profit contributes to reinvestment; losses lead to capital decline through depreciation without offsetting investment.
+Residue retention has an opportunity cost based on spatial MADRaT data (Smerald et al. 2023):
 
-**Revenue calculation**:
+> opportunity_cost = burnt × 0 + removed × 80 + recycled × 0 ($/ha/yr)
 
-Revenue is calculated by:
-1. Getting per-PFT harvest from LPJmL (gC/m²)
-2. Multiplying by crop fraction and cell area to get total production (gC)
-3. Converting gC to tonnes dry matter (using 0.45 C fraction)
-4. Aggregating rainfed/irrigated variants to match FAO price categories (e.g., "rainfed temperate cereals" + "irrigated temperate cereals" → "temperate cereals")
-5. Multiplying by FAO producer prices (USD/tonne dry matter)
+Fractions are weighted by actual crop composition from LPJmL.
 
-**Affordability constraints**:
-- **Transition costs** (one-time costs for equipment, training) are deducted from capital at transition time.
-- **Direct costs** (annual costs for seeds, labour, foregone income) reduce profit.
-- If the full target bundle is unaffordable, the farmer adopts a **partial bundle** (cheapest changes first).
-- When capital falls below a **minimum threshold** (n_survival_years × δ × K₀, cf. Bandiera et al. 2017 on poverty traps), costly practices are dropped in order: cover crop first (highest direct cost), then residue retention, then no-till.
+### 7.2 Residue Status
 
-**Residue economics**: Residue retention has an **opportunity cost** (value of residue as feed or for sale). Retention level is constrained by the ratio of current capital to opportunity cost.
+The bundle's residue component (0/1) is dynamically updated based on actual litter cover:
+- If `litter_cover ≥ 30%` and residue=0 → upgrade to 1 (certified CA)
+- If `litter_cover < 30%` and residue=1 → downgrade to 0 (de-certified)
 
-### 4.10 PBC as cost–capital relationship with risk aversion
+---
 
-PBC in the CA model is derived from the farmer's economic situation rather than a heuristic decay:
+## 8. Agent Functional Types (AFT)
 
-> PBC = pbc_base × cost_factor × (1 − risk_factor)
+Farmers are differentiated into pioneers (25%) and traditionalists (75%).
 
-**Cost factor**: A hyperbolic function of cost relative to disposable capital:
-
-> cost_factor = 1 / (1 + cost_impact / disposable_capital)
-
-where cost_impact = transition cost + annual direct cost increase, and disposable_capital = capital − min_capital. PBC approaches 0 as cost approaches disposable capital and approaches 1 when costs are negligible.
-
-**Risk aversion** (Chavas & Holt 1996): Risk-averse farmers weight potential losses more heavily than gains. Currently uses AFT base risk aversion (traditionalists > pioneers).
-
-High risk → low PBC → lower adoption intention, even if attitude and norm are positive. This captures the empirical observation that risk is a key barrier to CA adoption in developing countries (Pannell et al. 2014).
-
-### 4.11 Agronomic reasonableness filter
-
-Some practice combinations are agronomically problematic. No-till without residue cover (bundles 4, 6) leaves soil unprotected against erosion, crusting, and temperature extremes. The model flags these bundles as **unreasonable** when residue opportunity cost is below a threshold (i.e. when retaining residue would be cheap). Unreasonable bundles are excluded from exploration and adoption.
-
-This is not a hard constraint (when residue is expensive, these bundles are permitted) but a soft agronomic heuristic that prevents clearly counterproductive combinations.
-
-### 4.12 Cover crop type selection
-
-When cover crops are adopted, the type (legume vs non-legume) is determined from environmental conditions provided by LPJmL:
-
-- **Non-legume** (catch crop): when both nitrogen leaching and fertiliser application are high, indicating excess reactive nitrogen. Non-legumes scavenge surplus N without adding more.
-- **Legume**: otherwise, to provide biological nitrogen fixation.
-
-This links farmer decisions to biogeochemical feedbacks in the coupled model.
-
-### 4.13 Agent functional types: pioneer vs traditionalist
-
-Farmers are differentiated into two agent functional types (AFTs):
+### Key AFT Parameter Differences
 
 | Parameter | Pioneer | Traditionalist |
 |-----------|---------|----------------|
-| Exploration probability | Higher (0.05) | Lower (0.01) |
-| Transition threshold | Lower (easier to adopt) | Higher |
-| Revert threshold | Higher (harder to revert) | Lower |
-| Risk aversion | Lower | Higher |
-| Min observation years | Fewer | More |
+| `pbc_base` | 0.85 | 0.65 |
+| `weight_attitude` | 0.8 | 0.6 |
+| `weight_norm` | 0.2 | 0.4 |
+| `exploration_base_prob` | 0.05 | 0.01 |
+| `min_observation_years` | 2 | 3 |
+| `fallback_years` | 8 | 10 |
+| `threshold_social_norm_local` | 0.10 | 0.20 |
 
-**Pioneers** adopt earlier, explore more, and tolerate more risk — corresponding to Rogers' "innovators" and "early adopters". **Traditionalists** require more evidence, are more risk-averse, and revert more easily — corresponding to "late majority" and "laggards".
-
-Exploration probability is further modulated by:
-- **Performance**: poor performers explore more (searching for better options)
-- **Experience**: longer duration on current bundle increases willingness to experiment (confidence ramp)
-
-### 4.14 Hysteresis: asymmetric transition/revert thresholds
-
-The transition threshold for adopting a new bundle differs from the revert threshold for returning to a previous one (default: 0.5 vs 0.6). This asymmetry creates **hysteresis**: once adopted, a practice is retained even under moderate dissatisfaction. This prevents rapid oscillation and reflects the sunk-cost effect and learning investments associated with practice changes.
+**Pioneers**: Higher PBC, weight attitude more, explore more, require less observation time.
+**Traditionalists**: Lower PBC, weight norms more, explore less, more cautious.
 
 ---
 
-## 5. Spatial Structure: Countries, Cells, Farmers
+## 9. Adaptive Management
 
-The CA realisation introduces a hierarchical spatial structure:
+### 9.1 Fallback Mechanism
 
-### 5.1 Country level (`CACountry`)
+After grace period (`min_observation_years`):
+1. Track consecutive years where performance < baseline at transition
+2. If decline continues for `fallback_years` → revert to previous bundle
+3. Mark failed bundle (increment failure count)
+4. Bundles with `failure_count ≥ max_failures` (default 2) excluded from exploration
 
-Countries aggregate cells and provide country-level economic parameters from FAO:
-- **Depreciation rate** (δ = CFC / NCS)
-- **Investment rate** (i = GFCF / NCS)
-- **Initial capital per hectare** (NCS / cropland_area)
-- **Producer prices** by crop type (USD/tonne dry matter)
+### 9.2 Bundle Memory
 
-FAO data is loaded **once per simulation** for all countries, minimizing API calls. Data is cached at the class level to avoid redundant downloads during parallelization.
+Per-bundle memory with:
+- Observed trends (soil C, moisture, yield)
+- Duration on bundle
+- Year of last update
+- Failure count
 
-### 5.2 Cropland area calculation
+Memories decay after `memory_decay_years`.
 
-Country-level cropland area is calculated as:
+---
+
+## 10. Cropland Area Calculation
+
+Country-level cropland from LPJmL data:
 
 > cropland_ha = Σ (cftfrac × cell_area)
 
-where:
-- `cftfrac` = crop functional type fractions from LPJmL (sum over all crop bands)
-- `cell_area` = cell area in m² (from pycopanlpjml), converted to hectares
+Implementation uses `np.squeeze()` to prevent numpy broadcasting bugs when multiplying arrays with singleton dimensions.
 
-This provides the denominator for computing capital per hectare from FAO Net Capital Stocks.
-
-### 5.3 Cell level
-
-Cells belong to countries and contain spatial data from LPJmL:
-- Grid coordinates (lat, lon)
-- Crop fractions (`cftfrac`)
-- Harvest data (`pft_harvestc`)
-- Environmental conditions (soil moisture, leaching, fertilizer)
-
-### 5.4 Farmer level
-
-Farmers are initialized on cells with crops (`cftfrac.sum() > 0`). Each farmer:
-- Inherits country-level economic parameters
-- Maintains individual capital, practice bundle, and TPB state
-- Interacts with neighbouring farmers for social learning
+Farm size at initialization uses mean `cftfrac` over spinup years for robustness.
 
 ---
 
-## 6. FAO Data Integration
-
-### 6.1 Data sources
-
-The model uses two FAO datasets:
-
-1. **Capital Stock (CS domain)**: Net Capital Stocks (NCS), Gross Fixed Capital Formation (GFCF), Consumption of Fixed Capital (CFC) for the Agriculture, Forestry and Fishing sector. Used to derive depreciation rate, investment rate, and initial capital.
-
-2. **Producer Prices (PP domain)**: Prices by crop type in USD/tonne. Translated to LPJmL crop categories using `copan_eval`'s `FaoCropTranslator`.
-
-### 6.2 Data retrieval
-
-FAO data is retrieved via the `copan_eval` library:
-- **API access**: Downloads from FAOSTAT API with authentication
-- **Caching**: Downloaded data is cached locally as NetCDF files
-- **Fallback**: If API fails, generates dummy data with warning
-
-### 6.3 Crop price matching
-
-LPJmL uses detailed crop bands (e.g., "rainfed temperate cereals", "irrigated temperate cereals") while FAO prices use aggregated categories ("temperate cereals"). The revenue calculation:
-1. Strips "rainfed " or "irrigated " prefixes from LPJmL bands
-2. Aggregates production across irrigation variants
-3. Matches with FAO price categories
-4. Multiplies production × price for each category
-
----
-
-## 7. Decision Flow Summary
-
-Each year, the CA farmer executes the following decision sequence:
-
-1. **Parent update** — base farmer logic (soil C, yield, moisture tracking)
-2. **Skip if control run** — no CA dynamics in baseline scenarios
-3. **Update capital** — depreciation, profit calculation, reinvestment
-4. **Check affordability** — deselect practices if capital too low
-5. **Skip TPB if capital-constrained** — survival mode, no voluntary changes
-6. **Decay old memories** — bounded rationality (§4.3)
-7. **Check minimum observation period** — require sufficient data before transitioning (§4.2)
-8. **Check fallback condition** — revert if sustained decline (§4.8)
-9. **Find target bundle** — imitate best-performing neighbour OR explore randomly (§4.4)
-10. **Adjust for affordability** — partial bundle if full target is too expensive (§4.9)
-11. **Compute TPB** — attitude (own memory + social learning, §4.6), social norm (similarity + conformity, §4.7), PBC (cost-capital × risk, §4.10)
-12. **Transition decision** — compare TPB to threshold (with hysteresis; §4.14)
-13. **Apply transition** — deduct transition cost, update practices, record in memory
-
----
-
-## 8. File Structure
+## 11. File Structure
 
 | File | Purpose |
 |------|---------|
-| `tillage_farmer.py` | Regenerative Tillage realisation (single file, ~200 lines) |
-| `ca_farmer.py` | CA farmer agent — capital dynamics, FAO data, revenue, costs, practice application |
-| `ca_behaviour.py` | TPB decision model — bundles, memory, social learning, social norm, PBC, fallback, exploration |
-| `ca_country.py` | Country-level FAO data loading and economic parameter extraction |
-| `region.py` | Base Country class with cropland area calculation |
-| `model.py` | Model class — entity initialization, update loop |
-| `config.yaml` | Configuration — AFT parameters, practice costs, thresholds |
-
----
-
-## 9. Configuration Parameters
-
-Key parameters in `config.yaml`:
-
-### AFT parameters (`aftpar.pioneer` / `aftpar.traditionalist`)
-- `exploration_base_prob`: Base probability of random exploration
-- `transition_threshold` / `revert_threshold`: TPB thresholds for adoption/reversion
-- `min_observation_years`: Minimum years before considering transition
-- `fallback_years`: Consecutive decline years before fallback
-- `memory_decay_years`: Years until old memories expire
-- `confidence_years`: Years to reach full confidence
-- `risk_aversion`: Base risk aversion (0-1)
-- `weight_bundle_similarity` / `weight_crop_similarity`: Social learning weights
-- `conformity_bonus` / `conformity_penalty`: Social norm adjustments
-
-### Farm economics (`farm_economics`)
-- `n_survival_years`: Years of depreciation buffer for min_capital
-- `savings_rate`: Fraction of profit reinvested
-
-### Practice costs (`practice_costs`)
-- `tillage.direct` / `tillage.transition`: No-till costs
-- `cover_crop.direct` / `cover_crop.transition`: Cover crop costs
-- `residue_on_field.direct` / `residue_on_field.transition`: Residue retention costs
-
-### Residue economics (`residue_economics`)
-- `use_costs.feed` / `use_costs.sale`: Opportunity costs by use type
-- `default_removal_use`: Default use for opportunity cost calculation
+| `ca_farmer.py` | CAFarmer: capital, costs, revenue, practice application |
+| `ca_behaviour.py` | TPB: bundles, memory, social learning, norms, PBC, fallback |
+| `ca_country.py` | CACountry: FAO data loading, economic parameters |
+| `region.py` | Country base class: cropland area |
+| `model.py` | Model: initialization, update loop |
+| `config.yaml` | All configuration parameters |
+| `data/fao/*.py` | FAO data handlers |
+| `data/residue.py` | MADRaT residue fraction data |
 
 ---
 
 ## References
 
 - Ajzen, I. (1991). The theory of planned behavior. *Organizational Behavior and Human Decision Processes*, 50(2), 179–211.
-- Bandiera, O. et al. (2017). Labor markets and poverty in village economies. *Quarterly Journal of Economics*, 132(2), 811–870.
-- Bandura, A. (1977). *Social Learning Theory*. Prentice Hall.
-- Chavas, J.P. & Holt, M.T. (1996). Economic behavior under uncertainty: A joint analysis of risk preferences and technology. *Review of Economics and Statistics*, 78(2), 329–335.
-- Cialdini, R.B., Reno, R.R., & Kallgren, C.A. (1990). A focus theory of normative conduct. *Journal of Personality and Social Psychology*, 58(6), 1015–1026.
-- Cialdini, R.B. & Goldstein, N.J. (2004). Social influence: Compliance and conformity. *Annual Review of Psychology*, 55, 591–621.
-- FAO (2017). The State of Food and Agriculture: Leveraging Food Systems for Inclusive Rural Transformation.
-- FAO (2023). FAOSTAT Capital Stock methodology. Food and Agriculture Organization.
-- Holling, C.S. (1978). *Adaptive Environmental Assessment and Management*. John Wiley & Sons.
+- Granovetter, M. (1978). Threshold models of collective behavior. *American Journal of Sociology*, 83(6), 1420–1443.
 - Jorgenson, D.W. (1963). Capital theory and investment behavior. *American Economic Review*, 53(2), 247–259.
 - Kassam, A., Friedrich, T., Shaxson, F., & Pretty, J. (2009). The spread of Conservation Agriculture. *International Journal of Environmental Studies*, 66(6), 677–697.
-- Katchova, A.L. & Dinterman, R. (2018). Evaluating financial stress and performance of beginning farmers during the agricultural downturn. *Agricultural Finance Review*, 78(4), 457–469.
-- Lowder, S.K., Skoet, J., & Raney, T. (2016). The number, size, and distribution of farms, smallholder farms, and family farms worldwide. *World Development*, 87, 16–29.
 - OECD (2009). *Measuring Capital — OECD Manual*, 2nd ed. OECD Publishing.
-- Pannell, D.J., Llewellyn, R.S., & Corbeels, M. (2014). The farm-level economics of conservation agriculture for resource-poor farmers. *Agriculture, Ecosystems & Environment*, 187, 52–64.
-- Pittelkow, C.M. et al. (2015). Productivity limits and potentials of the principles of conservation agriculture. *Nature*, 517, 365–368.
 - Rogers, E.M. (2003). *Diffusion of Innovations*, 5th ed. Free Press.
-- Simon, H.A. (1955). A behavioral model of rational choice. *Quarterly Journal of Economics*, 69(1), 99–118.
-- Walters, C.J. (1986). *Adaptive Management of Renewable Resources*. Macmillan.
+- Smerald, A. et al. (2023). Global crop residue management data. MADRaT.

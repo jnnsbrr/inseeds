@@ -15,8 +15,8 @@ import pytest
 import pandas as pd
 import xarray as xr
 
-from inseeds.components.data.fao.base import FaoDataset, get_fao_country_code
-from inseeds.components.data.fao import FaoProducerPrices, FaoCapitalStock
+from inseeds.components.exogenous.faostat.base import FaoDataset, get_fao_country_code
+from inseeds.components.exogenous.faostat import FaoProducerPrices, FaoCapitalStock
 
 
 class TestGetFaoCountryCode:
@@ -64,7 +64,6 @@ class TestFaoDatasetAbstract:
         assert hasattr(prices, "download")
         assert hasattr(prices, "transform")
         assert hasattr(prices, "get_path")
-        assert hasattr(prices, "get_dummy_path")
 
 
 class TestFaoDatasetPaths:
@@ -78,15 +77,6 @@ class TestFaoDatasetPaths:
         path = prices.get_path(sim_path)
         
         assert path == sim_path / "input" / "fao_pft_prices.nc"
-
-    def test_get_dummy_path_adds_dummy_suffix(self):
-        """get_dummy_path should add _DUMMY before extension."""
-        capital = FaoCapitalStock()
-        sim_path = Path("/tmp/sim")
-        
-        path = capital.get_dummy_path(sim_path)
-        
-        assert path == sim_path / "input" / "fao_capital_stock_DUMMY.nc"
 
     def test_is_available_checks_real_file(self):
         """is_available should check for real (non-dummy) file."""
@@ -139,40 +129,6 @@ class TestFaoDatasetEnsureLogic:
             )
             
             assert result == real_path
-
-    def test_ensure_tries_download_when_only_dummy_exists(self):
-        """ensure should try download even if dummy file exists."""
-        prices = FaoProducerPrices()
-        
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            dummy_path = prices.get_dummy_path(sim_path)
-            dummy_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Create dummy file
-            ds = xr.Dataset(
-                {"5532": (["npft", "time", "area_code"], [[[100.0]]])},
-                coords={
-                    "npft": ["temperate cereals"],
-                    "time": [2020],
-                    "area_code": ["NLD"],
-                },
-            )
-            ds.to_netcdf(dummy_path)
-            ds.close()
-            
-            # ensure should try to download (will fail and use dummy)
-            with patch.object(prices, "prepare", side_effect=RuntimeError("API fail")):
-                result = prices.ensure(
-                    sim_path=sim_path,
-                    country_codes=["NLD"],
-                    reference_year=2020,
-                    years_before=0,
-                )
-            
-            # Should return dummy path
-            assert result == dummy_path
-
 
 class TestFaoProducerPricesSpecifics:
     """Tests specific to FaoProducerPrices."""
@@ -305,25 +261,23 @@ class TestFaoDatasetCountryHandling:
 class TestFaoDatasetErrorHandling:
     """Tests for error handling in FAO data operations."""
 
-    def test_ensure_falls_back_to_dummy_on_api_error(self):
-        """ensure should create dummy data when API fails."""
+    def test_ensure_raises_on_api_error(self):
+        """ensure should raise RuntimeError when API fails and no data exists."""
         prices = FaoProducerPrices()
         
         with tempfile.TemporaryDirectory() as tmp:
             sim_path = Path(tmp) / "sim"
+            (sim_path / "input").mkdir(parents=True)
             
             # Mock prepare to raise error
             with patch.object(prices, "prepare", side_effect=RuntimeError("API error")):
-                path = prices.ensure(
-                    sim_path=sim_path,
-                    country_codes=["NLD"],
-                    reference_year=2020,
-                    years_before=4,
-                )
-            
-            # Should create dummy file (ensure now always falls back to dummy)
-            assert path.exists()
-            assert "DUMMY" in path.name
+                with pytest.raises(RuntimeError, match="FAO API failed"):
+                    prices.ensure(
+                        sim_path=sim_path,
+                        country_codes=["NLD"],
+                        reference_year=2020,
+                        years_before=4,
+                    )
 
 
 class TestFaoDataTransformation:
@@ -513,7 +467,7 @@ class TestFaoDownloadIntegration:
 
     def test_download_single_country(self):
         """Download FAO data for a single country (NLD)."""
-        from inseeds.components.data.fao.base import check_fao_api_available
+        from inseeds.components.exogenous.faostat.base import check_fao_api_available
         
         if not check_fao_api_available():
             pytest.skip("FAO API not available")
@@ -546,7 +500,7 @@ class TestFaoDownloadIntegration:
 
     def test_download_multiple_countries(self):
         """Download FAO data for multiple countries (NLD, DEU, BEL)."""
-        from inseeds.components.data.fao.base import check_fao_api_available
+        from inseeds.components.exogenous.faostat.base import check_fao_api_available
         
         if not check_fao_api_available():
             pytest.skip("FAO API not available")
@@ -576,7 +530,7 @@ class TestFaoDownloadIntegration:
 
     def test_download_respects_country_codes_parameter(self):
         """Verify that only requested countries are downloaded."""
-        from inseeds.components.data.fao.base import check_fao_api_available
+        from inseeds.components.exogenous.faostat.base import check_fao_api_available
         
         if not check_fao_api_available():
             pytest.skip("FAO API not available")
@@ -608,7 +562,7 @@ class TestFaoDownloadIntegration:
 
     def test_download_caches_to_parquet(self):
         """Verify that download creates parquet cache file."""
-        from inseeds.components.data.fao.base import check_fao_api_available
+        from inseeds.components.exogenous.faostat.base import check_fao_api_available
         
         if not check_fao_api_available():
             pytest.skip("FAO API not available")
@@ -636,7 +590,7 @@ class TestFaoDownloadIntegration:
 
     def test_download_uses_cache_on_second_call(self):
         """Verify that second call uses cache instead of API."""
-        from inseeds.components.data.fao.base import check_fao_api_available
+        from inseeds.components.exogenous.faostat.base import check_fao_api_available
         
         if not check_fao_api_available():
             pytest.skip("FAO API not available")
@@ -661,7 +615,7 @@ class TestFaoDownloadIntegration:
             output_path.unlink()
             
             # Second call - should use cache (no API call)
-            with patch("inseeds.components.data.fao.base.FaoApiAdapter") as mock_adapter:
+            with patch("inseeds.components.exogenous.faostat.base.FaoApiAdapter") as mock_adapter:
                 ds2 = prices.prepare(
                     cache_path=cache_path,
                     output_path=output_path,

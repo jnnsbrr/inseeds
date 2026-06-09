@@ -143,7 +143,7 @@ for year in range(2023, 2051):
             )
             axis[cc, rr].legend(
                 handles=[
-                    mpl.patches.Patch(color="yellow", label="Conventional"),
+                    mpl.patches.Patch(color="yellow", label="conventional farming"),
                     mpl.patches.Patch(color="purple", label="Conservational"),
                 ],
                 loc="lower right",

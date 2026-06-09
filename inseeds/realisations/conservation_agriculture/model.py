@@ -12,17 +12,23 @@ from inseeds.components.farming import ConservationAgricultureFarmer
 from inseeds.components.farming.ca_country import CACountry
 from inseeds.components.farming.farmer import AFT
 from inseeds.components import lpjml
-from inseeds.components.data.residue import ResidueData
-from inseeds.components.farming.ca_behaviour import (
-    BUNDLE_IDS, BUNDLE_NAMES, BLOCKER_NAMES, DRIVER_NAMES
+from inseeds.components.exogenous import load_all as load_exogenous
+from inseeds.components.farming.ca_management import ManagementBundle
+from inseeds.components.farming.ca_behaviour import BLOCKER_NAMES, DRIVER_NAMES
+from inseeds.components.farming.farmer import NON_CROPS, avg_hdate
+from inseeds.components.farming.ca_agroecology import (
+    init_agroecological_clusters,
+    cluster_management_performance,
 )
-from inseeds.components.farming.farmer import NON_CROPS
+
 
 # Custom unit for millions of dollars
 MEGADOLLARS = Unit("megadollars", symbol="M$")
 
-# Mapping from bundle ID (0-7) to bundle name
-BUNDLE_ID_TO_NAME = {v: BUNDLE_NAMES[k] for k, v in BUNDLE_IDS.items()}
+# Mapping from bundle ID (0-7) to display name
+BUNDLE_ID_TO_NAME = {
+    bundle.id: bundle.label for bundle in ManagementBundle
+}
 # Add -1 for "no proposed bundle"
 BUNDLE_ID_TO_NAME[-1] = ""
 
@@ -85,11 +91,11 @@ class Farmer(ConservationAgricultureFarmer):
         ),
         # TPB decision model outputs (accessed via behaviour.X)
         **{
-            "behaviour.practice_bundle": Variable(
+            "behaviour.practice_bundle_id": Variable(
                 "practice bundle",
-                "current bundle ID (0-7)",
+                "current bundle ID (0-7), settable for Dask sync",
             ),
-            "behaviour.proposed_bundle": Variable(
+            "behaviour.proposed_bundle_id": Variable(
                 "proposed bundle",
                 "bundle being evaluated (-1 if none)",
             ),
@@ -125,8 +131,8 @@ class Farmer(ConservationAgricultureFarmer):
     # Used by output.py to populate the 'label' column in CSV/Parquet
     output_label_mappings = {
         "aft_id": AFT_NAMES,
-        "behaviour.practice_bundle": BUNDLE_ID_TO_NAME,
-        "behaviour.proposed_bundle": BUNDLE_ID_TO_NAME,
+        "behaviour.practice_bundle_id": BUNDLE_ID_TO_NAME,
+        "behaviour.proposed_bundle_id": BUNDLE_ID_TO_NAME,
         "behaviour.transition_blocker": BLOCKER_NAMES,
         "behaviour.transition_driver": DRIVER_NAMES,
     }
@@ -138,10 +144,20 @@ class Cell(lpjml.Cell, farming.Cell):
     pass
 
 
-class Country(lpjml.Country, CACountry, base.Country):
+class Country(CACountry, lpjml.Country, base.Country):
     """Country entity type with FAO data for CA capital initialization.
+    
+    Note: CACountry must come first in MRO so its update() method
+    (with compute_management_performance) is called instead of the
+    base Region.update().
     """
-    pass
+
+    output_variables = base.Output(
+        agroecological_cluster=Variable(
+            "agroecological cluster",
+            "cluster ID based on climate similarity (-1 if unassigned)",
+        ),
+    )
 
 
 class World(lpjml.World, farming.World):
@@ -161,59 +177,48 @@ class Model(lpjml.Model):
 
     def __init__(self, **kwargs):
         """Initialize an instance of World."""
-        # Initialize the parent classes first
         super().__init__(**kwargs)
 
-        # Ensure self.lpjml is initialized before accessing it
         if not hasattr(self, "lpjml") or self.lpjml is None:
             raise ValueError("lpjml must be initialized in the parent class.")
 
-        # initialize LPJmL world
+        # Convert LPJmL numeric country codes to ISO alpha-3 codes
+        # This is needed for proper country identification in outputs
+        if hasattr(self.lpjml, "code_to_name"):
+            self.lpjml.code_to_name(to_iso_alpha_3=True)
+
         self.world = World(
             model=self,
             input=self.lpjml.read_input(),
-            output=self.lpjml.read_historic_output(), # .isel(time=[-1]),
+            output=self.lpjml.read_historic_output(),
             grid=self.lpjml.grid,
-            # country_code is the array of country codes
             country_code=self.lpjml.country,
             area=self.lpjml.terr_area,
         )
 
-        # Load residue fraction data for opportunity cost calculation
-        self._load_residue_data()
+        # Initialize exogenous data from FAO and MADRaT
+        self.load_exogenous_data()
 
-        # Initialize countries if country data is available
-        if (
-            self.lpjml.country is not None
-            and hasattr(self.world, "country_code")
-            and self.world.country_code is not None
-        ):
-            self._preload_fao_data()
-            self.init_countries(country_class=Country)
-        else:
-            self.countries = []
-            print(
-                "Warning: No country data available. "
-                "Running without country-level structure."
-            )
+        # Initialize countries (social systems)
+        self.init_countries(country_class=Country)
+        
+        # Initialize agroecological clusters for tele-coupled social learning
+        self.init_agroecological_clusters()
 
-        # initialize cells
+        # Initialize cells and farmers
         self.init_cells(cell_class=Cell)
-
-        # initialize farmers (uses historic data for trend initialization)
         self.init_farmers(farmer_class=Farmer)
 
-        # After initialization, trim from_earth to single year for normal updates
-        # This is needed because we pass multi-year historic data for initialization
-        # but update_lpjml expects single-year data during the simulation loop
-        self._trim_from_earth_to_current_year()
+        # Cut off historical data (from_earth) to only the most recent year
+        self.cutoff_historical_data()
 
-    def _trim_from_earth_to_current_year(self):
-        """Trim from_earth data to only the most recent year.
+    def cutoff_historical_data(self):
+        """Cut off historical output to only the most recent year.
 
         During initialization, we pass multi-year historic output to give
         farmers initial history for trend computation. After initialization,
-        we trim back to single year so update_lpjml works correctly.
+        we cut off the historical data to single year so update_lpjml works
+        correctly.
         """
         if not hasattr(self.world, '_from_earth_data'):
             return
@@ -222,10 +227,13 @@ class Model(lpjml.Model):
         if hasattr(from_earth, 'time') and len(from_earth.time) > 1:
             # Keep only the last time step
             self.world._from_earth_data = from_earth.isel(time=[-1])
+            # Refresh cell views to point to the new (cut-off) data
+            self.refresh_cell_views()
 
     def init_farmers(self, farmer_class, **kwargs):
         """Initialize farmers for cells with crops, sorted by harvest date."""
-        farmers = []
+        # Collect cells with crops and their harvest dates
+        cells_with_hdate = []
         for cell in self.world.cells:
             has_crops = (
                 cell.from_earth.cftfrac
@@ -235,56 +243,97 @@ class Model(lpjml.Model):
             )
             if not has_crops:
                 continue
-            farmer = farmer_class(cell=cell, model=self)
-            farmers.append(farmer)
-        farmers_sorted = sorted(farmers, key=lambda farmer: farmer.avg_hdate)
-        self._farmers = farmers_sorted
+            hdate = avg_hdate(cell, self)
+            cells_with_hdate.append((cell, hdate))
 
-        # Initialize neighbourhoods
-        for farmer in farmers_sorted:
+        # Sort by harvest date for deterministic ordering
+        cells_with_hdate.sort(key=lambda x: x[1])
+
+        # Create farmers
+        farmers = []
+        for cell, _ in cells_with_hdate:
+            farmers.append(farmer_class(cell=cell, model=self))
+
+        self._farmers = farmers
+
+        # Initialize neighbourhoods (ordering preserved from avg harvest date)
+        for farmer in farmers:
             farmer.init_neighbourhood()
 
-        return farmers_sorted
+        return farmers
 
     def update(self, t):
         """Update all countries and LPJmL for year ``t``."""
         self.update_countries(t)
+
+        # Aggregate country stats for cross-border social learning
+        # This runs AFTER all country updates, so stats reflect current year
+        # and are available for NEXT year's social learning decisions
+        self.update_cluster_management_performance()
+        self.update_countries_management_performance()
+
         self.update_lpjml(t)
         # Collect outputs (if enabled in config)
         self.collect_outputs(t)
 
-    def _load_residue_data(self):
-        """Load residue fraction data for opportunity cost calculation.
+    def update_cluster_management_performance(self):
+        """Aggregate country-level stats into agroecological cluster stats.
 
-        Extracts MADRaT residue data (burnt, removed, left on field fractions)
-        for the simulation grid and stores on world.residue_fractions.
+        Called after all country updates complete. Collects
+        management_performance from each country's statistic and aggregates by
+        cluster. Results stored in world.statistic["cluster_management_performance"]
+        for tele-coupled social learning.
         """
-        try:
-            res_cfg = self.config.coupled_config.residue_economics
-            reference_year = getattr(res_cfg, 'reference_year', 2015)
-        except AttributeError:
-            reference_year = 2015
+        cluster_management_performance(self.world)
 
-        try:
-            residue_cache = ResidueData.ensure(
-                sim_path=self.config.sim_path,
-                grid=self.lpjml.grid,
-                reference_year=reference_year,
-            )
-            self.world.residue_fractions = xr.open_dataset(residue_cache)
-        except Exception as e:
-            print(f"Warning: Could not load residue data: {e}")
-            self.world.residue_fractions = None
+    def update_countries_management_performance(self):
+        """Collect all countries' management_performance for cross-border learning.
 
-    def _preload_fao_data(self):
-        """Pre-load FAO data for all countries before initialization.
+        Stores a dict mapping country_code -> management_performance in
+        world.statistic["countries_management_performance"]. This allows
+        workers in parallel mode to access neighbouring countries' stats
+        for blended social learning (own country + adjacent countries).
+        """
+        countries_stats = {}
+        for country in self.world.countries:
+            store = country.statistic.get("management_performance")
+            if store is not None:
+                countries_stats[country.country_code] = store
 
-        Must be called BEFORE init_countries() to ensure FAO data is available
-        for parallelization and to avoid issues during country initialization.
+        self.world.statistic.set("countries_management_performance", countries_stats)
+
+    def init_agroecological_clusters(self, n_clusters=None, k_range=(5, 10)):
+        """Initialize country-level agroecological clusters for tele-coupled
+        social learning across countries with similar agroecological conditions.
+
+        Clusters countries by agroecological similarity (mean + seasonal amplitude of
+        temperature, precipitation, and PET). Countries in the same cluster can
+        share social learning information.
+
+        Parameters
+        ----------
+        n_clusters : int, optional
+            Number of clusters. If None, automatically determined via elbow method.
+        k_range : tuple
+            (min_k, max_k) range for elbow search when n_clusters is None.
+        """
+        if hasattr(self, "countries"):
+            countries = list(self.countries)
+        else:
+            countries = list(self.world.countries)
+
+        init_agroecological_clusters(self.world, countries, n_clusters, k_range)
+
+    def load_exogenous_data(self):
+        """Load all exogenous data sources (FAO, MADRaT).
+
+        Stores unified accessor on world.exogenous for access at all levels.
+        Must be called BEFORE init_countries() and init_farmers().
         """
         import numpy as np
         from pycopanlpjml.model import _get_country_names
 
+        # Get ISO3 country codes
         country_values = self.world.country_code.values
         if hasattr(country_values, "compute"):
             country_values = country_values.compute()
@@ -297,16 +346,11 @@ class Model(lpjml.Model):
             if c in country_names
         ]
 
-        if not iso3_codes:
-            return
-
-        try:
-            reference_year = self.config.coupled_config.start_year
-        except AttributeError:
-            reference_year = 2020
-
-        Country.preload_fao_data(
-            self.config.sim_path,
-            iso3_codes,
-            reference_year=reference_year,
+        # Load all exogenous data sources
+        self.world.exogenous = load_exogenous(
+            sim_path=self.config.sim_path,
+            grid=self.lpjml.grid,
+            start_year=self.config.start_coupling,
+            country_codes=iso3_codes,
+            entity=self.world,
         )

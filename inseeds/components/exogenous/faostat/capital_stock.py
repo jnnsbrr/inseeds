@@ -36,7 +36,6 @@ import pandas as pd
 import xarray as xr
 
 from .base import FaoDataset
-from .dummy import generate_dummy_capital_stock
 
 
 class FaoCapitalStock(FaoDataset):
@@ -157,17 +156,3 @@ class FaoCapitalStock(FaoDataset):
             result_ds["investment_rate"].attrs["reference"] = "OECD (2009) Measuring Capital"
 
         return result_ds
-
-    @override
-    def _generate_dummy_fallback(
-        self,
-        output_path: Path,
-        years: tuple[int, int],
-    ) -> None:
-        """Generate dummy capital stock data when FAO API fails."""
-        generate_dummy_capital_stock(
-            years=years,
-            output_path=output_path,
-        )
-        print(f"  Saved DUMMY capital stock to: {output_path}")
-        print(f"  ⚠ Delete this file and provide real FAO data for production runs!")

@@ -6,32 +6,23 @@ lpjml_settings:
     # Convert country codes to readable names (uses ISO country codes)
     country_code_to_name: true
 
-# Parallelization settings for pycopanlpjml
+# Parallelization settings for country updates
+# Designed for Python 3.14+ free-threaded mode (no GIL)
 parallelization:
-    # Maximum number of workers to use (0 = auto-detect from SLURM_CPUS_ON_NODE or CPU count)
-    max_workers: 4
-    
+    # Mode: 'serial' or 'threaded'
+    # 'serial' = sequential execution (default, safe)
+    # 'threaded' = use ThreadPoolExecutor for parallel country updates
+    mode: 'serial'
+
+    # Maximum number of worker threads (0 = auto-detect from CPU count)
+    max_workers: 0
+
     # Enable debug output for parallelization
     debug: false
-    
-    # Parallelization mode ('auto', 'dask', 'mpi', 'serial')
-    # 'auto' = auto-detect (tries Dask first, then MPI, then serial)
-    # 'dask' = use Dask distributed (for HPC clusters)
-    # 'mpi' = reuse LPJmL's MPI processes (recommended if LPJmL uses MPI)
-    # 'serial' = force serial execution
-    mode: 'dask' # 'auto'
 
-# Profiling settings for pycopanlpjml
-profiling:
-    # Enable PyInstrument profiling for the driver (main) process
-    # Generates HTML profile at: {output_dir}/profiling/profiling_main_{timestamp}.html
-    driver: false
-
-    # Enable worker-side profiling (Dask performance report + PyInstrument plugin)
-    # Generates:
-    # - Dask performance report: {output_dir}/profiling/dask_workers_{timestamp}.html
-    # - Per-worker profiles: {output_dir}/profiling/workers/worker_{name}_{timestamp}.html
-    workers: false
+# Enable PyInstrument profiling for the driver (main) process
+# Generates HTML profile at: {output_dir}/profiling_{timestamp}.html
+profiling: false
 
 # Output collection settings for pycopanlpjml
 # All settings from pycopanlpjml/config.yaml are explicitly listed here
@@ -54,6 +45,10 @@ output:
     # - Country -> "country"
     # - Cell -> "cell"
     # - Farmer -> "farmer" (also accepts "individual" as alias)
+    # Country-level variables (static, written once)
+    country:
+        - "agroecological_cluster"  # Cluster ID based on climate similarity
+
     # Farmer-level variables (Farmer class uses 'farmer' as entity type)
     # Use dotted paths for nested objects (e.g., behaviour.tpb)
     farmer:
@@ -61,12 +56,12 @@ output:
         - "tillage"
         - "cover_crop"
         - "residue_on_field"
-        - "behaviour.practice_bundle"   # Current bundle ID (0-7)
-        - "behaviour.proposed_bundle"   # Bundle being evaluated (-1 if none)
-        - "behaviour.tpb"               # TPB value FOR the proposed_bundle
-        - "behaviour.attitude"          # Attitude FOR the proposed_bundle
-        - "behaviour.social_norm"       # Social norm FOR the proposed_bundle
-        - "behaviour.pbc"               # PBC FOR the proposed_bundle
+        - "behaviour.practice_bundle_id"   # Current bundle ID (0-7), settable for Dask sync
+        - "behaviour.proposed_bundle_id"   # Bundle being evaluated (-1 if none)
+        - "behaviour.tpb"               # TPB value FOR the proposed_bundle_id
+        - "behaviour.attitude"          # Attitude FOR the proposed_bundle_id
+        - "behaviour.social_norm"       # Social norm FOR the proposed_bundle_id
+        - "behaviour.pbc"               # PBC FOR the proposed_bundle_id
         - "behaviour.transition_blocker"    # Primary reason for blocked transition (0-12), label in 'label' column
         - "behaviour.transition_driver"     # Primary reason for successful transition (0-9), label in 'label' column
         - "capital"                     # Farm capital stock (USD, scaled by farm size)
@@ -129,6 +124,17 @@ residue_economics:
 control_run: False
 pioneer_share: 0.25
 
+# Agroecological country clustering for tele-coupled social learning
+# Countries with similar agroecological conditions share social learning signals
+agroecological_clustering:
+    # Number of clusters. null = auto-determine via elbow method
+    n_clusters: null
+    # Range to search for optimal k when n_clusters is null
+    k_range: [5, 15]
+    # Years between reclustering (for agroecological change scenarios)
+    # Set to null to cluster only once at initialization
+    recalculate_interval: null
+
 # Farm economics (USD per hectare)
 # Note: Values are per hectare to match LPJmL spatial resolution
 # Average farm sizes vary: USA ~180 ha, EU median ~5 ha (Our World in Data, 2020)
@@ -141,9 +147,30 @@ farm_economics:
     # Survival buffer: years of depreciation farmer can sustain before crisis
     # Based on USDA farm financial indicators (Katchova & Dinterman 2018)
     n_survival_years: 1
-    # Savings rate: fraction of net profit reinvested into farm capital
+    # Savings rate: fraction of gross profit reinvested into farm capital
     # Literature: 10-30% range (Lowder et al. 2016; FAO 2017)
-    savings_rate: 0.15
+    # Higher values (0.30) needed for capital stability with LPJmL revenue levels
+    savings_rate: 0.30
+    #
+    # Effective depreciation rate: calibrated rate accounting for capital composition
+    # -------------------------------------------------------------------------------
+    # FAO Capital Stock includes land (~65%), buildings (~20%), machinery (~15%)
+    # [USDA ERS 2022: land = 83% of US farm assets]
+    #
+    # Depreciation rates by asset type (OECD 2009; Eurostat 2013):
+    #   - Land: 0% (does not depreciate, often appreciates)
+    #   - Buildings: 2-5%/year (40-50 year service life)
+    #   - Machinery: 10-15%/year (7-10 year service life)
+    #
+    # FAO aggregate rate (~8%) reflects machinery-heavy weighting, but when applied
+    # to total capital (including land), the effective rate should be:
+    #   0.65×0% + 0.20×3% + 0.15×12% ≈ 2.4%
+    #
+    # We use 1.2% as a conservative estimate that ensures capital stability with
+    # LPJmL-derived revenue levels (which are ~50% of real-world intensive agriculture).
+    #
+    # Set to null to use FAO country-specific rate (not recommended without calibration)
+    effective_depreciation_rate: 0.012
 
 # Practice costs (USD per hectare)
 # Sources cited after values; to be refined with regional FAO/FAOSTAT data
@@ -175,7 +202,19 @@ tpb_thresholds:
     # After transitioning, they commit to observing results for this many years (mean)
     # Actual interval is randomized: normal(evaluation_interval, evaluation_interval/2)
     # Literature: Farm planning cycles typically 5-10 years (Pannell et al. 2006)
-    evaluation_interval: 1  # Mean years between practice re-evaluations
+    evaluation_interval: 5  # Mean years between practice re-evaluations
+    # Cross-border social learning: blend own country stats with neighbouring countries
+    # Weight for neighbouring countries' influence (0.0 = no cross-border, 0.5 = equal)
+    # Own country weight = 1.0 - neighbour_country_weight
+    neighbour_country_weight: 0.25  # 25% neighbours, 75% own country
+
+# Spreading level toggles for social learning
+# Allows enabling/disabling each level of spreading for testing or single-country runs
+# When a level is disabled, its weight is redistributed to enabled levels
+spreading_levels:
+    enable_local: true       # Neighbour-based spreading (attitude + social norm)
+    enable_country: true     # Country-level spreading (attitude + social norm)
+    enable_cluster: true    # Agroecological cluster spreading (set false for single-country runs)
 
 # Analogous to LPJmL pftpar, define the AFT parameters for the two different
 #   farmer types
@@ -194,16 +233,19 @@ aftpar:
         # Local vs country weighting for social components
         # Local effects (neighbours) typically dominate over country-level influence
         # because neighbours share similar ecological/cultural conditions
-        weight_social_norm_local: 0.8      # Traditionalists rely more on local community
+        weight_social_norm_local: 0.7      # Traditionalists rely more on local community
         weight_social_norm_country: 0.2    # Less influenced by distant farmers
-        weight_attitude_local: 0.8         # Local social learning dominates
+        weight_social_norm_cluster: 0.1    # Minimal cross-border influence
+        weight_attitude_local: 0.7         # Local social learning dominates
         weight_attitude_country: 0.2       # Country-level less influential
+        weight_attitude_cluster: 0.1       # Minimal cross-border learning
         # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
         # Adoption fraction at which the practice feels "normative" (neutral).
         # Below threshold -> social drag; above -> social boost.
         # Traditionalists require broad uptake before a practice feels normal.
-        threshold_social_norm_local: 0.15    # 20% of neighbours = neutral
-        threshold_social_norm_country: 0.2  # 30% of country = neutral
+        threshold_social_norm_local: 0.20    # 20% of neighbours = neutral
+        threshold_social_norm_country: 0.30  # 30% of country = neutral
+        threshold_social_norm_cluster: 0.25  # 25% of climate-similar countries = neutral
         # Learning inertia / hysteresis parameters
         min_observation_years: 3    # Minimum years before considering transition
         # Similarity weights for social learning
@@ -214,8 +256,8 @@ aftpar:
         memory_decay_years: 30      # When old memories are forgotten
         fallback_years: 10          # Consecutive decline years to trigger revert
         # Exploration parameters (Rogers 2003)
-        exploration_base_prob: 0.01 # Base probability of random exploration
-        poor_performance_threshold: 0.3  # Score below which exploration doubles
+        exploration_base_prob: 0.02 # Base probability of random exploration (doubled from 0.01)
+        poor_performance_threshold: 0.01  # Weighted score below which exploration doubles
         poor_performance_multiplier: 2.0 # Multiplier for poor performers
         max_exploration_prob: 0.15  # Cap on exploration probability
 
@@ -223,25 +265,28 @@ aftpar:
     #   regenerative agriculture practices
     pioneer:
         pbc_base: 0.85  # base perceived behavioral control (captures risk aversion)
-        weight_attitude: 0.9
+        weight_attitude: 0.8
         weight_yield: 0.5 # Still need to make money
         weight_soil: 0.25 # More educated about long-term
         weight_moisture: 0.25  # Same drought concern
-        weight_norm: 0.1  # Rogers "Innovators/Early Adopters": low but non-zero
+        weight_norm: 0.2  # Rogers "Innovators/Early Adopters": low but non-zero
         weight_social_learning: 0.6
         weight_own_land: 0.4
         # Local vs country weighting for social components
         # Pioneers are more open to learning from distant farmers (early adopters)
         # and less bound by local community norms (Rogers 2003)
-        weight_social_norm_local: 0.6      # Still important but less dominant
-        weight_social_norm_country: 0.4    # More open to country-level trends
-        weight_attitude_local: 0.6         # Local social learning still relevant
-        weight_attitude_country: 0.4       # More willing to learn from afar
+        weight_social_norm_local: 0.5      # Still important but less dominant
+        weight_social_norm_country: 0.3    # More open to country-level trends
+        weight_social_norm_cluster: 0.2    # Open to cross-border influence
+        weight_attitude_local: 0.5         # Local social learning still relevant
+        weight_attitude_country: 0.3       # More willing to learn from afar
+        weight_attitude_cluster: 0.2       # Open to cross-border learning
         # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
         # Pioneers feel "normed" at much lower adoption fractions than
         # traditionalists - they interpret early signals as sufficient.
-        threshold_social_norm_local: 0.05    # 10% of neighbours = neutral
-        threshold_social_norm_country: 0.08  # 15% of country = neutral
+        threshold_social_norm_local: 0.10    # 10% of neighbours = neutral
+        threshold_social_norm_country: 0.15  # 15% of country = neutral
+        threshold_social_norm_cluster: 0.12  # 12% of climate-similar countries = neutral
         # Learning inertia / hysteresis parameters
         min_observation_years: 2    # Pioneers need less observation time
         # Similarity weights for social learning
@@ -252,7 +297,7 @@ aftpar:
         memory_decay_years: 25      # Pioneers forget old experiences faster
         fallback_years: 8           # Pioneers revert sooner if things go badly
         # Exploration parameters (Rogers 2003)
-        exploration_base_prob: 0.05 # Pioneers explore more
-        poor_performance_threshold: 0.3  # Score below which exploration doubles
+        exploration_base_prob: 0.12 # Pioneers explore much more (doubled+ from 0.05)
+        poor_performance_threshold: 0.01  # Weighted score below which exploration doubles
         poor_performance_multiplier: 2.0 # Multiplier for poor performers
-        max_exploration_prob: 0.20  # Higher cap for pioneers
+        max_exploration_prob: 0.25  # Higher cap for pioneers

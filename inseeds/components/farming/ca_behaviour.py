@@ -1,26 +1,153 @@
-"""TPB-based decision model for multi-practice Conservation Agriculture adoption.
+"""Theory of Planned Behaviour (TPB) decision model for Conservation Agriculture.
 
-Implements Theory of Planned Behaviour (Ajzen 1991) for Conservation Agriculture
-decisions over three practices: tillage (conventional vs no-till), cover crop,
-and residue retention.
+This module implements how farmers decide whether to adopt or abandon
+agricultural practices. It uses the Theory of Planned Behaviour framework
+combined with social learning and adaptive management.
 
-Key features:
-- Social learning from neighbours (Bandura 1977)
-- Own-experience memory with decay
-- Fallback to previous practices under sustained decline (adaptive management)
-- Affordability constraints on practice adoption
+Overview
+--------
+Each year, farmers may reconsider their practices based on:
+1. **Attitude**: "Do I think this practice is good?" (own experience + social learning)
+2. **Social Norm**: "Are my neighbors doing it?" (local + country + cluster)
+3. **Perceived Behavioral Control (PBC)**: "Can I afford it?"
 
-References:
-- Ajzen, I. (1991). The theory of planned behavior. Organizational Behavior
-  and Human Decision Processes, 50(2), 179-211.
-- Bandura, A. (1977). Social Learning Theory. Prentice Hall.
-- Holling, C.S. (1978). Adaptive Environmental Assessment and Management.
+These combine into a TPB intention score. If it exceeds a threshold, the
+farmer transitions to the new practice.
+
+Decision Flow
+-------------
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    Annual Update                             │
+    ├─────────────────────────────────────────────────────────────┤
+    │  1. Check if evaluation time (not every year)               │
+    │  2. Check fallback (sustained decline → revert)             │
+    │  3. Find target bundle:                                     │
+    │     a. Local neighbor with better performance?              │
+    │     b. Country-level best bundle?                           │
+    │     c. Cluster-level best bundle?                           │
+    │     d. Random exploration?                                  │
+    │  4. Adjust for affordability                                │
+    │  5. Compute TPB score                                       │
+    │  6. If TPB > threshold → transition                         │
+    └─────────────────────────────────────────────────────────────┘
+
+Key Classes
+-----------
+DecisionModel
+    Abstract base class for farmer decision models.
+TPB
+    Full TPB implementation with social learning at three spatial scales.
+
+Transition Blockers and Drivers
+-------------------------------
+The model tracks WHY transitions happen (or don't). See BLOCKER_* and DRIVER_*
+constants for the full list of codes. This enables analysis of adoption barriers.
+
+Spatial Scales of Social Learning
+---------------------------------
+- **Local**: Direct neighbor comparison (highest weight)
+- **Country**: Average performance across the country
+- **Cluster**: Average across agroecologically similar countries
+
+References
+----------
+.. [1] Ajzen, I. (1991). The theory of planned behavior. Organizational Behavior
+       and Human Decision Processes, 50(2), 179-211.
+.. [2] Bandura, A. (1977). Social Learning Theory. Prentice Hall.
+.. [3] Holling, C.S. (1978). Adaptive Environmental Assessment and Management.
+
+See Also
+--------
+ca_management : Practice bundles and performance tracking
+ca_country : Country-level aggregation
+ca_agroecology : Cluster-level aggregation
 """
 
 from abc import ABC, abstractmethod
+import logging
+
 import numpy as np
 
 from inseeds.components.farming.farmer import sigmoid, NON_CROPS
+
+logger = logging.getLogger(__name__)
+from inseeds.components.farming.ca_management import (
+    ManagementBundle,
+    ManagementPerformanceMemory,
+    ManagementPerformanceTracker,
+    PRACTICE_FIELDS,
+    RegionManagementPerformanceStore,
+)
+
+
+def _country_performance_store(country) -> RegionManagementPerformanceStore | None:
+    """Return country management performance store if available, None otherwise."""
+    store = country.statistic.get("management_performance")
+    if isinstance(store, RegionManagementPerformanceStore):
+        return store
+    return None
+
+
+def redistribute_weights(
+    weight_local: float,
+    weight_country: float,
+    weight_cluster: float,
+    enable_local: bool = True,
+    enable_country: bool = True,
+    enable_cluster: bool = True,
+) -> tuple[float, float, float]:
+    """Redistribute weights among enabled spreading levels.
+
+    When a level is disabled, its weight is redistributed proportionally
+    to the enabled levels so the total remains the same. This ensures
+    that disabling a level (e.g., cluster for single-country runs) doesn't
+    drag down scores with neutral values.
+
+    Parameters
+    ----------
+    weight_local : float
+        Weight for local (neighbour) level.
+    weight_country : float
+        Weight for country level.
+    weight_cluster : float
+        Weight for agroecological cluster level.
+    enable_local : bool
+        Whether local spreading is enabled.
+    enable_country : bool
+        Whether country spreading is enabled.
+    enable_cluster : bool
+        Whether cluster spreading is enabled.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        Redistributed weights (local, country, cluster).
+
+    Example
+    -------
+    >>> redistribute_weights(0.7, 0.2, 0.1, True, True, False)
+    (0.7778, 0.2222, 0.0)  # Cluster weight redistributed to local + country
+    """
+    weights = [
+        (weight_local, enable_local),
+        (weight_country, enable_country),
+        (weight_cluster, enable_cluster),
+    ]
+
+    enabled_sum = sum(w for w, enabled in weights if enabled)
+
+    if enabled_sum == 0:
+        return (0.0, 0.0, 0.0)
+
+    original_total = weight_local + weight_country + weight_cluster
+    scale = original_total / enabled_sum
+
+    return (
+        weight_local * scale if enable_local else 0.0,
+        weight_country * scale if enable_country else 0.0,
+        weight_cluster * scale if enable_cluster else 0.0,
+    )
+
 
 # =============================================================================
 # PRACTICE BUNDLE DEFINITIONS
@@ -34,26 +161,6 @@ from inseeds.components.farming.farmer import sigmoid, NON_CROPS
 #
 # Full CA = (0, 1, 1): no-till + cover crops + residue retention
 
-BUNDLE_NAMES = {
-    (0, 0, 0): "notill_only",         # No-till without cover/residue (risky)
-    (0, 0, 1): "notill_residue",      # No-till + residue (common CA entry)
-    (0, 1, 0): "notill_cover_crop",   # No-till + cover (needs residue ideally)
-    (0, 1, 1): "conservation",        # Full Conservation Agriculture
-    (1, 0, 0): "conventional",        # All conventional practices
-    (1, 0, 1): "residue_only",        # Conventional tillage + residue retention
-    (1, 1, 0): "cover_crop_only",     # Conventional tillage + cover crops
-    (1, 1, 1): "cover_crop_residue",  # Conventional tillage + cover + residue
-}
-
-# Reverse lookup: name → tuple
-BUNDLE_TUPLES = {v: k for k, v in BUNDLE_NAMES.items()}
-
-# Numeric IDs for output/analysis (0-7)
-BUNDLE_IDS = {
-    (0, 0, 0): 0, (0, 0, 1): 1, (0, 1, 0): 2, (0, 1, 1): 3,
-    (1, 0, 0): 4, (1, 0, 1): 5, (1, 1, 0): 6, (1, 1, 1): 7,
-}
-
 # Transition blocker codes - indicates WHY a proposed bundle was not adopted
 # These follow the decision flow order (first blocker hit is the primary reason)
 BLOCKER_NONE = 0                    # No blocker - transition happened or maintaining current
@@ -65,13 +172,16 @@ BLOCKER_TARGET_UNAFFORDABLE = 5     # Target reduced to current due to cost
 BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND = 6         # TPB low - own land attitude is limiting
 BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL = 7     # TPB low - LOCAL social learning is limiting
 BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY = 14  # TPB low - COUNTRY social learning is limiting
+BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER = 16  # TPB low - CLUSTER social learning is limiting
 BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL = 8         # TPB low - LOCAL social norm is limiting
 BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY = 15      # TPB low - COUNTRY social norm is limiting
+BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER = 17      # TPB low - CLUSTER social norm is limiting
 BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC (cost affordability) is limiting
 BLOCKER_TRANSITION_UNAFFORDABLE = 10 # Can't afford transition cost
 BLOCKER_CAPITAL_SURVIVAL = 11       # Capital below survival threshold
 BLOCKER_CONTROL_RUN = 12            # Control run - no CA dynamics
 BLOCKER_EVALUATION_TIME = 13        # Not yet time to re-evaluate (commitment period)
+BLOCKER_AFFORDABILITY_FORCED = 18   # Practices deselected due to unaffordable direct costs
 
 BLOCKER_NAMES = {
     BLOCKER_NONE: "none",
@@ -83,13 +193,16 @@ BLOCKER_NAMES = {
     BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND: "tpb_low_attitude_own_land",
     BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL: "tpb_low_attitude_social_local",
     BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY: "tpb_low_attitude_social_country",
+    BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER: "tpb_low_attitude_social_cluster",
     BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL: "tpb_low_social_norm_local",
     BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY: "tpb_low_social_norm_country",
+    BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER: "tpb_low_social_norm_cluster",
     BLOCKER_TPB_LOW_PBC: "tpb_low_pbc",
     BLOCKER_TRANSITION_UNAFFORDABLE: "transition_unaffordable",
     BLOCKER_CAPITAL_SURVIVAL: "capital_survival",
     BLOCKER_CONTROL_RUN: "control_run",
     BLOCKER_EVALUATION_TIME: "evaluation_time",
+    BLOCKER_AFFORDABILITY_FORCED: "affordability_forced",
 }
 
 # Transition driver codes - indicates WHY a transition succeeded (mirror of blocker)
@@ -118,9 +231,20 @@ DRIVER_COUNTRY_PBC = 13                      # TPB passed, PBC (cost affordabili
 DRIVER_EXPLORATION_ATTITUDE_OWN_LAND = 14    # TPB passed, attitude_own_land was strongest
 DRIVER_EXPLORATION_ATTITUDE_SOCIAL_LOCAL = 15  # TPB passed, local social learning was strongest
 DRIVER_EXPLORATION_ATTITUDE_SOCIAL_COUNTRY = 16  # TPB passed, country social learning was strongest
+DRIVER_EXPLORATION_ATTITUDE_SOCIAL_CLUSTER = 20  # TPB passed, cluster social learning was strongest
 DRIVER_EXPLORATION_SOCIAL_NORM_LOCAL = 17    # TPB passed, local social norm was strongest
 DRIVER_EXPLORATION_SOCIAL_NORM_COUNTRY = 18  # TPB passed, country social norm was strongest
+DRIVER_EXPLORATION_SOCIAL_NORM_CLUSTER = 21  # TPB passed, cluster social norm was strongest
 DRIVER_EXPLORATION_PBC = 19                  # TPB passed, PBC (cost affordability) was strongest
+
+# Additional cluster-level drivers for LOCAL and COUNTRY pathways
+DRIVER_LOCAL_ATTITUDE_SOCIAL_CLUSTER = 22    # TPB passed, cluster social learning was strongest (local pathway)
+DRIVER_LOCAL_SOCIAL_NORM_CLUSTER = 23        # TPB passed, cluster social norm was strongest (local pathway)
+DRIVER_COUNTRY_ATTITUDE_SOCIAL_CLUSTER = 24  # TPB passed, cluster social learning was strongest (country pathway)
+DRIVER_COUNTRY_SOCIAL_NORM_CLUSTER = 25      # TPB passed, cluster social norm was strongest (country pathway)
+
+# Forced transitions (bypass TPB)
+DRIVER_AFFORDABILITY_FORCED = 26             # Practices deselected due to unaffordable direct costs
 
 DRIVER_NAMES = {
     DRIVER_NONE: "none",
@@ -129,23 +253,31 @@ DRIVER_NAMES = {
     DRIVER_LOCAL_ATTITUDE_OWN_LAND: "local_attitude_own_land",
     DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL: "local_attitude_social_local",
     DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY: "local_attitude_social_country",
+    DRIVER_LOCAL_ATTITUDE_SOCIAL_CLUSTER: "local_attitude_social_cluster",
     DRIVER_LOCAL_SOCIAL_NORM_LOCAL: "local_social_norm_local",
     DRIVER_LOCAL_SOCIAL_NORM_COUNTRY: "local_social_norm_country",
+    DRIVER_LOCAL_SOCIAL_NORM_CLUSTER: "local_social_norm_cluster",
     DRIVER_LOCAL_PBC: "local_pbc",
     # Country pathway (country-level inspiration)
     DRIVER_COUNTRY_ATTITUDE_OWN_LAND: "country_attitude_own_land",
     DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL: "country_attitude_social_local",
     DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY: "country_attitude_social_country",
+    DRIVER_COUNTRY_ATTITUDE_SOCIAL_CLUSTER: "country_attitude_social_cluster",
     DRIVER_COUNTRY_SOCIAL_NORM_LOCAL: "country_social_norm_local",
     DRIVER_COUNTRY_SOCIAL_NORM_COUNTRY: "country_social_norm_country",
+    DRIVER_COUNTRY_SOCIAL_NORM_CLUSTER: "country_social_norm_cluster",
     DRIVER_COUNTRY_PBC: "country_pbc",
     # Exploration pathway (random exploration)
     DRIVER_EXPLORATION_ATTITUDE_OWN_LAND: "exploration_attitude_own_land",
     DRIVER_EXPLORATION_ATTITUDE_SOCIAL_LOCAL: "exploration_attitude_social_local",
     DRIVER_EXPLORATION_ATTITUDE_SOCIAL_COUNTRY: "exploration_attitude_social_country",
+    DRIVER_EXPLORATION_ATTITUDE_SOCIAL_CLUSTER: "exploration_attitude_social_cluster",
     DRIVER_EXPLORATION_SOCIAL_NORM_LOCAL: "exploration_social_norm_local",
     DRIVER_EXPLORATION_SOCIAL_NORM_COUNTRY: "exploration_social_norm_country",
+    DRIVER_EXPLORATION_SOCIAL_NORM_CLUSTER: "exploration_social_norm_cluster",
     DRIVER_EXPLORATION_PBC: "exploration_pbc",
+    # Forced transitions
+    DRIVER_AFFORDABILITY_FORCED: "affordability_forced",
 }
 
 
@@ -164,7 +296,7 @@ class DecisionModel(ABC):
     Subclasses implement specific decision logic (e.g., TPB).
     """
 
-    def _get_aft_param(self, param_name):
+    def get_aft_param(self, param_name):
         """Get AFT parameter from agent, raising error if missing.
 
         Parameters
@@ -180,28 +312,28 @@ class DecisionModel(ABC):
         Raises
         ------
         AttributeError
-            If the parameter is not defined on the agent (missing from config).
+            If the parameter is not defined on the farmer agent (missing from config).
         """
-        if not hasattr(self.agent, param_name):
-            aft_name = getattr(self.agent.aft, "name", "unknown")
+        if not hasattr(self.farmer, param_name):
+            aft_name = getattr(self.farmer.aft, "name", "unknown")
             raise AttributeError(
                 f"Missing AFT parameter '{param_name}' for AFT '{aft_name}'. "
                 f"Add it to config.yaml under aftpar.{aft_name}.{param_name}"
             )
-        return getattr(self.agent, param_name)
+        return getattr(self.farmer, param_name)
 
-    def __init__(self, agent):
-        """Initialize decision model from agent's current practices.
+    def __init__(self, farmer):
+        """Initialize decision model from farmer's current practices.
 
         Parameters
         ----------
-        agent : ConservationAgricultureFarmer
+        farmer : ConservationAgricultureFarmer
             The farmer agent owning this behaviour.
         """
-        self.agent = agent
+        self.farmer = farmer
 
         # -----------------------------------------------------------------
-        # Initialize current practice bundle from agent state
+        # Initialize current practice bundle from farmer agent state
         # -----------------------------------------------------------------
         # Bundle is a tuple: (tillage, cover_crop, residue_on_field)
         # Each element is 0 (practice OFF) or 1 (practice ON)
@@ -213,301 +345,76 @@ class DecisionModel(ABC):
         #   residue: 1 if litter cover >= CA threshold (30%), 0 otherwise
 
         # Get CA cover threshold from config
-        ca_threshold = agent.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
+        ca_threshold = farmer.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
 
-        self._practice_bundle = (
-            int(agent.tillage),
-            1 if agent.cover_crop > 0 else 0,
-            1 if agent.litter_cover >= ca_threshold else 0,
+        self.practice_bundle = ManagementBundle.from_practices(
+            int(farmer.tillage),
+            1 if farmer.cover_crop > 0 else 0, # TODO: change to cover_crop type: 0 = none, 1 = catch crop, 2 = legume
+            1 if farmer.litter_cover >= ca_threshold else 0,
         )
 
         # Proposed bundle for potential transition (set by update())
-        self._proposed_bundle = None
+        self.proposed_bundle = None
 
         # Previous bundle (for fallback mechanism)
-        self._previous_bundle = None
+        self.previous_bundle = None
 
         # Counter for consecutive years of declining performance
-        self._decline_years = 0
+        self.decline_years = 0
+
+        # Online regression state for trend computation since last transition
+        self.performance_tracker = ManagementPerformanceTracker.from_farmer(farmer)
 
         # -----------------------------------------------------------------
-        # Online regression state for trend computation
+        # Initialize management bundle memory
         # -----------------------------------------------------------------
-        # Instead of storing full history, we track running sums for online
-        # linear regression. This allows computing trends from all data points
-        # without storing them.
-        #
-        # For y = a + b*t, slope b = (n*sum_ty - sum_t*sum_y) / (n*sum_tt - sum_t²)
-        # We track separate sums for soil, moisture, and yield.
-
-        t_start, history = self._get_initial_state(agent)
-
-        self.current_state = {
-            "t_start": t_start,           # Year of last practice transition
-            "baseline_score": 0.0,        # Weighted score at transition (for fallback)
-            # Online regression accumulators (initialized from history if available)
-            "n": 0,                        # Number of observations
-            "sum_t": 0.0,                  # Sum of time indices
-            "sum_tt": 0.0,                 # Sum of t²
-            "sum_soil": 0.0,               # Sum of soil values
-            "sum_t_soil": 0.0,             # Sum of t * soil
-            "sum_moisture": 0.0,           # Sum of moisture values
-            "sum_t_moisture": 0.0,         # Sum of t * moisture
-            "sum_yield": 0.0,              # Sum of yield values
-            "sum_t_yield": 0.0,            # Sum of t * yield
-            "last_obs_year": -1,          # Last year observation was added (prevent duplicates)
-        }
-
-        # Initialize accumulators with historic data if available
-        self._initialize_regression_state(agent, history)
-
-        # -----------------------------------------------------------------
-        # Initialize per-bundle memory
-        # -----------------------------------------------------------------
-        # Farmers remember outcomes from each bundle they've tried
+        # Farmers remembers performance from each bundle they've tried
         # Memory includes: trends, duration used, when last updated, failure count
 
-        self.bundle_memory = {
-            (t, c, r): {
-                "trend_soil": 0.0,      # Annual soil C change (gC/m²/yr)
-                "trend_moisture": 0.0,  # Annual moisture change
-                "trend_yield": 0.0,     # Annual yield change
-                "duration": 0,          # Years this bundle was used
-                "last_updated": 0,      # Year memory was last updated
-                "failure_count": 0,     # Times this bundle led to fallback
-            }
-            for t in (0, 1) for c in (0, 1) for r in (0, 1)
-        }
+        current_year = self.farmer.model.lpjml.sim_year
+        self.performance_memory = ManagementPerformanceMemory(
+            self.practice_bundle,
+            self.performance_tracker,
+            current_year,
+        )
 
-        # -----------------------------------------------------------------
-        # Initialize memory for current bundle with historic data
-        # -----------------------------------------------------------------
-        # If we have historic data, compute the trend for the current bundle
-        # so farmers start with meaningful memory (not all zeros)
-        self._initialize_current_bundle_memory()
-
-    # -------------------------------------------------------------------------
-    # Initialization helpers
-    # -------------------------------------------------------------------------
-
-    def _get_initial_state(self, agent):
-        """Get initial t_start and historic time series for trend computation.
-
-        If historic output data is available (from_earth has multiple time steps),
-        use config.outputyear as t_start and return the full time series for
-        soil, moisture, and yield. This allows computing proper regression-based
-        trends from all data points.
-
-        Otherwise, use current sim_year and return current values as single-point
-        history.
-
-        Parameters
-        ----------
-        agent : Farmer
-            The farmer agent being initialized.
-
-        Returns
-        -------
-        tuple[int, list[dict]]
-            (t_start, [{"soilc": float, "moisture": float, "yield": float}, ...])
-            List contains one dict per year of history.
-        """
-        from_earth = agent.cell.from_earth
-        has_history = hasattr(from_earth, 'time') and len(from_earth.time) > 1
-
-        if has_history:
-            try:
-                t_start = int(agent.model.config.outputyear)
-            except AttributeError:
-                t_start = agent.model.lpjml.sim_year
-                has_history = False
-
-        if has_history:
-            # Extract full time series for regression
-            n_years = len(from_earth.time)
-            history = []
-            for i in range(n_years):
-                history.append({
-                    "soilc": agent._get_from_earth("soilc_agr_layer", as_scalar=True, band=0, time_idx=i),
-                    "moisture": agent._get_from_earth("rootmoist_agr", as_scalar=True, time_idx=i),
-                    "yield": agent._get_from_earth("harvestc", as_scalar=True, time_idx=i),
-                })
-        else:
-            # No history: single observation at current year
-            t_start = agent.model.lpjml.sim_year
-            history = [{
-                "soilc": agent.soilc,
-                "moisture": agent.root_moisture,
-                "yield": agent.cropyield,
-            }]
-
-        return t_start, history
-
-    def _initialize_regression_state(self, agent, history):
-        """Initialize online regression accumulators from historic data.
-
-        Parameters
-        ----------
-        agent : Farmer
-            The farmer agent.
-        history : list[dict]
-            List of {"soilc", "moisture", "yield"} dicts, one per year.
-        """
-        state = self.current_state
-        for i, obs in enumerate(history):
-            t = i  # Time index (0, 1, 2, ...)
-            state["n"] += 1
-            state["sum_t"] += t
-            state["sum_tt"] += t * t
-            state["sum_soil"] += obs["soilc"]
-            state["sum_t_soil"] += t * obs["soilc"]
-            state["sum_moisture"] += obs["moisture"]
-            state["sum_t_moisture"] += t * obs["moisture"]
-            state["sum_yield"] += obs["yield"]
-            state["sum_t_yield"] += t * obs["yield"]
-
-        # Mark current year as already observed (history includes up to sim_year)
-        state["last_obs_year"] = agent.model.lpjml.sim_year
-
-    def _add_observation(self, soilc, moisture, cropyield):
-        """Add a new observation to the online regression accumulators.
-
-        Called each year to update the running sums for trend computation.
-        Skips if observation for current year was already added (e.g., from
-        historic initialization).
-
-        Parameters
-        ----------
-        soilc : float
-            Current soil carbon value.
-        moisture : float
-            Current root moisture value.
-        cropyield : float
-            Current crop yield value.
-        """
-        current_year = self.agent.model.lpjml.sim_year
-        state = self.current_state
-
-        # Skip if we already have an observation for this year
-        if state["last_obs_year"] >= current_year:
-            return
-
-        t = state["n"]  # Next time index
-        state["n"] += 1
-        state["sum_t"] += t
-        state["sum_tt"] += t * t
-        state["sum_soil"] += soilc
-        state["sum_t_soil"] += t * soilc
-        state["sum_moisture"] += moisture
-        state["sum_t_moisture"] += t * moisture
-        state["sum_yield"] += cropyield
-        state["sum_t_yield"] += t * cropyield
-        state["last_obs_year"] = current_year
-
-    def _compute_slope(self, sum_y, sum_ty):
-        """Compute regression slope from running sums.
-
-        Parameters
-        ----------
-        sum_y : float
-            Sum of y values.
-        sum_ty : float
-            Sum of t * y values.
-
-        Returns
-        -------
-        float
-            Slope (trend) of the regression line, or 0.0 if insufficient data.
-        """
-        state = self.current_state
-        n = state["n"]
-        if n < 2:
-            return 0.0
-
-        sum_t = state["sum_t"]
-        sum_tt = state["sum_tt"]
-        denominator = n * sum_tt - sum_t * sum_t
-
-        if abs(denominator) < 1e-10:
-            return 0.0
-
-        return (n * sum_ty - sum_t * sum_y) / denominator
-
-    def _initialize_current_bundle_memory(self):
-        """Initialize bundle_memory for current bundle from regression state.
-
-        Uses the computed trends from the online regression to populate
-        the bundle_memory entry for the current practice bundle.
-        Also sets baseline_score for fallback comparison.
-        """
-        n = self.current_state["n"]
-        if n < 2:
-            return
-
-        current_year = self.agent.model.lpjml.sim_year
-        trend = self.current_trend
-
-        # Set baseline_score from historic trend (for fallback comparison)
-        self.current_state["baseline_score"] = self._weighted_score(trend)
-
-        self.bundle_memory[self._practice_bundle] = {
-            "trend_soil": trend["soil"],
-            "trend_moisture": trend["moisture"],
-            "trend_yield": trend["yield"],
-            "duration": n,
-            "last_updated": current_year,
-            "failure_count": 0,
-        }
-
-    def _update_current_bundle_memory(self):
-        """Update bundle_memory for current bundle with latest trends.
-
-        Called every year to keep bundle_memory up-to-date. This ensures
-        neighbours see current performance when evaluating which bundle
-        to imitate, not stale data from the last transition.
-        """
-        n = self.current_state["n"]
-        if n < 2:
-            return
-
-        trend = self.current_trend
-        current_year = self.agent.model.lpjml.sim_year
-
-        # Preserve failure_count from existing memory
-        old_fc = self.bundle_memory[self._practice_bundle].get("failure_count", 0)
-
-        self.bundle_memory[self._practice_bundle].update({
-            "trend_soil": trend["soil"],
-            "trend_moisture": trend["moisture"],
-            "trend_yield": trend["yield"],
-            "duration": n,
-            "last_updated": current_year,
-            "failure_count": old_fc,
-        })
+        # Initialize baseline score for fallback comparison
+        if self.performance_tracker.n > 1:
+            self.performance_tracker.baseline_score = (
+                self.performance_tracker.weighted_score(self.farmer)
+            )
 
     # -------------------------------------------------------------------------
     # Properties for external access
     # -------------------------------------------------------------------------
 
     @property
-    def practice_bundle(self):
-        """Current bundle as numeric ID (0-7)."""
-        return BUNDLE_IDS.get(self._practice_bundle, -1)
+    def practice_bundle_id(self):
+        """Current practice bundle as numeric ID (0-7).
+
+        This property is settable for Dask actor synchronization.
+        Setting it converts the ID back to a ManagementBundle enum.
+        """
+        return self.practice_bundle.id if self.practice_bundle else -1
+
+    @practice_bundle_id.setter
+    def practice_bundle_id(self, value):
+        """Set practice bundle from numeric ID.
+
+        Used by Dask actor sync to restore bundle state on driver.
+        """
+        if value is not None and value >= 0:
+            self.practice_bundle = ManagementBundle.from_id(int(value))
 
     @property
-    def practice_bundle_name(self):
-        """Current bundle as human-readable name."""
-        return BUNDLE_NAMES.get(self._practice_bundle, "unknown")
-
-    @property
-    def proposed_bundle(self):
-        """Proposed bundle as numeric ID (-1 if none)."""
-        return BUNDLE_IDS.get(self._proposed_bundle, -1) if self._proposed_bundle else -1
-
-    @property
-    def proposed_bundle_name(self):
+    def proposed_bundle_label(self):
         """Proposed bundle as human-readable name."""
-        return BUNDLE_NAMES.get(self._proposed_bundle, "unknown") if self._proposed_bundle else ""
+        return self.proposed_bundle.label if self.proposed_bundle else ""
+
+    @property
+    def proposed_bundle_id(self):
+        """Proposed bundle as numeric ID (-1 if none)."""
+        return self.proposed_bundle.id if self.proposed_bundle else -1
 
     @property
     def transition_blocker(self):
@@ -539,36 +446,6 @@ class DecisionModel(ABC):
         return DRIVER_NAMES.get(self.transition_driver, "unknown")
 
     # -------------------------------------------------------------------------
-    # Trend computation
-    # -------------------------------------------------------------------------
-
-    @property
-    def current_trend(self):
-        """Annual change in soil C, moisture, and yield since last transition.
-
-        Computes trends using linear regression over all observations since
-        the last practice transition, not just start and end points. This provides
-        more robust trend estimates that are less sensitive to noise.
-
-        Returns
-        -------
-        dict
-            Keys: 'soil', 'moisture', 'yield'. Values: annual rate of change
-            (regression slope).
-        """
-        state = self.current_state
-
-        # Need at least 2 observations for regression
-        if state["n"] < 2:
-            return {"soil": 0.0, "moisture": 0.0, "yield": 0.0}
-
-        return {
-            "soil": self._compute_slope(state["sum_soil"], state["sum_t_soil"]),
-            "moisture": self._compute_slope(state["sum_moisture"], state["sum_t_moisture"]),
-            "yield": self._compute_slope(state["sum_yield"], state["sum_t_yield"]),
-        }
-
-    # -------------------------------------------------------------------------
     # Memory management
     # -------------------------------------------------------------------------
 
@@ -583,85 +460,46 @@ class DecisionModel(ABC):
         new_bundle : tuple of (int, int, int)
             The new (tillage, cover_crop, residue_on_field) bundle.
         """
-        current_year = self.agent.model.lpjml.sim_year
-        n_obs = self.current_state["n"]
+        current_year = self.farmer.model.lpjml.sim_year
+        n_obs = self.performance_tracker.n
 
         # -----------------------------------------------------------------
         # Store outcome of outgoing bundle (if used for at least 2 years)
         # -----------------------------------------------------------------
-        if n_obs >= 2:
-            trend = self.current_trend
-
-            # Preserve failure count from previous memory
-            old_fc = self.bundle_memory[self._practice_bundle].get("failure_count", 0)
-
-            # Update memory for the bundle we're leaving
-            self.bundle_memory[self._practice_bundle] = {
-                "trend_soil": trend["soil"],
-                "trend_moisture": trend["moisture"],
-                "trend_yield": trend["yield"],
-                "duration": n_obs,
-                "last_updated": current_year,
-                "failure_count": old_fc,
-            }
+        if n_obs > 1:
+            self.performance_memory.record_performance(
+                self.practice_bundle,
+                self.performance_tracker.trend,
+                n_obs,
+                current_year,
+            )
 
         # -----------------------------------------------------------------
         # Prepare for new bundle: reset regression state
         # -----------------------------------------------------------------
 
         # Remember previous bundle (for potential fallback)
-        self._previous_bundle = self._practice_bundle
+        self.previous_bundle = self.practice_bundle
 
         # Capture baseline score before resetting (for fallback comparison)
         # This is the performance level we expect to maintain or exceed
-        baseline = self._weighted_score(self.current_trend) if n_obs >= 2 else 0.0
+        baseline = (
+            self.performance_tracker.weighted_score(self.farmer)
+            if n_obs > 1 else 0.0
+        )
 
         # Reset regression accumulators for new bundle
-        # Start with current values as first observation
-        self.current_state = {
-            "t_start": current_year,
-            "baseline_score": baseline,  # Score to beat with new bundle
-            "n": 1,
-            "sum_t": 0.0,
-            "sum_tt": 0.0,
-            "sum_soil": self.agent.soilc,
-            "sum_t_soil": 0.0,
-            "sum_moisture": self.agent.root_moisture,
-            "sum_t_moisture": 0.0,
-            "sum_yield": self.agent.cropyield,
-            "sum_t_yield": 0.0,
-            "last_obs_year": current_year,  # Mark this year as observed
-        }
+        self.performance_tracker = ManagementPerformanceTracker.reset_for_transition(
+            farmer=self.farmer,
+            current_year=current_year,
+            baseline_score=baseline
+        )
 
         # Transition to new bundle
-        self._practice_bundle = new_bundle
+        self.practice_bundle = new_bundle
 
         # Reset decline counter
-        self._decline_years = 0
-
-    def _decay_old_memories(self):
-        """Reset memories older than memory_decay_years.
-
-        Old experiences become irrelevant as conditions change (climate,
-        markets, technology). This implements bounded rationality.
-        """
-        current_year = self.agent.model.lpjml.sim_year
-        memory_decay = self._get_aft_param("memory_decay_years")
-
-        for bundle, mem in self.bundle_memory.items():
-            if mem["duration"] > 0:
-                years_since_update = current_year - mem["last_updated"]
-
-                if years_since_update > memory_decay:
-                    # Reset to neutral (no memory)
-                    self.bundle_memory[bundle] = {
-                        "trend_soil": 0.0,
-                        "trend_moisture": 0.0,
-                        "trend_yield": 0.0,
-                        "duration": 0,
-                        "last_updated": 0,
-                        "failure_count": 0,
-                    }
+        self.decline_years = 0
 
     # -------------------------------------------------------------------------
     # Abstract methods (implemented by subclasses)
@@ -702,9 +540,9 @@ class TPB(DecisionModel):
     (PBC → 0), intention is blocked regardless of attitude/norms.
     """
 
-    def __init__(self, agent):
+    def __init__(self, farmer):
         """Initialize TPB model with zero scores."""
-        super().__init__(agent)
+        super().__init__(farmer)
 
         # TPB components (updated each timestep)
         self._tpb = 0.0          # Overall intention score
@@ -717,8 +555,8 @@ class TPB(DecisionModel):
         # Evaluation time: farmers don't reconsider every year
         # Randomize initial evaluation time to desynchronize farmers
         # (avoids artificial waves of simultaneous evaluation)
-        interval = self.agent.model.config.coupled_config.tpb_thresholds.evaluation_interval
-        self._years_until_evaluation = np.random.randint(0, interval + 1)
+        interval = self.farmer.model.config.coupled_config.tpb_thresholds.evaluation_interval
+        self._years_until_evaluation = np.random.randint(0, interval)
 
     # -------------------------------------------------------------------------
     # Properties for external access to TPB components
@@ -777,16 +615,22 @@ class TPB(DecisionModel):
     def reset_evaluation_time(self):
         """Reset evaluation time after a transition decision (transition or stay).
 
-        Uses fixed evaluation_interval from config. Randomization only happens
-        at initialization to desynchronize farmers - after that, each farmer
-        evaluates at consistent intervals (like real-world planning horizons).
+        Uses normal distribution around evaluation_interval (mean=interval,
+        std=interval/2) to create heterogeneity in re-evaluation timing.
+        This reflects that some farmers re-evaluate sooner (more proactive)
+        while others wait longer (more conservative). Minimum is 1 year.
 
         Called after TPB evaluation completes, regardless of whether transition
         happened.
         """
-        self._years_until_evaluation = (
-            self.agent.model.config.coupled_config.tpb_thresholds.evaluation_interval  # noqa: E501
-        )
+        interval = self.farmer.model.config.coupled_config.tpb_thresholds.evaluation_interval
+        if interval > 0:
+            # Normal distribution around interval, minimum 1 year
+            self._years_until_evaluation = max(
+                1, int(np.random.normal(interval, interval / 2))
+            )
+        else:
+            self._years_until_evaluation = 0
 
     def decrement_evaluation_time(self):
         """Decrement the evaluation time counter by one year.
@@ -800,7 +644,7 @@ class TPB(DecisionModel):
     # MAIN UPDATE LOGIC
     # =========================================================================
 
-    def _reevaluate_residue_status(self):
+    def reevaluate_residue_status(self):
         """Re-evaluate residue component of bundle based on actual litter cover.
 
         Farmers may organically cross the CA residue threshold (30% soil cover)
@@ -813,27 +657,19 @@ class TPB(DecisionModel):
         This ensures the bundle reflects actual field conditions, not just
         intended practices.
         """
-        ca_threshold = self.agent.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
-        current_residue = self._practice_bundle[2]
-        litter_cover = self.agent.litter_cover
+        ca_threshold = self.farmer.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
+        current_residue = self.practice_bundle.residue_on_field
+        litter_cover = self.farmer.litter_cover
 
         # Check if status should change
         if litter_cover >= ca_threshold and current_residue == 0:
-            # Farmer achieved CA residue threshold - certify!
-            new_bundle = (
-                self._practice_bundle[0],
-                self._practice_bundle[1],
-                1,  # Upgrade residue status
+            self.practice_bundle = self.practice_bundle.change_practices(
+                residue_on_field=1
             )
-            self._practice_bundle = new_bundle
         elif litter_cover < ca_threshold and current_residue == 1:
-            # Farmer fell below CA threshold - de-certify
-            new_bundle = (
-                self._practice_bundle[0],
-                self._practice_bundle[1],
-                0,  # Downgrade residue status
+            self.practice_bundle = self.practice_bundle.change_practices(
+                residue_on_field=0
             )
-            self._practice_bundle = new_bundle
 
     def update(self):
         """Compute proposed bundle and TPB scores for this timestep.
@@ -841,7 +677,7 @@ class TPB(DecisionModel):
         Decision flow:
         0. Re-evaluate residue status based on actual litter cover
         1. Add current observation to regression accumulators
-        2. Update bundle_memory with current trends (for neighbour visibility)
+        2. Update performance memory with current trends (for neighbour visibility)
         3. Decay old memories (bounded rationality)
         4. Check if minimum observation period has passed
         5. Check fallback condition (sustained decline → revert)
@@ -855,33 +691,42 @@ class TPB(DecisionModel):
         # Reset blocker, driver, and pathway at start of each update
         self._transition_blocker = BLOCKER_NONE
         self._transition_driver = DRIVER_NONE
-        self._target_pathway = None
+        self.target_pathway = None
 
         # -----------------------------------------------------------------
         # Step 0: Re-evaluate residue status based on actual litter cover
         # -----------------------------------------------------------------
         # Farmers may cross CA threshold organically - certify/de-certify
-        self._reevaluate_residue_status()
+        self.reevaluate_residue_status()
 
         # -----------------------------------------------------------------
         # Step 1: Add current year's observation to regression
         # -----------------------------------------------------------------
-        self._add_observation(
-            self.agent.soilc,
-            self.agent.root_moisture,
-            self.agent.cropyield
+        self.performance_tracker.add_observation(
+            self.farmer.soilc,
+            self.farmer.root_moisture,
+            self.farmer.cropyield,
+            self.farmer.model.lpjml.sim_year,
         )
 
         # -----------------------------------------------------------------
-        # Step 2: Update bundle_memory with current trends
+        # Step 2: Update performance memory with current trends
         # -----------------------------------------------------------------
-        # Keep bundle_memory up-to-date so neighbours see current performance
-        self._update_current_bundle_memory()
+        # Keep performance memory up-to-date so neighbours see current performance
+        self.performance_memory.update_current(
+            self.practice_bundle,
+            self.performance_tracker.trend,
+            self.performance_tracker.n,
+            self.farmer.model.lpjml.sim_year,
+        )
 
         # -----------------------------------------------------------------
         # Step 3: Decay old memories
         # -----------------------------------------------------------------
-        self._decay_old_memories()
+        self.performance_memory.decay(
+            self.farmer.model.lpjml.sim_year,
+            self.get_aft_param("memory_decay_years"),
+        )
 
         # -----------------------------------------------------------------
         # Step 4: Require minimum observation years before transitioning
@@ -890,12 +735,12 @@ class TPB(DecisionModel):
         # Typical value: 3 years (allows trends to stabilize)
         # With historic data initialization, farmers start with enough history
 
-        n_obs = self.current_state["n"]
-        min_obs = self._get_aft_param("min_observation_years")
+        n_obs = self.performance_tracker.n
+        min_obs = self.get_aft_param("min_observation_years")
 
         if n_obs < min_obs:
             self._tpb = 0.0
-            self._proposed_bundle = None
+            self.proposed_bundle = None
             self._transition_blocker = BLOCKER_MIN_OBS_YEARS
             return
 
@@ -905,11 +750,11 @@ class TPB(DecisionModel):
         # If performance has declined for FALLBACK_YEARS consecutive years,
         # propose reverting to the previous bundle (adaptive management)
 
-        if self._check_fallback():
-            # Fallback sets _proposed_bundle and _tpb internally
+        if self.check_fallback():
+            # Fallback sets proposed_bundle and _tpb internally
             # Blocker will be set by should_transition() if TPB too low
             self._transition_blocker = BLOCKER_FALLBACK_TRIGGERED
-            self._target_pathway = "fallback"  # Track pathway for transition_driver
+            self.target_pathway = "fallback"  # Track pathway for transition_driver
             return
 
         # -----------------------------------------------------------------
@@ -917,29 +762,34 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
 
         # First, try to imitate best-performing neighbour (local)
-        target_bundle = self._most_promising_bundle()
-        self._target_pathway = "social"  # Track pathway for transition_driver
+        target_bundle = self.most_promising_bundle_local()
+        self.target_pathway = "local"
 
         # If no better local neighbour, try country-level inspiration
         if target_bundle is None:
-            target_bundle = self._most_promising_bundle_country()
-            self._target_pathway = "country"
+            target_bundle = self.most_promising_bundle_country()
+            self.target_pathway = "country"
 
-        # If no country inspiration, maybe explore randomly
+        # If no country inspiration, try cluster-level (agroecologically similar countries)
         if target_bundle is None:
-            target_bundle = self._maybe_explore_bundle()
-            self._target_pathway = "exploration"
+            target_bundle = self.most_promising_bundle_cluster()
+            self.target_pathway = "cluster"
+
+        # If no cluster inspiration, maybe explore randomly
+        if target_bundle is None:
+            target_bundle = self.maybe_explore_bundle()
+            self.target_pathway = "exploration"
 
         # No change proposed
         if target_bundle is None:
             self._tpb = 0.0
-            self._proposed_bundle = None
+            self.proposed_bundle = None
             self._transition_blocker = BLOCKER_NO_TARGET
             return
 
-        if target_bundle == self._practice_bundle:
+        if target_bundle == self.practice_bundle:
             self._tpb = 0.0
-            self._proposed_bundle = None
+            self.proposed_bundle = None
             self._transition_blocker = BLOCKER_TARGET_SAME
             return
 
@@ -948,29 +798,26 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # If farmer can't afford full target bundle, find affordable subset
 
-        affordable_bundle = self._affordable_bundle(target_bundle)
+        affordable_bundle = self.affordable_bundle(target_bundle)
 
         # If affordable bundle is same as current, no change
-        if affordable_bundle == self._practice_bundle:
+        if affordable_bundle == self.practice_bundle:
             self._tpb = 0.0
-            self._proposed_bundle = None
+            self.proposed_bundle = None
             self._transition_blocker = BLOCKER_TARGET_UNAFFORDABLE
             return
 
         # -----------------------------------------------------------------
         # Step 8: Compute TPB scores for proposed bundle
         # -----------------------------------------------------------------
-        self._proposed_bundle = affordable_bundle
-        self._compute_tpb_for_bundle(affordable_bundle)
-        
-        # Blocker will be set to BLOCKER_TPB_BELOW_THRESHOLD by CAFarmer
-        # if should_transition() returns False
+        self.proposed_bundle = affordable_bundle
+        self.compute_tpb_for_bundle(affordable_bundle)
 
     # =========================================================================
     # FALLBACK MECHANISM (Adaptive Management)
     # =========================================================================
 
-    def _check_fallback(self):
+    def check_fallback(self):
         """Check if farmer should revert to previous bundle due to sustained decline.
 
         Implements adaptive management: if outcomes have declined for
@@ -980,16 +827,16 @@ class TPB(DecisionModel):
         Returns
         -------
         bool
-            True if fallback is triggered (sets _proposed_bundle internally).
+            True if fallback is triggered (sets proposed_bundle internally).
         """
         # Can't fall back if no previous bundle
-        if self._previous_bundle is None:
+        if self.previous_bundle is None:
             return False
 
         # Allow grace period for new practices to show effects
         # Grace period = min_observation_years (reuse existing param)
-        n_obs = self.current_state["n"]
-        grace_period = self._get_aft_param("min_observation_years")
+        n_obs = self.performance_tracker.n
+        grace_period = self.get_aft_param("min_observation_years")
         if n_obs < grace_period:
             return False
 
@@ -998,25 +845,25 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # baseline_score captures the trend score at the time of transition.
         # If current score is worse than baseline, we're declining.
-        baseline = self.current_state.get("baseline_score", 0.0)
-        current_score = self._weighted_score(self.current_trend)
+        baseline = self.performance_tracker.baseline_score
+        current_score = self.performance_tracker.weighted_score(self.farmer)
 
         # Track consecutive years of decline
         if current_score < baseline:
-            self._decline_years += 1
+            self.decline_years += 1
         else:
-            self._decline_years = 0  # Reset if performance improves
+            self.decline_years = 0  # Reset if performance improves
 
         # -----------------------------------------------------------------
         # Trigger fallback after sustained decline
         # -----------------------------------------------------------------
-        fallback_years = self._get_aft_param("fallback_years")
-        if self._decline_years >= fallback_years:
+        fallback_years = self.get_aft_param("fallback_years")
+        if self.decline_years >= fallback_years:
             # Mark current bundle as "failed" (reduces future exploration)
-            self.bundle_memory[self._practice_bundle]["failure_count"] += 1
+            self.performance_memory.record_failure(self.practice_bundle)
 
             # Propose reverting to previous bundle
-            self._proposed_bundle = self._previous_bundle
+            self.proposed_bundle = self.previous_bundle
 
             # Fallback bypasses TPB: this is an emergency response, not a
             # planned behavior change. Set intention directly to 1.0.
@@ -1028,54 +875,10 @@ class TPB(DecisionModel):
         return False
 
     # =========================================================================
-    # BUNDLE REASONABLENESS CHECK
-    # =========================================================================
-
-    def _is_reasonable_bundle(self, bundle):
-        """Check if bundle is agronomically reasonable.
-
-        No-till without residue cover is problematic:
-        - Soil needs protection from erosion and crusting
-        - Residue provides this protection
-        - If residue is cheap (low opportunity cost), farmer should keep it
-
-        Parameters
-        ----------
-        bundle : tuple
-            (tillage, cover_crop, residue_on_field)
-
-        Returns
-        -------
-        bool
-            True if bundle is reasonable, False if it should be avoided.
-        """
-        t, c, r = bundle
-
-        exploration = self.agent.model.config.coupled_config.exploration
-        residue_threshold = getattr(exploration, "residue_cost_threshold", 30.0)
-
-        # -----------------------------------------------------------------
-        # No-till without residue is risky
-        # -----------------------------------------------------------------
-        # t=0 is no-till, t=1 is conventional tillage
-        # No-till alone (no cover, no residue): soil exposed
-        if t == 0 and c == 0 and r == 0:
-            # Only unreasonable if residue is cheap (could easily retain it)
-            if self.agent.residue_opportunity_cost_per_ha < residue_threshold:
-                return False
-
-        # No-till + cover but no residue: still risky in off-season
-        if t == 0 and c == 1 and r == 0:
-            if self.agent.residue_opportunity_cost_per_ha < residue_threshold:
-                return False
-
-        return True
-
-    # =========================================================================
     # RANDOM EXPLORATION (Innovation Diffusion)
     # =========================================================================
 
-    def _maybe_explore_bundle(self):
+    def maybe_explore_bundle(self):
         """Randomly explore a new bundle (innovation diffusion).
 
         Some farmers try new practices without neighbour influence:
@@ -1095,27 +898,27 @@ class TPB(DecisionModel):
 
         # Base probability depends on farmer type (from config)
         # Pioneers (innovators) are more willing to experiment
-        base_prob = self._get_aft_param("exploration_base_prob")
+        base_prob = self.get_aft_param("exploration_base_prob")
 
         # Poor performers explore more (searching for better options)
-        # Threshold and multiplier are configurable
-        current_score = self._weighted_score(self.current_trend)
-        normalized = self._normalize_score(current_score)
-        poor_performance_threshold = self._get_aft_param("poor_performance_threshold")
-        poor_performance_multiplier = self._get_aft_param("poor_performance_multiplier")
-        if normalized < poor_performance_threshold:
+        # With relative trends: negative = declining, positive = improving
+        # Threshold is in relative terms (e.g., 0 = any decline, -0.02 = >2% decline)
+        current_score = self.performance_tracker.weighted_score(self.farmer)
+        poor_performance_threshold = self.get_aft_param("poor_performance_threshold")
+        poor_performance_multiplier = self.get_aft_param("poor_performance_multiplier")
+        if current_score < poor_performance_threshold:
             base_prob *= poor_performance_multiplier
 
         # Experience affects willingness to explore (smooth ramp based on confidence_years)
         # Early: 0.5x exploration (cautious), Experienced: 1.5x exploration (confident)
-        n_obs = self.current_state["n"]
-        confidence_years = self._get_aft_param("confidence_years")
+        n_obs = self.performance_tracker.n
+        confidence_years = self.get_aft_param("confidence_years")
         experience_factor = min(1.0, n_obs / confidence_years)
         exploration_modifier = 0.5 + experience_factor * 1.0  # Ramps from 0.5 to 1.5
         base_prob *= exploration_modifier
 
         # Cap exploration probability (configurable)
-        max_exploration_prob = self._get_aft_param("max_exploration_prob")
+        max_exploration_prob = self.get_aft_param("max_exploration_prob")
         explore_prob = min(base_prob, max_exploration_prob)
 
         # -----------------------------------------------------------------
@@ -1127,21 +930,14 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Select valid bundle to explore
         # -----------------------------------------------------------------
-        exploration = self.agent.model.config.coupled_config.exploration
+        exploration = self.farmer.model.config.coupled_config.exploration
         max_failures = getattr(exploration, "max_failures", 2)
 
         # Generate all possible bundles
-        all_bundles = [(t, c, r) for t in (0, 1) for c in (0, 1) for r in (0, 1)]
-
-        # Filter to valid options:
-        # - Not current bundle
-        # - Not failed too many times
-        # - Agronomically reasonable
         valid = [
-            b for b in all_bundles
-            if b != self._practice_bundle
-            and self.bundle_memory[b]["failure_count"] < max_failures
-            and self._is_reasonable_bundle(b)
+            b for b in ManagementBundle.all_bundles()
+            if b != self.practice_bundle
+            and self.performance_memory[b].failure_count < max_failures
         ]
 
         if not valid:
@@ -1169,17 +965,33 @@ class TPB(DecisionModel):
             True if TPB exceeds threshold and transition should occur.
         """
         # Get thresholds from config (non-AFT-specific)
-        tpb_cfg = self.agent.model.config.coupled_config.tpb_thresholds
-        transition_threshold = tpb_cfg.transition_threshold
-        revert_threshold = tpb_cfg.revert_threshold
+        tpb_config = self.farmer.model.config.coupled_config.tpb_thresholds
+        transition_threshold = tpb_config.transition_threshold
+        revert_threshold = tpb_config.revert_threshold
 
         # Higher threshold for reverting (avoid flip-flopping)
-        if self._proposed_bundle == self._previous_bundle:
+        if self.proposed_bundle == self.previous_bundle:
             threshold = revert_threshold
         else:
             threshold = transition_threshold
 
         return self._tpb > threshold
+
+    def _get_enabled_spreading_levels(self):
+        """Get which spreading levels are enabled from config.
+
+        Returns
+        -------
+        tuple[bool, bool, bool]
+            (enable_local, enable_country, enable_cluster)
+        """
+        spreading_config = getattr(
+            self.farmer.model.config.coupled_config, "spreading_levels", None
+        )
+        enable_local = getattr(spreading_config, "enable_local", True) if spreading_config else True
+        enable_country = getattr(spreading_config, "enable_country", True) if spreading_config else True
+        enable_cluster = getattr(spreading_config, "enable_cluster", True) if spreading_config else True
+        return enable_local, enable_country, enable_cluster
 
     def set_tpb_transition_blocker(self):
         """Set transition_blocker to indicate which TPB component is most limiting.
@@ -1188,10 +1000,13 @@ class TPB(DecisionModel):
         1. First identify which main component (attitude, social_norm, pbc) is lowest
         2. Then drill down into that component's sub-parts to identify the specific blocker
 
-        This is simpler and more interpretable than weighted drag calculations.
+        Only compares enabled spreading levels (respects spreading_levels config).
         """
-        if self._proposed_bundle is None:
+        if self.proposed_bundle is None:
             return
+
+        # Get enabled levels to avoid blaming disabled components
+        enable_local, enable_country, enable_cluster = self._get_enabled_spreading_levels()
 
         # Level 1: Which main component is the blocker?
         main_components = {
@@ -1207,18 +1022,48 @@ class TPB(DecisionModel):
             if self._attitude_own_land <= self._attitude_social_learning:
                 self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
             else:
-                # Compare local vs country social learning
-                if self._attitude_social_learning_local <= self._attitude_social_learning_country:
-                    self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL
+                # Compare only ENABLED social learning levels
+                social_components = {}
+                if enable_local:
+                    social_components['local'] = self._attitude_social_learning_local
+                if enable_country:
+                    social_components['country'] = self._attitude_social_learning_country
+                if enable_cluster:
+                    social_components['cluster'] = self._attitude_social_learning_cluster
+
+                if social_components:
+                    min_social = min(social_components, key=social_components.get)
+                    if min_social == 'local':
+                        self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL
+                    elif min_social == 'country':
+                        self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY
+                    else:
+                        self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER
                 else:
-                    self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY
+                    # Fallback if no social levels enabled (shouldn't happen)
+                    self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
 
         elif main_blocker == 'social_norm':
-            # Compare local vs country
-            if self._social_norm_local <= self._social_norm_country:
-                self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL
+            # Compare only ENABLED social norm levels
+            norm_components = {}
+            if enable_local:
+                norm_components['local'] = self._social_norm_local
+            if enable_country:
+                norm_components['country'] = self._social_norm_country
+            if enable_cluster:
+                norm_components['cluster'] = self._social_norm_cluster
+
+            if norm_components:
+                min_norm = min(norm_components, key=norm_components.get)
+                if min_norm == 'local':
+                    self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL
+                elif min_norm == 'country':
+                    self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY
+                else:
+                    self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER
             else:
-                self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY
+                # Fallback if no social levels enabled (shouldn't happen)
+                self._transition_blocker = BLOCKER_TPB_LOW_PBC
 
         else:  # pbc
             # PBC is driven by cost affordability (pbc_base captures AFT risk differences)
@@ -1231,14 +1076,19 @@ class TPB(DecisionModel):
         1. First identify which main component (attitude, social_norm, pbc) is highest
         2. Then drill down into that component's sub-parts to identify the specific driver
 
+        Only compares enabled spreading levels (respects spreading_levels config).
+
         Parameters
         ----------
         pathway : str
             One of "social" (learned from local neighbor), "country" (inspired
             by country-level data), or "exploration" (random exploration).
         """
-        if self._proposed_bundle is None:
+        if self.proposed_bundle is None:
             return
+
+        # Get enabled levels to avoid crediting disabled components
+        enable_local, enable_country, enable_cluster = self._get_enabled_spreading_levels()
 
         # Level 1: Which main component is the strongest driver?
         main_components = {
@@ -1254,18 +1104,48 @@ class TPB(DecisionModel):
             if self._attitude_own_land >= self._attitude_social_learning:
                 sub_driver = 'attitude_own_land'
             else:
-                # Compare local vs country social learning
-                if self._attitude_social_learning_local >= self._attitude_social_learning_country:
-                    sub_driver = 'attitude_social_local'
+                # Compare only ENABLED social learning levels
+                social_components = {}
+                if enable_local:
+                    social_components['local'] = self._attitude_social_learning_local
+                if enable_country:
+                    social_components['country'] = self._attitude_social_learning_country
+                if enable_cluster:
+                    social_components['cluster'] = self._attitude_social_learning_cluster
+
+                if social_components:
+                    max_social = max(social_components, key=social_components.get)
+                    if max_social == 'local':
+                        sub_driver = 'attitude_social_local'
+                    elif max_social == 'country':
+                        sub_driver = 'attitude_social_country'
+                    else:
+                        sub_driver = 'attitude_social_cluster'
                 else:
-                    sub_driver = 'attitude_social_country'
+                    # Fallback if no social levels enabled
+                    sub_driver = 'attitude_own_land'
 
         elif main_driver == 'social_norm':
-            # Compare local vs country
-            if self._social_norm_local >= self._social_norm_country:
-                sub_driver = 'social_norm_local'
+            # Compare only ENABLED social norm levels
+            norm_components = {}
+            if enable_local:
+                norm_components['local'] = self._social_norm_local
+            if enable_country:
+                norm_components['country'] = self._social_norm_country
+            if enable_cluster:
+                norm_components['cluster'] = self._social_norm_cluster
+
+            if norm_components:
+                max_norm = max(norm_components, key=norm_components.get)
+                if max_norm == 'local':
+                    sub_driver = 'social_norm_local'
+                elif max_norm == 'country':
+                    sub_driver = 'social_norm_country'
+                else:
+                    sub_driver = 'social_norm_cluster'
             else:
-                sub_driver = 'social_norm_country'
+                # Fallback if no social levels enabled
+                sub_driver = 'pbc'
 
         else:  # pbc
             # PBC is driven by cost affordability (pbc_base captures AFT risk differences)
@@ -1277,24 +1157,30 @@ class TPB(DecisionModel):
                 'attitude_own_land': DRIVER_LOCAL_ATTITUDE_OWN_LAND,
                 'attitude_social_local': DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL,
                 'attitude_social_country': DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY,
+                'attitude_social_cluster': DRIVER_LOCAL_ATTITUDE_SOCIAL_CLUSTER,
                 'social_norm_local': DRIVER_LOCAL_SOCIAL_NORM_LOCAL,
                 'social_norm_country': DRIVER_LOCAL_SOCIAL_NORM_COUNTRY,
+                'social_norm_cluster': DRIVER_LOCAL_SOCIAL_NORM_CLUSTER,
                 'pbc': DRIVER_LOCAL_PBC,
             },
             "country": {
                 'attitude_own_land': DRIVER_COUNTRY_ATTITUDE_OWN_LAND,
                 'attitude_social_local': DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL,
                 'attitude_social_country': DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY,
+                'attitude_social_cluster': DRIVER_COUNTRY_ATTITUDE_SOCIAL_CLUSTER,
                 'social_norm_local': DRIVER_COUNTRY_SOCIAL_NORM_LOCAL,
                 'social_norm_country': DRIVER_COUNTRY_SOCIAL_NORM_COUNTRY,
+                'social_norm_cluster': DRIVER_COUNTRY_SOCIAL_NORM_CLUSTER,
                 'pbc': DRIVER_COUNTRY_PBC,
             },
             "exploration": {
                 'attitude_own_land': DRIVER_EXPLORATION_ATTITUDE_OWN_LAND,
                 'attitude_social_local': DRIVER_EXPLORATION_ATTITUDE_SOCIAL_LOCAL,
                 'attitude_social_country': DRIVER_EXPLORATION_ATTITUDE_SOCIAL_COUNTRY,
+                'attitude_social_cluster': DRIVER_EXPLORATION_ATTITUDE_SOCIAL_CLUSTER,
                 'social_norm_local': DRIVER_EXPLORATION_SOCIAL_NORM_LOCAL,
                 'social_norm_country': DRIVER_EXPLORATION_SOCIAL_NORM_COUNTRY,
+                'social_norm_cluster': DRIVER_EXPLORATION_SOCIAL_NORM_CLUSTER,
                 'pbc': DRIVER_EXPLORATION_PBC,
             },
         }
@@ -1307,31 +1193,31 @@ class TPB(DecisionModel):
     # =========================================================================
 
     def apply_bundle(self, bundle):
-        """Apply practice bundle to agent and push to LPJmL.
+        """Apply practice bundle to farmer and push to LPJmL.
 
-        Sets agent's tillage, cover_crop, and residue_on_field attributes
+        Sets farmer's tillage, cover_crop, and residue_on_field attributes
         and sends updates to the coupled LPJmL model.
 
         Parameters
         ----------
-        bundle : tuple of (int, int, int)
-            (tillage, cover_crop, residue_on_field), each 0 or 1.
+        bundle : Bundle
+            Practice bundle (tillage, cover_crop, residue_on_field), each 0 or 1.
         """
         # -----------------------------------------------------------------
         # Tillage: 0 = no-till (CA), 1 = conventional tillage
         # Directly maps to LPJmL's with_tillage
         # -----------------------------------------------------------------
-        self.agent.tillage = bundle[0]
+        self.farmer.tillage = bundle.tillage
 
         # -----------------------------------------------------------------
         # Cover crop: 0 = none, 1/2 = type based on conditions
         # -----------------------------------------------------------------
-        if bundle[1] == 1:
+        if bundle.cover_crop == 1:
             # Determine cover crop type based on environmental conditions
             # 1 = non-legume (catch crop), 2 = legume (N-fixing)
-            self.agent.cover_crop = self.agent._indicate_cover_crop_type()
+            self.farmer.cover_crop = self.farmer.indicate_cover_crop_type()
         else:
-            self.agent.cover_crop = 0
+            self.farmer.cover_crop = 0
 
         # -----------------------------------------------------------------
         # Residue retention: 0 = baseline, 1 = retain to reach CA threshold
@@ -1339,32 +1225,32 @@ class TPB(DecisionModel):
         # CA threshold from config (default 30% soil cover per FAO definition)
         # If already at/above threshold, maintain current level
         # If below, increase retention to reach threshold (if affordable)
-        ca_threshold = self.agent.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
+        ca_threshold = self.farmer.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
 
-        if bundle[2] == 1:
+        if bundle.residue_on_field == 1:
             # Want CA residue retention
-            if self.agent.litter_cover < ca_threshold:
+            if self.farmer.litter_cover < ca_threshold:
                 # Below threshold - need to increase retention if affordable
-                opp_cost = self.agent.residue_opportunity_cost
-                can_afford = opp_cost <= 0 or self.agent.capital >= opp_cost
+                opp_cost = self.farmer.residue_opportunity_cost
+                can_afford = opp_cost <= 0 or self.farmer.capital >= opp_cost
                 if can_afford:
-                    self.agent.residue_on_field = 1.0
+                    self.farmer.residue_on_field = 1.0
             # If already at threshold, keep current residue_on_field unchanged
         else:
             # Not pursuing CA residue retention - use baseline
-            self.agent.residue_on_field = self.agent.residue_baseline
+            self.farmer.residue_on_field = self.farmer.residue_baseline
 
         # -----------------------------------------------------------------
         # Push changes to LPJmL
         # -----------------------------------------------------------------
         for attr in ["tillage", "cover_crop", "residue_on_field"]:
-            self.agent.set_lpjml(attribute=attr)
+            self.farmer.set_lpjml(attribute=attr)
 
     # =========================================================================
-    # NEIGHBOUR COMPARISON METHODS
+    # COMPARISON METHODS
     # =========================================================================
 
-    def _most_promising_bundle(self):
+    def most_promising_bundle_local(self):
         """Find best-performing neighbour's bundle (if better than self).
 
         Social learning: farmers observe neighbours and may imitate those
@@ -1378,13 +1264,13 @@ class TPB(DecisionModel):
         best_neighbour = None
         best_gap = 0.0
 
-        for neighbour in self.agent.neighbourhood:
+        for neighbour in self.farmer.neighbourhood:
             # Skip neighbours who aren't performing better
-            if not self._is_better_performing(neighbour):
+            if not self.is_better_performing(neighbour):
                 continue
 
             # Track neighbour with largest performance gap
-            gap = self._performance_gap(neighbour)
+            gap = self.performance_gap(neighbour)
             if gap > best_gap:
                 best_gap = gap
                 best_neighbour = neighbour
@@ -1392,13 +1278,15 @@ class TPB(DecisionModel):
         if best_neighbour is None:
             return None
 
-        return best_neighbour.behaviour._practice_bundle
+        return best_neighbour.behaviour.practice_bundle
 
-    def _most_promising_bundle_country(self):
+    def most_promising_bundle_country(self):
         """Find best-performing bundle at COUNTRY level (if better than current).
 
         Non-local social learning: when no local neighbour is better, farmers
         may look to successful practices used elsewhere in their country.
+        Country stats are already merged with neighbouring countries (configured
+        via neighbour_country_weight) at the country level.
 
         Uses cached country statistics for O(1) lookup.
 
@@ -1408,35 +1296,23 @@ class TPB(DecisionModel):
             Best country-level bundle, or None if no bundle performs better
             than current practice or if country data is unavailable.
         """
-        # Access country cache
-        country = self.agent.cell.country
-        cache = getattr(country, "_country_stats_cache", {})
-
-        if not cache:
-            return None
-
-        bundle_performance = cache.get("bundle_performance", {})
-        if not bundle_performance:
+        store = _country_performance_store(self.farmer.cell.country)
+        if store is None:
             return None
 
         # Get own weighted score from current trend
-        own_score = self._weighted_score(self.current_trend)
+        own_score = self.performance_tracker.weighted_score(self.farmer)
 
         # Find best performing bundle at country level
         best_bundle = None
         best_score = own_score  # Must beat our current performance
 
-        for bundle, perf in bundle_performance.items():
+        for bundle, perf in store.items():
             # Skip our own bundle
-            if bundle == self._practice_bundle:
+            if bundle == self.practice_bundle:
                 continue
 
-            # Calculate weighted score from country averages
-            country_score = (
-                self.agent.weight_yield * perf.get("avg_yield_slope", 0.0)
-                + self.agent.weight_soil * perf.get("avg_soil_slope", 0.0)
-                + self.agent.weight_moisture * perf.get("avg_moisture_slope", 0.0)
-            )
+            country_score = perf.weighted_trend_score(self.farmer)
 
             if country_score > best_score:
                 best_score = country_score
@@ -1444,29 +1320,56 @@ class TPB(DecisionModel):
 
         return best_bundle
 
-    def _weighted_score(self, trend):
-        """Combine soil, moisture, yield trends into single utility score.
+    def most_promising_bundle_cluster(self):
+        """Find best-performing bundle at CLUSTER level (if better than current).
 
-        Farmers weight different outcomes based on their priorities.
-        This weighted sum represents overall "performance" of a bundle.
+        Tele-coupled social learning: when no local or country-level neighbour
+        is better, farmers may look to successful practices in agroecologically
+        similar countries (same temperature, precipitation, PET patterns).
 
-        Parameters
-        ----------
-        trend : dict
-            Keys: 'soil', 'moisture', 'yield'. Values: annual rates of change.
+        Uses cached cluster statistics from world.statistic for O(1) lookup.
 
         Returns
         -------
-        float
-            Weighted performance score.
+        tuple or None
+            Best cluster-level bundle, or None if no bundle performs better
+            than current practice or if cluster data is unavailable.
         """
-        return (
-            self.agent.weight_soil * trend["soil"]
-            + self.agent.weight_moisture * trend["moisture"]
-            + self.agent.weight_yield * trend["yield"]
-        )
+        country = self.farmer.cell.country
+        cluster_id = getattr(country, "agroecological_cluster", -1)
 
-    def _is_better_performing(self, neighbour):
+        if cluster_id < 0:
+            return None
+
+        # Access via country._world which works on both driver and workers
+        cluster_stats = self.farmer.cell.country._world.statistic.get(
+            "cluster_management_performance", {}
+        )
+        store = cluster_stats.get(cluster_id)
+        if not isinstance(store, RegionManagementPerformanceStore):
+            return None
+
+        # Get own weighted score from current trend
+        own_score = self.performance_tracker.weighted_score(self.farmer)
+
+        # Find best performing bundle at cluster level
+        best_bundle = None
+        best_score = own_score  # Must beat our current performance
+
+        for bundle, perf in store.items():
+            # Skip our own bundle
+            if bundle == self.practice_bundle:
+                continue
+
+            cluster_score = perf.weighted_trend_score(self.farmer)
+
+            if cluster_score > best_score:
+                best_score = cluster_score
+                best_bundle = bundle
+
+        return best_bundle
+
+    def is_better_performing(self, neighbour):
         """Check if neighbour has higher weighted score than self.
 
         Parameters
@@ -1479,11 +1382,13 @@ class TPB(DecisionModel):
         bool
             True if neighbour's score exceeds self's score.
         """
-        neighbour_score = self._weighted_score(neighbour.behaviour.current_trend)
-        own_score = self._weighted_score(self.current_trend)
+        neighbour_score = neighbour.behaviour.performance_tracker.weighted_score(
+            self.farmer
+        )
+        own_score = self.performance_tracker.weighted_score(self.farmer)
         return neighbour_score > own_score
 
-    def _performance_gap(self, neighbour):
+    def performance_gap(self, neighbour):
         """Compute positive performance difference (neighbour - self).
 
         Parameters
@@ -1496,82 +1401,17 @@ class TPB(DecisionModel):
         float
             Positive gap (0 if neighbour is worse).
         """
-        neighbour_score = self._weighted_score(neighbour.behaviour.current_trend)
-        own_score = self._weighted_score(self.current_trend)
+        neighbour_score = neighbour.behaviour.performance_tracker.weighted_score(
+            self.farmer
+        )
+        own_score = self.performance_tracker.weighted_score(self.farmer)
         return max(0.0, neighbour_score - own_score)
-
-    # =========================================================================
-    # SCORE NORMALIZATION
-    # =========================================================================
-
-    def _neighbourhood_score_range(self):
-        """Get min/max weighted scores in neighbourhood (for normalization).
-
-        Returns
-        -------
-        tuple of (float, float)
-            (min_score, max_score) in neighbourhood including self.
-        """
-        if not self.agent.neighbourhood:
-            return (0.0, 1.0)
-
-        # Collect all scores (neighbours + self)
-        scores = [
-            self._weighted_score(n.behaviour.current_trend)
-            for n in self.agent.neighbourhood
-        ]
-        scores.append(self._weighted_score(self.current_trend))
-
-        min_s, max_s = min(scores), max(scores)
-
-        # Avoid division by zero when all scores are identical
-        if max_s - min_s < 1e-6:
-            return (min_s - 0.5, max_s + 0.5)
-
-        return (min_s, max_s)
-
-    def _normalize_score(self, score):
-        """Map score to [0, 1] relative to neighbourhood range.
-
-        Parameters
-        ----------
-        score : float
-            Raw weighted score.
-
-        Returns
-        -------
-        float
-            Normalized score in [0, 1].
-        """
-        min_s, max_s = self._neighbourhood_score_range()
-        normalized = (score - min_s) / (max_s - min_s)
-        return max(0.0, min(1.0, normalized))
-
-    # =========================================================================
-    # BUNDLE SIMILARITY
-    # =========================================================================
-
-    def _bundle_similarity(self, a, b):
-        """Compute fraction of practices that match between two bundles.
-
-        Parameters
-        ----------
-        a, b : tuple
-            Practice bundles to compare.
-
-        Returns
-        -------
-        float
-            Similarity in [0, 1]. 1.0 = identical, 0.0 = completely different.
-        """
-        matches = sum(x == y for x, y in zip(a, b))
-        return matches / 3.0
 
     # =========================================================================
     # CROP SIMILARITY
     # =========================================================================
 
-    def _crop_similarity(self, neighbour):
+    def crop_similarity(self, neighbour):
         """Check if neighbour grows the same dominant crop at similar scale.
 
         Fast O(n) comparison using only argmax (no sorting).
@@ -1590,12 +1430,12 @@ class TPB(DecisionModel):
             0.5: Same dominant crop but different share
             0.0: Different dominant crops or neighbour doesn't grow it
         """
-        # Get crop fractions via farmer's _get_from_earth (handles multi-year data)
+        # Get crop fractions via farmer's get_from_earth (handles multi-year data)
         # Exclude managed grassland - it's not a crop for similarity comparison
-        cft_self = self.agent._get_from_earth(
+        cft_self = self.farmer.get_from_earth(
             "cftfrac", drop_band=NON_CROPS
         ).values.flatten()
-        cft_neighbour = neighbour._get_from_earth(
+        cft_neighbour = neighbour.get_from_earth(
             "cftfrac", drop_band=NON_CROPS
         ).values.flatten()
 
@@ -1618,7 +1458,7 @@ class TPB(DecisionModel):
         else:
             return 0.5  # Same crop, different share
 
-    def _total_similarity(self, new_bundle, neighbour):
+    def total_similarity(self, new_bundle, neighbour):
         """Combined bundle + crop similarity for social learning.
 
         Weighted average of practice bundle similarity and crop portfolio
@@ -1636,14 +1476,12 @@ class TPB(DecisionModel):
         float
             Combined similarity in [0, 1].
         """
-        bundle_sim = self._bundle_similarity(
-            new_bundle, neighbour.behaviour._practice_bundle
-        )
-        crop_sim = self._crop_similarity(neighbour)
+        bundle_sim = new_bundle.similarity(neighbour.behaviour.practice_bundle)
+        crop_sim = self.crop_similarity(neighbour)
 
         # Weights from config (default: 60% bundle, 40% crop)
-        w_bundle = self._get_aft_param("weight_bundle_similarity")
-        w_crop = self._get_aft_param("weight_crop_similarity")
+        w_bundle = self.get_aft_param("weight_bundle_similarity")
+        w_crop = self.get_aft_param("weight_crop_similarity")
 
         return w_bundle * bundle_sim + w_crop * crop_sim
 
@@ -1651,11 +1489,11 @@ class TPB(DecisionModel):
     # TPB COMPONENT: ATTITUDE (Own Land)
     # =========================================================================
 
-    def _compute_attitude_own_land(self):
+    def compute_attitude_own_land(self):
         """Compute attitude from own land performance trends.
 
         "Am I doing poorly with my current practices?"
-        Based on current_trend (regression over all observations).
+        Based on performance_tracker.trend (regression over all observations).
         Declining performance → high attitude → more willing to transition
         Improving performance → low attitude → less willing to transition
 
@@ -1669,11 +1507,11 @@ class TPB(DecisionModel):
         float
             Attitude score in [0, 1].
         """
-        trend = self.current_trend
+        trend = self.performance_tracker.trend
         raw_own = (
-            self.agent.weight_yield * (-trend["yield"])
-            + self.agent.weight_soil * (-trend["soil"])
-            + self.agent.weight_moisture * (-trend["moisture"])
+            self.farmer.weight_yield * (-trend["yield"])
+            + self.farmer.weight_soil * (-trend["soilc"])
+            + self.farmer.weight_moisture * (-trend["moisture"])
         )
         return sigmoid(raw_own)
 
@@ -1681,21 +1519,24 @@ class TPB(DecisionModel):
     # TPB COMPONENT: ATTITUDE (Social Learning)
     # =========================================================================
 
-    def _compute_attitude_social_learning_local(self, new_bundle):
+    def compute_attitude_social_learning_local(self, new_bundle):
         """Compute attitude from LOCAL neighbours using the proposed bundle.
 
-        Social learning (Bandura 1977): farmers learn from observing
-        neighbours who use similar practices.
+        Evaluates neighbours based on observable outcome differences, weighted
+        by similarity and confidence. Neighbours declining MORE than the farmer
+        are filtered out (relative comparison).
 
-        Combines:
-        - Absolute performance comparison (ratio - 1): "Is neighbour doing better?"
-        - Slope adjustment: "Is neighbour's trajectory sustainable?"
+        Scientific basis:
+        - Social comparison theory (Festinger 1954): relative performance evaluation
+        - Homophily (McPherson et al. 2001): similarity-weighted learning
+        - Adaptive learning (Boyd & Richerson 1985): filter out worse performers
 
-        The slope factor (via sigmoid) discounts neighbours who are declining,
-        even if their absolute values are currently high (trap avoidance).
+        The relative slope comparison handles contexts like post-land-use-change
+        (e.g., Paraguay) where ALL farmers are declining but CA declines slower
+        than conventional. Using an absolute threshold would filter out everyone.
 
         This is the LOCAL component - uses direct neighbour comparisons with
-        full similarity weighting. See _compute_attitude_social_learning_country()
+        full similarity weighting. See compute_attitude_social_learning_country()
         for the country-level component.
 
         Parameters
@@ -1708,7 +1549,7 @@ class TPB(DecisionModel):
         float
             Attitude score in [0, 1].
         """
-        if not self.agent.neighbourhood:
+        if not self.farmer.neighbourhood:
             return 0.5  # Neutral without neighbours
 
         # Accumulate weighted comparisons
@@ -1717,52 +1558,56 @@ class TPB(DecisionModel):
         weighted_moisture = 0.0
         total_weight = 0.0
 
-        # Get confidence_years from config
-        confidence_years = self._get_aft_param("confidence_years")
+        # Get parameters from config
+        confidence_years = self.get_aft_param("confidence_years")
+
+        # My current slope (for relative comparison)
+        my_slope = self.performance_tracker.weighted_score(self.farmer)
 
         # My current absolute values (avoid division by zero)
-        my_yield = max(self.agent.cropyield, 1e-6)
-        my_soil = max(self.agent.soilc, 1e-6)
-        my_moisture = max(self.agent.root_moisture, 1e-6)
+        my_yield = max(self.farmer.cropyield, 1e-6)
+        my_soil = max(self.farmer.soilc, 1e-6)
+        my_moisture = max(self.farmer.root_moisture, 1e-6)
 
-        for neighbour in self.agent.neighbourhood:
+        for neighbour in self.farmer.neighbourhood:
             # How similar is neighbour? (bundle + crop similarity)
-            similarity = self._total_similarity(new_bundle, neighbour)
+            similarity = self.total_similarity(new_bundle, neighbour)
 
             if similarity == 0:
                 continue  # Skip completely different neighbours
 
+            # -----------------------------------------------------------------
+            # Filter: skip neighbours declining MORE than me (relative comparison)
+            # -----------------------------------------------------------------
+            # This handles degrading contexts (e.g., Paraguay post-land-use-change)
+            # where everyone is declining but CA declines slower than conventional.
+            # Neighbours performing BETTER than me (higher slope) are included.
+            neighbour_slope = neighbour.behaviour.performance_tracker.weighted_score(
+                self.farmer
+            )
+            if neighbour_slope < my_slope:
+                continue  # Skip neighbour declining more than me
+
             # Confidence: more observations → more reliable information
-            n_obs = neighbour.behaviour.current_state["n"]
+            n_obs = neighbour.behaviour.performance_tracker.n
             confidence = min(1.0, n_obs / confidence_years)
 
             # -----------------------------------------------------------------
-            # Absolute comparisons (ratio - 1, like old tillage_farmer.py)
+            # Absolute comparisons (ratio - 1)
             # -----------------------------------------------------------------
             # Positive if neighbour is better, negative if worse
+            # Based on social comparison theory: farmers evaluate relative to self
             yield_cmp = neighbour.cropyield / my_yield - 1
             soil_cmp = neighbour.soilc / my_soil - 1
             moisture_cmp = neighbour.root_moisture / my_moisture - 1
 
-            # -----------------------------------------------------------------
-            # Slope adjustment: discount declining neighbours
-            # -----------------------------------------------------------------
-            # sigmoid maps slope to (0, 1): <0.5 if declining, >0.5 if improving
-            neighbour_slope = self._weighted_score(neighbour.behaviour.current_trend)
-            slope_factor = sigmoid(neighbour_slope)
-
-            # Adjust comparisons by slope factor
-            yield_adj = yield_cmp * slope_factor
-            soil_adj = soil_cmp * slope_factor
-            moisture_adj = moisture_cmp * slope_factor
-
             # Weight = similarity × confidence
             weight = similarity * confidence
 
-            # Accumulate
-            weighted_yield += weight * yield_adj
-            weighted_soil += weight * soil_adj
-            weighted_moisture += weight * moisture_adj
+            # Accumulate (no slope multiplication - keeps stable performers influential)
+            weighted_yield += weight * yield_cmp
+            weighted_soil += weight * soil_cmp
+            weighted_moisture += weight * moisture_cmp
             total_weight += weight
 
         if total_weight == 0:
@@ -1773,22 +1618,30 @@ class TPB(DecisionModel):
         avg_soil = weighted_soil / total_weight
         avg_moisture = weighted_moisture / total_weight
 
-        # Weighted sum of comparisons (like old model)
+        # Weighted sum of comparisons (multi-attribute utility theory)
         raw_score = (
-            self.agent.weight_yield * avg_yield
-            + self.agent.weight_soil * avg_soil
-            + self.agent.weight_moisture * avg_moisture
+            self.farmer.weight_yield * avg_yield
+            + self.farmer.weight_soil * avg_soil
+            + self.farmer.weight_moisture * avg_moisture
         )
 
-        # Final sigmoid (maps to (0, 1), consistent with old model)
+        # Sigmoid maps to (0, 1) attitude score
         return sigmoid(raw_score)
 
-    def _compute_attitude_social_learning_country(self, new_bundle):
+    def compute_attitude_social_learning_country(self, new_bundle):
         """Compute attitude from COUNTRY-LEVEL bundle performance.
 
         Uses cached country statistics to compare own performance against
         average performance of farmers using the proposed bundle across
-        the entire country.
+        the entire country. Bundles with average slope worse than the farmer's
+        own slope are filtered out (relative comparison).
+
+        Scientific basis:
+        - Social comparison theory (Festinger 1954): relative performance evaluation
+        - Adaptive learning (Boyd & Richerson 1985): filter out worse strategies
+
+        The relative slope comparison handles degrading contexts where all practices
+        decline but some decline slower than others.
 
         No similarity weighting at country level - uses simpler bundle-based
         grouping for computational efficiency (O(1) vs O(n²)).
@@ -1803,58 +1656,120 @@ class TPB(DecisionModel):
         float
             Attitude score in [0, 1].
         """
-        # Access country cache
-        country = self.agent.cell.country
-        cache = getattr(country, "_country_stats_cache", {})
-
-        if not cache:
+        store = _country_performance_store(self.farmer.cell.country)
+        if store is None:
             return 0.5  # Neutral if no country data
 
-        bundle_performance = cache.get("bundle_performance", {})
-
-        # Get average performance for the proposed bundle
-        bundle_perf = bundle_performance.get(new_bundle)
-        if bundle_perf is None or bundle_perf.get("n_farmers", 0) == 0:
+        perf = store.get(new_bundle)
+        if perf.count == 0:
             return 0.5  # Neutral if no data for this bundle
 
+        # -----------------------------------------------------------------
+        # Filter: skip bundles performing worse than me (relative comparison)
+        # -----------------------------------------------------------------
+        # My slope vs bundle's average slope - handles degrading contexts
+        my_slope = self.performance_tracker.weighted_score(self.farmer)
+        bundle_slope = perf.weighted_trend_score(self.farmer)
+        if bundle_slope < my_slope:
+            return 0.5  # Neutral for bundles declining more than me
+
         # My current absolute values (avoid division by zero)
-        my_yield = max(self.agent.cropyield, 1e-6)
-        my_soil = max(self.agent.soilc, 1e-6)
-        my_moisture = max(self.agent.root_moisture, 1e-6)
+        my_yield = max(self.farmer.cropyield, 1e-6)
+        my_soil = max(self.farmer.soilc, 1e-6)
+        my_moisture = max(self.farmer.root_moisture, 1e-6)
 
         # Compare my performance to country average for this bundle
-        avg_yield = bundle_perf["avg_yield"]
-        avg_soil = bundle_perf["avg_soil"]
-        avg_moisture = bundle_perf["avg_moisture"]
+        avg_yield = perf.avg_yield
+        avg_soilc = perf.avg_soilc
+        avg_moisture = perf.avg_moisture
 
         # Absolute comparisons (ratio - 1)
         yield_cmp = avg_yield / my_yield - 1 if my_yield > 0 else 0.0
-        soil_cmp = avg_soil / my_soil - 1 if my_soil > 0 else 0.0
+        soil_cmp = avg_soilc / my_soil - 1 if my_soil > 0 else 0.0
         moisture_cmp = avg_moisture / my_moisture - 1 if my_moisture > 0 else 0.0
 
-        # Slope adjustment using country-level average slopes
-        avg_yield_slope = bundle_perf.get("avg_yield_slope", 0.0)
-        avg_soil_slope = bundle_perf.get("avg_soil_slope", 0.0)
-        avg_moisture_slope = bundle_perf.get("avg_moisture_slope", 0.0)
-
-        # Weighted slope for the bundle's average trajectory
-        weighted_slope = (
-            self.agent.weight_yield * avg_yield_slope
-            + self.agent.weight_soil * avg_soil_slope
-            + self.agent.weight_moisture * avg_moisture_slope
-        )
-        slope_factor = sigmoid(weighted_slope)
-
-        # Adjust comparisons by slope factor
-        yield_adj = yield_cmp * slope_factor
-        soil_adj = soil_cmp * slope_factor
-        moisture_adj = moisture_cmp * slope_factor
-
-        # Weighted sum of comparisons
+        # Weighted sum of comparisons (no slope multiplication)
         raw_score = (
-            self.agent.weight_yield * yield_adj
-            + self.agent.weight_soil * soil_adj
-            + self.agent.weight_moisture * moisture_adj
+            self.farmer.weight_yield * yield_cmp
+            + self.farmer.weight_soil * soil_cmp
+            + self.farmer.weight_moisture * moisture_cmp
+        )
+
+        return sigmoid(raw_score)
+
+    def compute_attitude_social_learning_cluster(self, new_bundle):
+        """Compute attitude from AGROECOLOGICAL CLUSTER-level bundle performance.
+
+        Cross-border social learning: farmers learn from countries with similar
+        agroecological conditions. This captures diffusion of agricultural innovations
+        across national boundaries within similar agro-ecological zones.
+        Bundles with average slope worse than the farmer's own slope are filtered out.
+
+        Scientific basis:
+        - Social comparison theory (Festinger 1954): relative performance evaluation
+        - Adaptive learning (Boyd & Richerson 1985): filter out worse strategies
+
+        The relative slope comparison handles degrading contexts where all practices
+        decline but some decline slower than others (e.g., Paraguay post-land-use-change).
+
+        Uses aggregated cluster statistics from world.statistic (computed from
+        peer countries in the same agroecological cluster).
+
+        Parameters
+        ----------
+        new_bundle : tuple
+            Bundle being evaluated.
+
+        Returns
+        -------
+        float
+            Attitude score in [0, 1].
+        """
+        country = self.farmer.cell.country
+        cluster_id = getattr(country, "agroecological_cluster", -1)
+
+        if cluster_id < 0:
+            return 0.5  # Neutral if no cluster
+
+        # Access via country._world which works on both driver and workers
+        cluster_stats = country._world.statistic.get("cluster_management_performance", {})
+        store = cluster_stats.get(cluster_id)
+        if not isinstance(store, RegionManagementPerformanceStore):
+            return 0.5  # Neutral if no cluster data
+
+        perf = store.get(new_bundle)
+        if perf.count == 0:
+            return 0.5  # Neutral if no data for this bundle
+
+        # -----------------------------------------------------------------
+        # Filter: skip bundles performing worse than me (relative comparison)
+        # -----------------------------------------------------------------
+        # My slope vs bundle's average slope - handles degrading contexts
+        my_slope = self.performance_tracker.weighted_score(self.farmer)
+        bundle_slope = perf.weighted_trend_score(self.farmer)
+        if bundle_slope < my_slope:
+            return 0.5  # Neutral for bundles declining more than me
+
+        # My current absolute values (avoid division by zero)
+        my_yield = max(self.farmer.cropyield, 1e-6)
+        my_soil = max(self.farmer.soilc, 1e-6)
+        my_moisture = max(self.farmer.root_moisture, 1e-6)
+
+        # Get cluster average performance for this bundle
+        avg_yield = perf.avg_yield
+        avg_soilc = perf.avg_soilc
+        avg_moisture = perf.avg_moisture
+
+        # Absolute comparisons (ratio - 1)
+        yield_cmp = avg_yield / my_yield - 1 if my_yield > 0 else 0.0
+        soil_cmp = avg_soilc / my_soil - 1 if my_soil > 0 else 0.0
+        moisture_cmp = avg_moisture / my_moisture - 1 if my_moisture > 0 else 0.0
+
+        # Weighted sum of comparisons (no slope multiplication)
+        raw_score = (
+            self.farmer.weight_yield * yield_cmp
+            + self.farmer.weight_soil * soil_cmp
+            + self.farmer.weight_moisture * moisture_cmp
         )
 
         return sigmoid(raw_score)
@@ -1863,7 +1778,7 @@ class TPB(DecisionModel):
     # TPB COMPONENT: SOCIAL NORM
     # =========================================================================
 
-    def _compute_social_norm_local(self, new_bundle):
+    def compute_social_norm_local(self, new_bundle):
         """Compute social norm based on LOCAL neighbourhood practice distribution.
 
         Social norm reflects "what others are doing" (descriptive norm).
@@ -1883,30 +1798,32 @@ class TPB(DecisionModel):
         float
             Social norm score in [0, 1].
         """
-        if not self.agent.neighbourhood:
+        if not self.farmer.neighbourhood:
             return 0.5  # Neutral without neighbours
 
         # Average similarity to neighbours for this bundle
         # High similarity = neighbours use similar bundles and crops
         total_similarity = sum(
-            self._total_similarity(new_bundle, n)
-            for n in self.agent.neighbourhood
+            self.total_similarity(new_bundle, n)
+            for n in self.farmer.neighbourhood
         )
-        avg_similarity = total_similarity / len(self.agent.neighbourhood)
+        avg_similarity = total_similarity / len(self.farmer.neighbourhood)
 
         # Shifted sigmoid: adoption threshold acts as the neutrality point
         # (Granovetter 1978 heterogeneous-threshold diffusion model).
         # Below threshold -> drag, above -> boost, smoothly transitioning.
         # Threshold is AFT-specific: pioneers feel "normed" at lower adoption,
         # traditionalists require broader local uptake to feel normative.
-        threshold = self._get_aft_param("threshold_social_norm_local")
+        threshold = self.get_aft_param("threshold_social_norm_local")
         return sigmoid(avg_similarity - threshold)
 
-    def _compute_social_norm_country(self, new_bundle):
+    def compute_social_norm_country(self, new_bundle):
         """Compute social norm based on COUNTRY-LEVEL practice distribution.
 
         Uses cached country statistics for O(1) lookup. This reflects
         "what farmers in my country are doing" as a broader social influence.
+        Country stats are already merged with neighbouring countries
+        (configured via neighbour_country_weight) at the country level.
 
         Follows the simple approach from tillage_farmer.py: fraction of
         farmers using the practice → sigmoid transformation.
@@ -1921,18 +1838,14 @@ class TPB(DecisionModel):
         float
             Social norm score in [0, 1].
         """
-        # Access country cache
-        country = self.agent.cell.country
-        cache = getattr(country, "_country_stats_cache", {})
+        store = _country_performance_store(self.farmer.cell.country)
+        if store is None or store.total_farmers < 2:
+            return 0.5  # Neutral if no country data
 
-        if not cache or cache.get("total_farmers", 0) < 2:
-            return 0.5  # Neutral if no country data or only self
+        bundle_count = store.bundle_counts.get(new_bundle, 0)
+        total_farmers = store.total_farmers
 
-        bundle_counts = cache.get("bundle_counts", {})
-        total_farmers = cache.get("total_farmers", 1)
-
-        # Fraction of farmers using this bundle at country level
-        bundle_count = bundle_counts.get(new_bundle, 0)
+        # Fraction of farmers using this bundle
         bundle_fraction = bundle_count / total_farmers
 
         # Shifted sigmoid: threshold = country-adoption level at which this
@@ -1940,19 +1853,65 @@ class TPB(DecisionModel):
         # AFT (pioneers adopt the country signal earlier) and are typically
         # higher than the local threshold, because country adoption is more
         # abstract/statistical than direct observation of neighbours.
-        threshold = self._get_aft_param("threshold_social_norm_country")
+        threshold = self.get_aft_param("threshold_social_norm_country")
         return sigmoid(bundle_fraction - threshold)
+
+    def compute_social_norm_cluster(self, new_bundle):
+        """Compute social norm from AGROECOLOGICAL CLUSTER-level practice distribution.
+
+        Tele-coupled social norm: farmers are influenced by adoption patterns
+        in countries with similar agroecological conditions. This captures how
+        agricultural practices diffuse across countries within similar
+        agro-ecological zones.
+
+        Uses aggregated cluster statistics from world.statistic (computed from
+        peer countries in the same agroecological cluster).
+
+        Parameters
+        ----------
+        new_bundle : tuple
+            Bundle being evaluated.
+
+        Returns
+        -------
+        float
+            Social norm score in [0, 1].
+        """
+        country = self.farmer.cell.country
+        cluster_id = getattr(country, "agroecological_cluster", -1)
+
+        if cluster_id < 0:
+            return 0.5  # Neutral if no cluster
+
+        # Access via country._world which works on both driver and workers
+        cluster_stats = country._world.statistic.get("cluster_management_performance", {})
+        store = cluster_stats.get(cluster_id)
+        if not isinstance(store, RegionManagementPerformanceStore):
+            return 0.5  # Neutral if no cluster data
+
+        total_in_cluster = store.total_farmers
+        bundle_adopters = store.bundle_counts.get(new_bundle, 0)
+
+        if total_in_cluster == 0:
+            return 0.5  # Neutral if no peer farmers
+
+        # Adoption rate in cluster
+        adoption_rate = bundle_adopters / total_in_cluster
+
+        # Shifted sigmoid with AFT-specific threshold
+        threshold = getattr(self.farmer, "threshold_social_norm_cluster", 0.1)
+        return sigmoid(adoption_rate - threshold)
 
     # =========================================================================
     # COST CALCULATIONS
     # =========================================================================
 
-    def _get_bundle_direct_cost(self, bundle):
+    def get_bundle_direct_cost(self, bundle):
         """Compute annual direct cost of a practice bundle.
 
         Parameters
         ----------
-        bundle : tuple
+        bundle : Bundle
             Practice bundle.
 
         Returns
@@ -1960,31 +1919,16 @@ class TPB(DecisionModel):
         float
             Annual direct cost (scaled by farm size).
         """
-        costs = self.agent.practice_costs
-        total = 0.0
+        return bundle.direct_cost_per_ha(self.farmer.practice_costs) * self.farmer.net_farm_size
 
-        # Tillage cost (if no-till, may have different cost structure)
-        if bundle[0] == 1:
-            total += costs.get("tillage", {}).get("direct", 0)
-
-        # Cover crop cost (seeds, planting)
-        if bundle[1] == 1:
-            total += costs.get("cover_crop", {}).get("direct", 0)
-
-        # Residue retention cost (foregone income from selling)
-        if bundle[2] == 1:
-            total += costs.get("residue_on_field", {}).get("direct", 0)
-
-        return total * self.agent.farm_size
-
-    def _total_transition_cost(self, old_bundle, new_bundle):
+    def total_transition_cost(self, old_bundle, new_bundle):
         """Compute one-time transition cost for changing practices.
 
         Parameters
         ----------
-        old_bundle : tuple
+        old_bundle : Bundle
             Current practice bundle.
-        new_bundle : tuple
+        new_bundle : Bundle
             Target practice bundle.
 
         Returns
@@ -1992,23 +1936,16 @@ class TPB(DecisionModel):
         float
             Total transition cost (scaled by farm size).
         """
-        costs = self.agent.practice_costs
-        practices = ["tillage", "cover_crop", "residue_on_field"]
-
-        # Sum transition costs for practices that change
-        total = sum(
-            costs.get(p, {}).get("transition", 0)
-            for i, p in enumerate(practices)
-            if old_bundle[i] != new_bundle[i]
+        return (
+            old_bundle.transition_cost_per_ha(new_bundle, self.farmer.practice_costs)
+            * self.farmer.gross_farm_size
         )
 
-        return total * self.agent.farm_size
-
     # =========================================================================
-    # AFFORDABILITY ADJUSTMENT
+    # AFFORDABILITY ADJUSTMENTMENT BASED ON CAPITAL
     # =========================================================================
 
-    def _affordable_bundle(self, target_bundle):
+    def affordable_bundle(self, target_bundle):
         """Find affordable subset of target bundle.
 
         If farmer can't afford full target bundle, add changes cheapest-first
@@ -2016,59 +1953,56 @@ class TPB(DecisionModel):
 
         Parameters
         ----------
-        target_bundle : tuple
+        target_bundle : Bundle
             Desired practice bundle.
 
         Returns
         -------
-        tuple
+        Bundle
             Affordable bundle (may equal current if nothing affordable).
         """
-        current = self._practice_bundle
-        total_cost = self._total_transition_cost(current, target_bundle)
+        current = self.practice_bundle
+        total_cost = self.total_transition_cost(current, target_bundle)
 
         # -----------------------------------------------------------------
-        # Check if full target is affordable and reasonable
+        # Check if full target is affordable
         # -----------------------------------------------------------------
-        if self.agent.capital >= total_cost and self._is_reasonable_bundle(target_bundle):
+        if self.farmer.capital >= total_cost:
             return target_bundle
 
         # -----------------------------------------------------------------
         # Build affordable subset: add changes cheapest-first
         # -----------------------------------------------------------------
-        practices = ["tillage", "cover_crop", "residue_on_field"]
-
-        # List changes needed: (index, new_value, cost)
         changes = [
-            (i, target_bundle[i], self.agent.practice_costs.get(p, {}).get("transition", 0) * self.agent.farm_size)
-            for i, p in enumerate(practices)
-            if current[i] != target_bundle[i]
+            (
+                field,
+                getattr(target_bundle, field),
+                getattr(self.farmer.practice_costs, field).transition
+                * self.farmer.gross_farm_size,
+            )
+            for field in PRACTICE_FIELDS
+            if getattr(current, field) != getattr(target_bundle, field)
         ]
 
         # Sort by cost (cheapest first)
         changes.sort(key=lambda x: x[2])
 
         # Greedily add affordable changes
-        result = list(current)
-        remaining_capital = self.agent.capital
+        result = current
+        remaining_capital = self.farmer.capital
 
-        for idx, new_val, cost in changes:
+        for field, new_val, cost in changes:
             if remaining_capital >= cost:
-                # Check if adding this change keeps bundle reasonable
-                candidate = list(result)
-                candidate[idx] = new_val
+                result = result.change_practices(**{field: new_val})
+                remaining_capital -= cost
 
-                if self._is_reasonable_bundle(tuple(candidate)):
-                    result[idx] = new_val
-                    remaining_capital -= cost
-
-        return tuple(result)
+        return result
 
     # =========================================================================
     # TPB COMPONENT: PERCEIVED BEHAVIORAL CONTROL (PBC)
     # =========================================================================
 
-    def _pbc_for_bundle(self, new_bundle):
+    def pbc_for_bundle(self, new_bundle):
         """Compute Perceived Behavioral Control for a bundle.
 
         PBC reflects "can I actually do this?" - lower when costs are
@@ -2098,11 +2032,11 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
 
         # One-time transition cost
-        transition_cost = self._total_transition_cost(self._practice_bundle, new_bundle)
+        transition_cost = self.total_transition_cost(self.practice_bundle, new_bundle)
 
         # Change in annual direct costs
-        current_direct = self._get_bundle_direct_cost(self._practice_bundle)
-        new_direct = self._get_bundle_direct_cost(new_bundle)
+        current_direct = self.get_bundle_direct_cost(self.practice_bundle)
+        new_direct = self.get_bundle_direct_cost(new_bundle)
         direct_cost_increase = max(0, new_direct - current_direct)
 
         # Total cost impact
@@ -2111,20 +2045,20 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Calculate disposable capital (above minimum threshold)
         # -----------------------------------------------------------------
-        disposable = max(self.agent.capital - self.agent.min_capital, 1e-6)
+        disposable = max(self.farmer.capital - self.farmer.min_capital, 1e-6)
 
         # -----------------------------------------------------------------
         # PBC decreases as cost approaches disposable capital
         # -----------------------------------------------------------------
         cost_factor = 1.0 / (1.0 + cost_impact / disposable)
 
-        return self.agent.pbc_base * cost_factor
+        return self.farmer.pbc_base * cost_factor
 
     # =========================================================================
     # COMPUTE FULL TPB SCORE
     # =========================================================================
 
-    def _compute_tpb_for_bundle(self, new_bundle):
+    def compute_tpb_for_bundle(self, new_bundle):
         """Compute all TPB components and overall intention for a bundle.
 
         TPB formula (multiplicative):
@@ -2133,10 +2067,10 @@ class TPB(DecisionModel):
         This means PBC acts as a gate: low PBC blocks adoption regardless
         of positive attitude/norms.
 
-        Components are computed at both local (neighbour) and country levels,
-        then combined with configurable weights. Local effects typically
-        dominate (neighbours have more influence), but country-level trends
-        provide broader social signals.
+        Components are computed at local (neighbour), country, and agroecological
+        cluster levels, then combined with configurable weights. Levels can be
+        disabled via config (spreading_levels), and their weights are redistributed
+        to enabled levels.
 
         Parameters
         ----------
@@ -2144,53 +2078,101 @@ class TPB(DecisionModel):
             Bundle being evaluated.
         """
         # -----------------------------------------------------------------
-        # Attitude: own experience + social learning (local + country)
+        # Get spreading level config (which levels are enabled)
         # -----------------------------------------------------------------
-        # Own land attitude (same for local/country - it's your own observation)
-        self._attitude_own_land = self._compute_attitude_own_land()
+        enable_local, enable_country, enable_cluster = self._get_enabled_spreading_levels()
 
-        # Social learning: local (neighbours) and country-level
+        # -----------------------------------------------------------------
+        # Redistribute weights for attitude social learning
+        # -----------------------------------------------------------------
+        raw_att_local = self.farmer.weight_attitude_local
+        raw_att_country = self.farmer.weight_attitude_country
+        raw_att_cluster = self.farmer.weight_attitude_cluster
+
+        att_w_local, att_w_country, att_w_cluster = redistribute_weights(
+            raw_att_local, raw_att_country, raw_att_cluster,
+            enable_local, enable_country, enable_cluster,
+        )
+
+        # -----------------------------------------------------------------
+        # Redistribute weights for social norm
+        # -----------------------------------------------------------------
+        raw_norm_local = self.farmer.weight_social_norm_local
+        raw_norm_country = self.farmer.weight_social_norm_country
+        raw_norm_cluster = self.farmer.weight_social_norm_cluster
+
+        norm_w_local, norm_w_country, norm_w_cluster = redistribute_weights(
+            raw_norm_local, raw_norm_country, raw_norm_cluster,
+            enable_local, enable_country, enable_cluster,
+        )
+
+        # -----------------------------------------------------------------
+        # Attitude: own experience + social learning (local + country + cluster)
+        # -----------------------------------------------------------------
+        # Own land attitude (always computed - it's your own observation)
+        self._attitude_own_land = self.compute_attitude_own_land()
+
+        # Social learning: compute only enabled levels
         self._attitude_social_learning_local = (
-            self._compute_attitude_social_learning_local(new_bundle)
+            self.compute_attitude_social_learning_local(new_bundle)
+            if enable_local else 0.0
         )
         self._attitude_social_learning_country = (
-            self._compute_attitude_social_learning_country(new_bundle)
+            self.compute_attitude_social_learning_country(new_bundle)
+            if enable_country else 0.0
+        )
+        self._attitude_social_learning_cluster = (
+            self.compute_attitude_social_learning_cluster(new_bundle)
+            if enable_cluster else 0.0
         )
 
-        # Combine local and country social learning with configurable weights
+        # Combine with redistributed weights
         self._attitude_social_learning = (
-            self.agent.weight_attitude_local * self._attitude_social_learning_local  # noqa: E501
-            + self.agent.weight_attitude_country * self._attitude_social_learning_country  # noqa: E501
+            att_w_local * self._attitude_social_learning_local
+            + att_w_country * self._attitude_social_learning_country
+            + att_w_cluster * self._attitude_social_learning_cluster
         )
 
         # Full attitude: own land + combined social learning
         self._attitude = (
-            self.agent.weight_own_land * self._attitude_own_land
-            + self.agent.weight_social_learning * self._attitude_social_learning
+            self.farmer.weight_own_land * self._attitude_own_land
+            + self.farmer.weight_social_learning * self._attitude_social_learning
         )
 
         # -----------------------------------------------------------------
-        # Social Norm: local (neighbours) + country-level
+        # Social Norm: local (neighbours) + country-level + agroecological cluster
         # -----------------------------------------------------------------
-        self._social_norm_local = self._compute_social_norm_local(new_bundle)
-        self._social_norm_country = self._compute_social_norm_country(new_bundle)
+        # Compute only enabled levels
+        self._social_norm_local = (
+            self.compute_social_norm_local(new_bundle)
+            if enable_local else 0.0
+        )
+        self._social_norm_country = (
+            self.compute_social_norm_country(new_bundle)
+            if enable_country else 0.0
+        )
+        self._social_norm_cluster = (
+            self.compute_social_norm_cluster(new_bundle)
+            if enable_cluster else 0.0
+        )
 
-        # Combine with configurable weights
+        # Combine with redistributed weights
         self._social_norm = (
-            self.agent.weight_social_norm_local * self._social_norm_local
-            + self.agent.weight_social_norm_country * self._social_norm_country
+            norm_w_local * self._social_norm_local
+            + norm_w_country * self._social_norm_country
+            + norm_w_cluster * self._social_norm_cluster
         )
 
         # -----------------------------------------------------------------
         # PBC: can I afford this?
         # -----------------------------------------------------------------
-        self._pbc = self._pbc_for_bundle(new_bundle)
+        self._pbc = self.pbc_for_bundle(new_bundle)
 
         # -----------------------------------------------------------------
         # TPB Intention: combine components
         # -----------------------------------------------------------------
         # Multiplicative formula: PBC gates the attitude/norm contribution
         self._tpb = (
-            self.agent.weight_attitude * self._attitude
-            + self.agent.weight_norm * self._social_norm
+            self.farmer.weight_attitude * self._attitude
+            + self.farmer.weight_norm * self._social_norm
         ) * self._pbc

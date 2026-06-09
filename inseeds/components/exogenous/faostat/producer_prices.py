@@ -22,7 +22,6 @@ import xarray as xr
 from copan_eval.fao import fao_definitions, FaoCropTranslator
 
 from .base import FaoDataset
-from .dummy import generate_dummy_producer_prices
 
 
 # Dry matter factors from Wirsenius (2000), Table A1.II
@@ -120,17 +119,3 @@ class FaoProducerPrices(FaoDataset):
             ds[var].attrs["area_code_format"] = "ISO3"
 
         return ds
-
-    @override
-    def _generate_dummy_fallback(
-        self,
-        output_path: Path,
-        years: tuple[int, int],
-    ) -> None:
-        """Generate dummy producer prices when FAO API fails."""
-        generate_dummy_producer_prices(
-            years=years,
-            output_path=output_path,
-        )
-        print(f"  Saved DUMMY producer prices to: {output_path}")
-        print(f"  ⚠ Delete this file and provide real FAO data for production runs!")
