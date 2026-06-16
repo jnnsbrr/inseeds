@@ -1,10 +1,10 @@
 model: "InSEEDS"
 
-# Settings for LPJmL specifically for coupling (pycoupler)
-#   (not covered by LPJmL's direct config)
-lpjml_settings:
-    # Convert country codes to readable names (uses ISO country codes)
-    country_code_to_name: true
+# Control run settings
+control_run: False
+# Enable PyInstrument profiling for the driver (main) process
+# Generates HTML profile at: {output_dir}/profiling_{timestamp}.html
+profiling: false
 
 # Parallelization settings for country updates
 # Designed for Python 3.14+ free-threaded mode (no GIL)
@@ -13,16 +13,11 @@ parallelization:
     # 'serial' = sequential execution (default, safe)
     # 'threaded' = use ThreadPoolExecutor for parallel country updates
     mode: 'serial'
-
     # Maximum number of worker threads (0 = auto-detect from CPU count)
     max_workers: 0
-
     # Enable debug output for parallelization
     debug: false
 
-# Enable PyInstrument profiling for the driver (main) process
-# Generates HTML profile at: {output_dir}/profiling_{timestamp}.html
-profiling: false
 
 # Output collection settings for pycopanlpjml
 # All settings from pycopanlpjml/config.yaml are explicitly listed here
@@ -85,7 +80,6 @@ practice_dimensions:
         leaching_high: 5    # mgN/l threshold for non-legume selection
         fertilizer_high: 5  # gN/m2/yr threshold for non-legume selection
     residue:
-        type: flexible
         # FAO CA threshold: 30% soil cover from crop residues
         # Below this, farmer increases retention; at/above, maintains current level
         ca_cover_threshold: 0.3
@@ -107,22 +101,40 @@ exploration:
 # Data: production = recycled + removed + burnt
 #   - burnt: burned (no economic value)
 #   - removed: animal feed + other purposes (has opportunity cost)
-#   - recycled: bedding that returns to field with manure
+#   - recycled: bedding returns to field with manure (no net cost)
+#
+# OPPORTUNITY COST AS PERCENTAGE OF CROP VALUE:
+# ---------------------------------------------
+# Singh & Schiere (1995, Ch. 1.1, Box 1) found: "the value of the straw yield
+# can represent between 10-15% or higher of the total crop value"
+#
+# We implement this dynamically: residue_cost = crop_revenue × fraction
+# This makes costs spatially and temporally variable (higher yields → higher cost)
+#
+# Cross-validation with market prices:
+#   - Germany: €57-61/t (Karras et al. 2024) → 4 t/ha × €60/t = €240/ha
+#   - India: $30-35/t (Duncan et al. 2020) → 4 t/ha × $33/t = $132/ha
+#   - 12.5% of $600/ha crop value = $75/ha (reasonable global average)
+#
+# References:
+#   - Singh, K. & Schiere, J.B. (eds.) (1995). Handbook for Straw Feeding
+#     Systems. ICAR, New Delhi / Wageningen Agricultural University.
+#     https://edepot.wur.nl/333326
+#   - Karras, T., Noack, V. & Thrän, D. (2024). The Costs of Straw in Germany.
+#     Waste and Biomass Valorization 15: 5369-5385.
+#   - Duncan, A.J., Samaddar, A. & Blümmel, M. (2020). Rice and wheat straw
+#     fodder trading in India. Field Crops Research 246: 107680.
+#
 residue_economics:
-    # Opportunity cost by use type ($/ha/yr)
-    # These are weighted by spatial fractions from MADRaT data
-    use_costs:
+    # Opportunity cost as fraction of crop revenue (Singh & Schiere 1995: 10-15%)
+    # Weighted by spatial fractions from MADRaT data (Smerald et al. 2023)
+    use_cost_fractions:
         burnt: 0.0            # Burned - no economic value
-        removed: 80.0         # Animal feed + other purposes (has value)
-        recycled: 0.0         # Bedding returns to field via manure
-        other: 40.0           # Fallback for unknown uses
+        removed: 0.125        # 12.5% of crop value (midpoint of 10-15%)
+        recycled: 0.0         # Returns to field via manure - no cost
+        other: 0.0625         # 6.25% - conservative for unknown uses
     # Default use type when spatial data unavailable
     default_removal_use: "other"
-    # Reference year to use from MADRaT data (1965-2015 available)
-    reference_year: 2015
-
-control_run: False
-pioneer_share: 0.25
 
 # Agroecological country clustering for tele-coupled social learning
 # Countries with similar agroecological conditions share social learning signals
@@ -131,90 +143,143 @@ agroecological_clustering:
     n_clusters: null
     # Range to search for optimal k when n_clusters is null
     k_range: [5, 15]
-    # Years between reclustering (for agroecological change scenarios)
-    # Set to null to cluster only once at initialization
-    recalculate_interval: null
 
 # Farm economics (USD per hectare)
 # Note: Values are per hectare to match LPJmL spatial resolution
 # Average farm sizes vary: USA ~180 ha, EU median ~5 ha (Our World in Data, 2020)
-# Profit calculation uses FAO producer prices (fao_pft_prices) - see prepare_fao_producer_prices.py
+#
+# FAO BASELINE + DEVIATIONS CAPITAL DYNAMICS MODEL
+# -------------------------------------------------
+# FAO provides the baseline capital dynamics. We track DEVIATIONS:
+#
+#   K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
+#
+# where:
+#   - i - δ = FAO net rate (investment - depreciation, typically +2-7%/year)
+#   - Δrevenue = current_revenue - baseline_revenue
+#   - Δcosts = current_costs - baseline_costs
+#
+# BASELINES (set at initialization):
+#   - baseline_revenue: Average over historic period (2015-2025 LPJmL data)
+#   - baseline_costs: Initial practice costs at simulation start
+#
+# KEY BEHAVIORS:
+#   - If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
+#   - Better yields (Δrevenue > 0): capital grows faster than baseline
+#   - Worse yields (Δrevenue < 0): capital grows slower than baseline
+#   - CA with higher costs: Δcosts > 0 → reduces capital vs baseline
+#   - CA with savings (no-till): Δcosts < 0 → increases capital vs baseline
+#
+# WHY THIS WORKS:
+#   FAO (i - δ) already captures everything at sector average: depreciation,
+#   reinvestment, subsidies, loans, typical yields/costs. We don't model
+#   these explicitly - just the deviations from this baseline.
+#
+# References:
+#   - Solow (1956). Capital accumulation framework
+#   - OECD (2009). Measuring Capital Manual
+#   - FAO (2023). FAOSTAT Capital Stock
+#   - Farm Financial Scorecard (CFFM, University of Minnesota)
+#   - Davis, J. (2022). "Farm's Target for Working Capital." SDSU Extension.
+#
 farm_economics:
-    initial_capital: 1000.0     # $1000/ha starting capital (dummy)
-    min_capital: 100.0          # $100/ha - below this, practices are deselected
-    max_capital: 5000.0         # $5000/ha ceiling
-    maintenance_cost: 200.0     # $200/ha/yr base farm maintenance (dummy)
-    # Survival buffer: years of depreciation farmer can sustain before crisis
-    # Based on USDA farm financial indicators (Katchova & Dinterman 2018)
-    n_survival_years: 1
-    # Savings rate: fraction of gross profit reinvested into farm capital
-    # Literature: 10-30% range (Lowder et al. 2016; FAO 2017)
-    # Higher values (0.30) needed for capital stability with LPJmL revenue levels
-    savings_rate: 0.30
-    #
-    # Effective depreciation rate: calibrated rate accounting for capital composition
-    # -------------------------------------------------------------------------------
-    # FAO Capital Stock includes land (~65%), buildings (~20%), machinery (~15%)
-    # [USDA ERS 2022: land = 83% of US farm assets]
-    #
-    # Depreciation rates by asset type (OECD 2009; Eurostat 2013):
-    #   - Land: 0% (does not depreciate, often appreciates)
-    #   - Buildings: 2-5%/year (40-50 year service life)
-    #   - Machinery: 10-15%/year (7-10 year service life)
-    #
-    # FAO aggregate rate (~8%) reflects machinery-heavy weighting, but when applied
-    # to total capital (including land), the effective rate should be:
-    #   0.65×0% + 0.20×3% + 0.15×12% ≈ 2.4%
-    #
-    # We use 1.2% as a conservative estimate that ensures capital stability with
-    # LPJmL-derived revenue levels (which are ~50% of real-world intensive agriculture).
-    #
-    # Set to null to use FAO country-specific rate (not recommended without calibration)
-    effective_depreciation_rate: 0.012
+    # Minimum capital buffer as fraction of initial capital.
+    # Below this threshold, farmers are forced to deselect practices.
+    # Based on Farm Financial Scorecard: working capital/gross revenue
+    #   - Strong: > 0.35 (can weather 1-2 year downturn)
+    #   - Vulnerable: < 0.20 (trouble repaying loans)
+    # Using 0.25 as midpoint between vulnerable and strong thresholds.
+    # Note: FAO NCS excludes land (SNA 2008 definition), so this fraction
+    # applies to productive capital (machinery, equipment, buildings).
+    min_capital_fraction: 0.25
+    # The FAO rates (i - δ) capture the NET capital change at sector level,
+    # including: depreciation, reinvestment, subsidies, loans, average costs.
+    # This is our baseline - what happens to capital at sector average.
+    fao_capital_baseline: false
 
 # Practice costs (USD per hectare)
-# Sources cited after values; to be refined with regional FAO/FAOSTAT data
+# Costs are scaled by farmer's capital intensity relative to reference (US).
+# Each cost has [min, max] range; actual cost = interpolated by capital ratio.
+#   cost = min + (max - min) × clamp(capital_per_ha / reference_capital, 0, 1)
+#
 # Note: When capital is low, practices are deselected in order of direct cost
 #       (highest first): cover_crop > residue > tillage
+#
+# References:
+#   [1] University of Illinois farmdoc (2023). Machinery Cost Estimates: Field Operations.
+#       https://farmdoc.illinois.edu/assets/management/machinery-costs/field_operations_2023.pdf
+#   [2] USDA CEAP (2022). Save Money on Fuel with No-Till Farming.
+#       https://www.farmers.gov/blog/save-money-on-fuel-with-no-till-farming
+#   [3] No-Till Farmer (2022). Fuel Savings Analysis.
+#       https://www.no-tillfarmer.com/articles/12068-usda-save-17-per-acre-on-fuel-by-switching-to-no-till
+#   [4] SARE (2019). Cover Crop Economics. https://www.sare.org/wp-content/uploads/Cover-Crop-Economics.pdf
+#   [5] Indigo Ag / Iowa State (2020). Cover Crop Equipment & Custom Rates.
+#       https://app.indigoag.com/programs/learn/paper/what-equipment-is-needed-to-plant-cover-crops
+#   [6] CMV360 (2026). Zero Tillage in India: Prices, Subsidies, ROI.
+#       Custom hire rates: ₹500-900/acre = $15-27/ha.
+#       https://www.cmv360.com/tractors/articles/zero-tillage-in-india-2026
+#   [7] Hossain et al. (2017). Cost effective small No-till seeder for Bangladesh.
+#       Bangladesh J. Agril. Res. 42(1): 27-34. Small seeder cost: $350-400.
+#       https://doi.org/10.3329/bjar.v42i1.31970
+#
 practice_costs:
+    # Reference country for cost scaling - costs are scaled relative to this country's
+    # capital per ha from FAO data. USA used because literature values originate there.
+    reference_capital_country: "USA"
     tillage:
-        # No-till planter custom rate ~$67/ha (farmdoc Illinois, 2023)
-        transition: 70.0   # $/ha - no-till planter/drill investment amortized
-        # Fuel savings: ~$42-59/ha (USDA, 2022; No-Till Farmer, 2022)
-        direct: -50.0      # $/ha/yr - fuel SAVINGS with no-till (deselected last)
+        # US literature value: $66/ha (no-till planter amortized) [1]
+        # India custom hire: ₹500-900/acre = $15-27/ha [6]
+        # Bangladesh small seeder: $350-400 total ≈ $7-10/ha amortized [7]
+        # Conservative range: 2-3x variation from low-capital to high-capital
+        # NOTE: Applied in BOTH directions (no-till→conventional also needs equipment)
+        # Conventional tillage equipment (plows, discs) costs are similar magnitude.
+        transition: [40.0, 66.0]   # $/ha - equipment cost BOTH directions [1,6,7]
+        # US literature value: -$50/ha fuel savings [2,3]
+        # Fuel prices vary ~1.5x globally (GlobalPetrolPrices 2026)
+        # Less mechanized farms have smaller baseline fuel use → less savings
+        # Conservative range: ~1.3x variation
+        direct: [-40.0, -55.0]     # $/ha/yr - fuel SAVINGS range [2,3]
     cover_crop:
-        # Seeder attachment minimal, included in planting
-        transition: 25.0   # $/ha - seeder modification
-        # Seed + seeding + termination: $37-93/ha median (SARE, 2023)
-        direct: 75.0       # $/ha/yr - highest cost (deselected first)
+        # US literature value: $20/ha transition (seeder attachment) [4,5]
+        # Developing countries: simple broadcasting vs precision drilling
+        # Conservative range: ~2x variation
+        # NOTE: Primarily one-way cost (adopting needs seeder; abandoning is just
+        # not planting anymore, minimal cost). Code applies symmetrically but
+        # the actual abandonment cost is near zero.
+        transition: [12.0, 22.0]   # $/ha - seeder equipment range [4,5]
+        # US literature value: $75/ha (seeds, seeding, termination) [4]
+        # Total range in literature: $15-78/acre = $37-193/ha [4]
+        # Seed costs vary less globally; import costs can increase developing country prices
+        # Conservative range: ~1.5x variation around literature value
+        direct: [55.0, 75.0]       # $/ha/yr - seeds/labor range [4]
     residue_on_field:
-        # Minimal equipment change for retention vs removal
-        transition: 10.0   # $/ha - equipment adjustment
-        # Foregone straw sale value ~$50-60/ha (Manitoba Agriculture, 2023)
-        direct: 50.0       # $/ha/yr - opportunity cost (deselected second)
+        # Modern combines have straw choppers/spreaders as standard equipment.
+        # No additional equipment needed for retention vs removal.
+        # Purdue Extension CT-5: spreaders/choppers are standard attachments.
+        transition: 0.0    # $/ha - no special equipment needed (no range)
+        # Opportunity cost is computed DYNAMICALLY in get_current_direct_costs()
+        # using compute_residue_opportunity_cost() which calculates:
+        #   crop_revenue × use_cost_fractions (from residue_economics section)
+        # Based on Singh & Schiere (1995): straw value = 10-15% of crop value.
+        # This makes residue costs spatially and temporally variable with yields.
+        direct: 0.0        # $/ha/yr - NOT USED (computed dynamically)
 
-# TPB decision thresholds (non-AFT-specific)
-# Behavioral differences between AFTs come from weights and PBC parameters
-tpb_thresholds:
-    transition_threshold: 0.5   # TPB threshold to adopt new practice
-    revert_threshold: 0.6   # Higher threshold to revert (hysteresis to avoid flip-flopping)
-    # Evaluation interval: farmers don't reconsider practices every year
-    # After transitioning, they commit to observing results for this many years (mean)
-    # Actual interval is randomized: normal(evaluation_interval, evaluation_interval/2)
-    # Literature: Farm planning cycles typically 5-10 years (Pannell et al. 2006)
-    evaluation_interval: 5  # Mean years between practice re-evaluations
-    # Cross-border social learning: blend own country stats with neighbouring countries
+# TPB specifc settings and parameters
+tpb:
+    transition_threshold: 0.5   # TPB threshold for any practice change
+    # Spreading level toggles for social learning
+    # Allows enabling/disabling each level of spreading for testing or single-country runs
+    # When a level is disabled, its weight is redistributed to enabled levels
+    enable_local: true       # Neighbour-based spreading (attitude + social norm)
+    enable_country: true     # Country-level spreading (attitude + social norm)
+    enable_cluster: true    # Agroecological cluster spreading (set false for single-country runs)
+    # if enablele_country: cross-border social learning: blend own country stats with neighbouring countries
     # Weight for neighbouring countries' influence (0.0 = no cross-border, 0.5 = equal)
     # Own country weight = 1.0 - neighbour_country_weight
     neighbour_country_weight: 0.25  # 25% neighbours, 75% own country
 
-# Spreading level toggles for social learning
-# Allows enabling/disabling each level of spreading for testing or single-country runs
-# When a level is disabled, its weight is redistributed to enabled levels
-spreading_levels:
-    enable_local: true       # Neighbour-based spreading (attitude + social norm)
-    enable_country: true     # Country-level spreading (attitude + social norm)
-    enable_cluster: true    # Agroecological cluster spreading (set false for single-country runs)
+# Pioneer share for the simulation
+pioneer_share: 0.25
 
 # Analogous to LPJmL pftpar, define the AFT parameters for the two different
 #   farmer types
@@ -223,14 +288,14 @@ aftpar:
     #   with conventional agriculture
     traditionalist:
         pbc_base: 0.65  # base perceived behavioral control (captures risk aversion)
-        weight_attitude: 0.6
-        weight_yield: 0.65 # Yield is everything
-        weight_soil: 0.1 # "I'll worry about that later"
-        weight_moisture: 0.25  # Drought scares me
         weight_norm: 0.4  # Rogers "Late Majority": strong reliance on social proof
+        weight_attitude: 0.6
+
+        # weights attitude general
         weight_social_learning: 0.4
         weight_own_land: 0.6
-        # Local vs country weighting for social components
+
+        # Local, country, cluster weights for social components
         # Local effects (neighbours) typically dominate over country-level influence
         # because neighbours share similar ecological/cultural conditions
         weight_social_norm_local: 0.7      # Traditionalists rely more on local community
@@ -239,6 +304,16 @@ aftpar:
         weight_attitude_local: 0.7         # Local social learning dominates
         weight_attitude_country: 0.2       # Country-level less influential
         weight_attitude_cluster: 0.1       # Minimal cross-border learning
+
+        # weight variables for yield, soil, moisture
+        weight_yield: 0.65 # Yield is everything
+        weight_soil: 0.1 # "I'll worry about that later"
+        weight_moisture: 0.25  # Drought scares me
+
+        # Similarity weights for social learning
+        weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
+        weight_crop_similarity: 0.4     # Weight for crop portfolio similarity
+
         # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
         # Adoption fraction at which the practice feels "normative" (neutral).
         # Below threshold -> social drag; above -> social boost.
@@ -246,15 +321,16 @@ aftpar:
         threshold_social_norm_local: 0.20    # 20% of neighbours = neutral
         threshold_social_norm_country: 0.30  # 30% of country = neutral
         threshold_social_norm_cluster: 0.25  # 25% of climate-similar countries = neutral
-        # Learning inertia / hysteresis parameters
-        min_observation_years: 3    # Minimum years before considering transition
-        # Similarity weights for social learning
-        weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
-        weight_crop_similarity: 0.4     # Weight for crop portfolio similarity
+
         # Time parameters (unified, AFT-specific)
+        # min_observation_years serves dual purpose:
+        # 1. Data quality: need enough observations for informed decisions
+        # 2. Evaluation timing: counter is randomized around this value to desynchronize farmers
+        min_observation_years: 5    # Mean years between practice re-evaluations
         confidence_years: 10        # Years to reach full confidence (linear ramp)
         memory_decay_years: 30      # When old memories are forgotten
         fallback_years: 10          # Consecutive decline years to trigger revert
+
         # Exploration parameters (Rogers 2003)
         exploration_base_prob: 0.02 # Base probability of random exploration (doubled from 0.01)
         poor_performance_threshold: 0.01  # Weighted score below which exploration doubles
@@ -266,13 +342,13 @@ aftpar:
     pioneer:
         pbc_base: 0.85  # base perceived behavioral control (captures risk aversion)
         weight_attitude: 0.8
-        weight_yield: 0.5 # Still need to make money
-        weight_soil: 0.25 # More educated about long-term
-        weight_moisture: 0.25  # Same drought concern
         weight_norm: 0.2  # Rogers "Innovators/Early Adopters": low but non-zero
+
+        # weights attitude general
         weight_social_learning: 0.6
         weight_own_land: 0.4
-        # Local vs country weighting for social components
+
+        # Local, country, cluster weights for social components
         # Pioneers are more open to learning from distant farmers (early adopters)
         # and less bound by local community norms (Rogers 2003)
         weight_social_norm_local: 0.5      # Still important but less dominant
@@ -281,21 +357,29 @@ aftpar:
         weight_attitude_local: 0.5         # Local social learning still relevant
         weight_attitude_country: 0.3       # More willing to learn from afar
         weight_attitude_cluster: 0.2       # Open to cross-border learning
+
+        # weight variables for yield, soil, moisture
+        weight_yield: 0.5 # Still need to make money
+        weight_soil: 0.25 # More educated about long-term
+        weight_moisture: 0.25  # Same drought concern
+
+        # Similarity weights for social learning
+        weight_bundle_similarity: 0.5   # Weight for practice bundle similarity
+        weight_crop_similarity: 0.5     # Weight for crop portfolio similarity
+
         # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
         # Pioneers feel "normed" at much lower adoption fractions than
         # traditionalists - they interpret early signals as sufficient.
         threshold_social_norm_local: 0.10    # 10% of neighbours = neutral
         threshold_social_norm_country: 0.15  # 15% of country = neutral
         threshold_social_norm_cluster: 0.12  # 12% of climate-similar countries = neutral
-        # Learning inertia / hysteresis parameters
-        min_observation_years: 2    # Pioneers need less observation time
-        # Similarity weights for social learning
-        weight_bundle_similarity: 0.5   # Weight for practice bundle similarity
-        weight_crop_similarity: 0.5     # Weight for crop portfolio similarity
+
         # Time parameters (unified, AFT-specific)
+        min_observation_years: 3    # Pioneers re-evaluate more frequently
         confidence_years: 8         # Pioneers trust observations sooner
         memory_decay_years: 25      # Pioneers forget old experiences faster
         fallback_years: 8           # Pioneers revert sooner if things go badly
+
         # Exploration parameters (Rogers 2003)
         exploration_base_prob: 0.12 # Pioneers explore much more (doubled+ from 0.05)
         poor_performance_threshold: 0.01  # Weighted score below which exploration doubles

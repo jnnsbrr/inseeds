@@ -298,7 +298,7 @@ class Model(lpjml.Model):
         for country in self.world.countries:
             store = country.statistic.get("management_performance")
             if store is not None:
-                countries_stats[country.country_code] = store
+                countries_stats[country.code] = store
 
         self.world.statistic.set("countries_management_performance", countries_stats)
 
@@ -331,20 +331,10 @@ class Model(lpjml.Model):
         Must be called BEFORE init_countries() and init_farmers().
         """
         import numpy as np
-        from pycopanlpjml.model import _get_country_names
 
         # Get ISO3 country codes
         country_values = self.world.country_code.values
-        if hasattr(country_values, "compute"):
-            country_values = country_values.compute()
-
-        unique_codes = np.unique(country_values)
-        country_names = _get_country_names()
-        iso3_codes = [
-            country_names[c]["code"]
-            for c in unique_codes
-            if c in country_names
-        ]
+        iso3_codes = np.unique(country_values)
 
         # Load all exogenous data sources
         self.world.exogenous = load_exogenous(

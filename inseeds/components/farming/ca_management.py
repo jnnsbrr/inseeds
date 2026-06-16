@@ -91,6 +91,31 @@ _BUNDLE_METADATA: dict[str, tuple[int, str]] = {
 # COST STRUCTURES
 # =============================================================================
 
+def _scale_cost_value(value: Any, capital_ratio: float) -> float:
+    """Scale a cost value based on capital ratio.
+
+    If value is a list/tuple [min, max], interpolates based on capital_ratio.
+    If value is a scalar, returns it unchanged.
+
+    Parameters
+    ----------
+    value : float or list[float, float]
+        Either a single value or [min, max] range.
+    capital_ratio : float
+        Ratio of farmer's capital to reference capital, clamped to [0, 1].
+
+    Returns
+    -------
+    float
+        Scaled cost value.
+    """
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        min_val, max_val = float(value[0]), float(value[1])
+        ratio = max(0.0, min(1.0, capital_ratio))  # Clamp to [0, 1]
+        return min_val + (max_val - min_val) * ratio
+    return float(value) if value else 0.0
+
+
 @dataclass(frozen=True, slots=True)
 class PracticeCost:
     """Cost structure for a single agricultural practice.
@@ -117,15 +142,30 @@ class PracticeCost:
     transition: float
 
     @classmethod
-    def from_config(cls, data: Any) -> PracticeCost:
-        """Create from configuration dictionary."""
+    def from_config(cls, data: Any, capital_ratio: float = 1.0) -> PracticeCost:
+        """Create from configuration dictionary, optionally scaled by capital.
+
+        Parameters
+        ----------
+        data : dict
+            Configuration with 'direct' and 'transition' keys.
+            Values can be scalars or [min, max] ranges.
+        capital_ratio : float
+            Ratio of farmer's capital to reference (default 1.0 = reference level).
+            Used to interpolate within ranges.
+
+        Returns
+        -------
+        PracticeCost
+            Cost structure with scaled values.
+        """
         if hasattr(data, "to_dict"):
             data = data.to_dict()
         elif not isinstance(data, dict):
             data = dict(data)
         return cls(
-            direct=float(data.get("direct", 0)),
-            transition=float(data.get("transition", 0)),
+            direct=_scale_cost_value(data.get("direct", 0), capital_ratio),
+            transition=_scale_cost_value(data.get("transition", 0), capital_ratio),
         )
 
 
@@ -134,7 +174,7 @@ class ManagementCosts:
     """Complete cost structure for all three CA practices.
 
     Groups the costs for tillage, cover crops, and residue retention together.
-    Loaded from the model configuration file.
+    Loaded from the model configuration file, scaled by farmer's capital intensity.
 
     Attributes
     ----------
@@ -151,17 +191,58 @@ class ManagementCosts:
     residue_on_field: PracticeCost
 
     @classmethod
-    def from_config(cls, raw: dict[str, Any] | Any) -> ManagementCosts:
-        """Create from configuration dictionary."""
+    def from_config(
+        cls,
+        raw: dict[str, Any] | Any,
+        capital_per_ha: float | None = None,
+        model: Any = None,
+    ) -> ManagementCosts:
+        """Create from configuration dictionary, scaled by capital intensity.
+
+        Costs are scaled based on farmer's capital relative to a reference country
+        (default: USA, where literature cost values originate).
+
+        Parameters
+        ----------
+        raw : dict
+            Configuration dictionary with practice cost specifications.
+        capital_per_ha : float, optional
+            Farmer's capital per hectare (USD/ha). If provided, costs are scaled.
+        model : Model, optional
+            Model instance to look up reference country's capital from FAO data.
+            Required if reference_capital_country is specified in config.
+
+        Returns
+        -------
+        ManagementCosts
+            Cost structure with appropriately scaled values.
+        """
         if hasattr(raw, "to_dict"):
             raw = raw.to_dict()
         elif not isinstance(raw, dict):
             raw = dict(raw)
 
+        # Get reference capital for scaling (default fallback ~ US level)
+        reference_capital = 3000.0
+        ref_country = raw.get("reference_capital_country")
+
+        if ref_country and model is not None:
+            # Look up reference country's capital from FAO data
+            for country in model.world.countries:
+                if country.code == ref_country:
+                    reference_capital = country.initial_capital_per_ha
+                    break
+
+        # Compute capital ratio (clamped to [0, 1] in _scale_cost_value)
+        if capital_per_ha is not None and reference_capital > 0:
+            capital_ratio = capital_per_ha / reference_capital
+        else:
+            capital_ratio = 1.0  # Default to reference level
+
         return cls(
-            tillage=PracticeCost.from_config(raw.get("tillage", {})),
-            cover_crop=PracticeCost.from_config(raw.get("cover_crop", {})),
-            residue_on_field=PracticeCost.from_config(raw.get("residue_on_field", {})),
+            tillage=PracticeCost.from_config(raw.get("tillage", {}), capital_ratio),
+            cover_crop=PracticeCost.from_config(raw.get("cover_crop", {}), capital_ratio),
+            residue_on_field=PracticeCost.from_config(raw.get("residue_on_field", {}), capital_ratio),
         )
 
 
@@ -350,7 +431,18 @@ class ManagementBundle(Enum):
     def transition_cost_per_ha(
         self, bundle: ManagementBundle, costs: ManagementCosts
     ) -> float:
-        """One-time transition cost per hectare for practices that change."""
+        """One-time transition cost per hectare for practices that change.
+
+        Costs apply in BOTH directions:
+        - Tillage: No-till→conventional requires tillage equipment;
+                   conventional→no-till requires no-till planter.
+                   Both have similar cost magnitudes.
+        - Cover crop: Adopting requires seeder; abandoning has minimal cost.
+        - Residue: No equipment either direction.
+
+        Using the same transition cost for both directions is a reasonable
+        approximation since equipment costs are comparable in magnitude.
+        """
         total = 0.0
         for field, old, new in zip(PRACTICE_FIELDS, self.value, bundle.value):
             if old != new:
@@ -723,11 +815,20 @@ class RegionManagementPerformance:
             count=n_farmers,
         )
 
-    def weighted_trend_score(self, farmer: Any) -> float:
+    def weighted_trend(self, farmer: Any) -> float:
+        """Weighted sum of average trends (slope score)."""
         return (
             farmer.weight_yield * self.avg_yield_trend
             + farmer.weight_soil * self.avg_soilc_trend
             + farmer.weight_moisture * self.avg_moisture_trend
+        )
+
+    def weighted_level(self, farmer: Any) -> float:
+        """Weighted sum of average absolute values (level score)."""
+        return (
+            farmer.weight_yield * self.avg_yield
+            + farmer.weight_soil * self.avg_soilc
+            + farmer.weight_moisture * self.avg_moisture
         )
 
     def __repr__(self) -> str:
@@ -1170,10 +1271,40 @@ class ManagementPerformanceTracker:
             "yield": slope_yield,
         }
 
-    def weighted_score(self, farmer: Any) -> float:
-        """Combine soil, moisture, and yield trends into a single utility score.
+    @property
+    def mean_yield(self) -> float:
+        """Average yield over tracking period."""
+        return self.sum_yield / self.n if self.n else 0.0
 
-        Uses the farmer's outcome weights to represent overall performance.
+    @property
+    def mean_soilc(self) -> float:
+        """Average soil carbon over tracking period."""
+        return self.sum_soilc / self.n if self.n else 0.0
+
+    @property
+    def mean_moisture(self) -> float:
+        """Average root moisture over tracking period."""
+        return self.sum_moisture / self.n if self.n else 0.0
+
+    def weighted_slope(self, farmer: Any) -> float:
+        """Combine soil, moisture, and yield TRENDS into a single slope score.
+
+        This measures the RATE OF CHANGE - is performance improving or declining?
+        Uses the farmer's outcome weights to represent overall trend direction.
+
+        Note: This only considers trends, not absolute levels. A farmer with
+        terrible yields but improving might score higher than one with good
+        yields but declining.
+
+        Parameters
+        ----------
+        farmer : Farmer
+            Farmer providing the outcome weights.
+
+        Returns
+        -------
+        float
+            Weighted sum of trends (positive = improving, negative = declining).
         """
         trend = self.trend
         return (
@@ -1181,6 +1312,67 @@ class ManagementPerformanceTracker:
             + farmer.weight_moisture * trend["moisture"]
             + farmer.weight_yield * trend["yield"]
         )
+
+    def weighted_level(self, farmer: Any) -> float:
+        """Combine soil, moisture, and yield MEANS into a single level score.
+
+        This measures ABSOLUTE PERFORMANCE - how good is the current state?
+        Uses the farmer's outcome weights.
+
+        Parameters
+        ----------
+        farmer : Farmer
+            Farmer providing the outcome weights.
+
+        Returns
+        -------
+        float
+            Weighted sum of mean values.
+        """
+        return (
+            farmer.weight_soil * self.mean_soilc
+            + farmer.weight_moisture * self.mean_moisture
+            + farmer.weight_yield * self.mean_yield
+        )
+
+    def is_better_than(
+        self,
+        other: "ManagementPerformanceTracker",
+        farmer: Any,
+    ) -> bool:
+        """Check if this tracker shows better performance than another.
+
+        Combines TREND and LEVEL comparison to avoid favoring neighbors
+        who are trending up but have terrible absolute performance.
+
+        A tracker is considered better if:
+        1. Its trend score (slope) is higher (improving faster), AND
+        2. Its absolute performance (level) is at least as good
+
+        Parameters
+        ----------
+        other : ManagementPerformanceTracker
+            The tracker to compare against.
+        farmer : Farmer
+            Farmer providing the outcome weights.
+
+        Returns
+        -------
+        bool
+            True if this tracker is better than the other.
+        """
+        # Slope filter: only reject if I'm declining AND worse than other
+        # Positive/zero slopes pass this filter (not declining)
+        my_slope = self.weighted_slope(farmer)
+        other_slope = other.weighted_slope(farmer)
+        if my_slope < other_slope and my_slope <= 0:
+            return False
+
+        # Level comparison - must have strictly better absolute level
+        my_level = self.weighted_level(farmer)
+        other_level = other.weighted_level(farmer)
+
+        return my_level > other_level
 
     def __repr__(self) -> str:
         trend = self.trend

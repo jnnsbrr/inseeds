@@ -335,7 +335,7 @@ class Farmer(core.Individual, base.Individual):
             for neighbour in cell_neighbours.individuals
         ]
 
-    def get_from_earth(self, var_name, as_scalar=False, band=None, drop_band=None, time_idx=-1):  # noqa: E501
+    def get_from_earth(self, var_name, as_scalar=False, band=None, drop_band=None, time_idx=None):  # noqa: E501
         """Get variable from cell.from_earth, handling multi-year data.
 
         This is the single entry point for accessing from_earth data.
@@ -377,7 +377,7 @@ class Farmer(core.Individual, base.Individual):
             )
 
         # If data has multiple time steps, select the specified one
-        if hasattr(data, 'time') and len(data.time) > 1:
+        if hasattr(data, 'time') and len(data.time) > 1 and time_idx is not None:
             data = data.isel(time=time_idx)
 
         # Drop bands if specified
@@ -419,15 +419,15 @@ class Farmer(core.Individual, base.Individual):
         if cached is not None:
             return cached
         return (
-            self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS)
-            .weighted(self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS))
+            self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS, time_idx=-1)
+            .weighted(self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS, time_idx=-1))
             .sum("band")
         ).item()
 
     @property
     def cell_pft_yield(self):
         """Return average crop yield across PFTs (gC/m²)."""
-        return self.get_from_earth("pft_harvestc", as_scalar=True, drop_band=NON_CROPS)
+        return self.get_from_earth("pft_harvestc", as_scalar=True, drop_band=NON_CROPS, time_idx=-1)
 
     @property
     def cell_pft_production(self):
@@ -435,8 +435,8 @@ class Farmer(core.Individual, base.Individual):
         
         Calculated as sum of (yield × crop fraction × area) across all PFTs.
         """
-        pft_harvestc = self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS)
-        cftfrac = self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS)
+        pft_harvestc = self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS, time_idx=-1)
+        cftfrac = self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS, time_idx=-1)
         area_m2 = self.cell.area.item()
         return float((pft_harvestc * cftfrac * area_m2).sum())
 
@@ -446,7 +446,7 @@ class Farmer(core.Individual, base.Individual):
         cached = self._cached("soilc")
         if cached is not None:
             return cached
-        return self.get_from_earth("soilc_agr_layer", as_scalar=True, band=0)
+        return self.get_from_earth("soilc_agr_layer", as_scalar=True, band=0, time_idx=-1)
 
     @property
     def cell_root_moisture(self):
@@ -454,7 +454,7 @@ class Farmer(core.Individual, base.Individual):
         cached = self._cached("root_moisture")
         if cached is not None:
             return cached
-        return self.get_from_earth("rootmoist_agr", as_scalar=True)
+        return self.get_from_earth("rootmoist_agr", as_scalar=True, time_idx=-1)
 
     @property
     def cell_litter_cover(self):
@@ -462,22 +462,22 @@ class Farmer(core.Individual, base.Individual):
         cached = self._cached("litter_cover")
         if cached is not None:
             return cached
-        return self.get_from_earth("litcover_agr", as_scalar=True)
+        return self.get_from_earth("litcover_agr", as_scalar=True, time_idx=-1)
 
     @property
     def cell_runoff(self):
         """Return runoff of cell (mm/yr) from LPJmL."""
-        return self.get_from_earth("runoff", as_scalar=True)
+        return self.get_from_earth("runoff", as_scalar=True, time_idx=-1)
 
     @property
     def cell_leaching(self):
         """Return N leaching (gN/m2/yr) from LPJmL (whole cell)."""
-        return self.get_from_earth("leaching", as_scalar=True)
+        return self.get_from_earth("leaching", as_scalar=True, time_idx=-1)
 
     @property
     def cell_fertilizer(self):
         """Return N fertilizer input (gN/m2/yr) from LPJmL."""
-        return self.get_from_earth("nfert_agr", as_scalar=True)
+        return self.get_from_earth("nfert_agr", as_scalar=True, time_idx=-1)
 
     @property
     def cell_irrig(self):
@@ -488,7 +488,7 @@ class Farmer(core.Individual, base.Individual):
         This happens automatically in LPJmL; tracking here enables
         connecting irrigation savings to profit/capital.
         """
-        return self.get_from_earth("irrig", as_scalar=True)
+        return self.get_from_earth("irrig", as_scalar=True, time_idx=-1)
 
     @property
     def net_farm_size(self):

@@ -164,7 +164,7 @@ def redistribute_weights(
 # Transition blocker codes - indicates WHY a proposed bundle was not adopted
 # These follow the decision flow order (first blocker hit is the primary reason)
 BLOCKER_NONE = 0                    # No blocker - transition happened or maintaining current
-BLOCKER_MIN_OBS_YEARS = 1           # Not enough observation years yet
+BLOCKER_OBSERVATION_YEARS = 1       # Observation period not complete (commitment period)
 BLOCKER_FALLBACK_TRIGGERED = 2      # Reverting to previous bundle (adaptive management)
 BLOCKER_NO_TARGET = 3               # No better neighbour + exploration didn't trigger
 BLOCKER_TARGET_SAME = 4             # Target bundle same as current (already optimal)
@@ -180,12 +180,10 @@ BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC (cost affordabil
 BLOCKER_TRANSITION_UNAFFORDABLE = 10 # Can't afford transition cost
 BLOCKER_CAPITAL_SURVIVAL = 11       # Capital below survival threshold
 BLOCKER_CONTROL_RUN = 12            # Control run - no CA dynamics
-BLOCKER_EVALUATION_TIME = 13        # Not yet time to re-evaluate (commitment period)
 BLOCKER_AFFORDABILITY_FORCED = 18   # Practices deselected due to unaffordable direct costs
 
 BLOCKER_NAMES = {
     BLOCKER_NONE: "none",
-    BLOCKER_MIN_OBS_YEARS: "min_obs_years",
     BLOCKER_FALLBACK_TRIGGERED: "fallback_triggered",
     BLOCKER_NO_TARGET: "no_target",
     BLOCKER_TARGET_SAME: "target_same",
@@ -201,7 +199,7 @@ BLOCKER_NAMES = {
     BLOCKER_TRANSITION_UNAFFORDABLE: "transition_unaffordable",
     BLOCKER_CAPITAL_SURVIVAL: "capital_survival",
     BLOCKER_CONTROL_RUN: "control_run",
-    BLOCKER_EVALUATION_TIME: "evaluation_time",
+    BLOCKER_OBSERVATION_YEARS: "observation_years",
     BLOCKER_AFFORDABILITY_FORCED: "affordability_forced",
 }
 
@@ -332,6 +330,10 @@ class DecisionModel(ABC):
         """
         self.farmer = farmer
 
+        # Initialize transition blocker and driver to none
+        self.transition_blocker = BLOCKER_NONE
+        self.transition_driver = DRIVER_NONE
+
         # -----------------------------------------------------------------
         # Initialize current practice bundle from farmer agent state
         # -----------------------------------------------------------------
@@ -381,7 +383,7 @@ class DecisionModel(ABC):
         # Initialize baseline score for fallback comparison
         if self.performance_tracker.n > 1:
             self.performance_tracker.baseline_score = (
-                self.performance_tracker.weighted_score(self.farmer)
+                self.performance_tracker.weighted_slope(self.farmer)
             )
 
     # -------------------------------------------------------------------------
@@ -425,6 +427,18 @@ class DecisionModel(ABC):
         """
         return getattr(self, '_transition_blocker', BLOCKER_NONE)
 
+    @transition_blocker.setter
+    def transition_blocker(self, value):
+        """Set transition_blocker to a specific value.
+        Parameters
+        ----------
+        value : int
+            The blocker value to set.
+        """
+        self._transition_blocker = value
+        if value not in BLOCKER_NAMES.keys():
+            raise ValueError(f"Invalid transition blocker value: {value}. Must be one of: {BLOCKER_NAMES.keys()}")
+
     @property
     def transition_blocker_name(self):
         """Human-readable name of transition blocker."""
@@ -440,10 +454,22 @@ class DecisionModel(ABC):
         """
         return getattr(self, '_transition_driver', DRIVER_NONE)
 
+    @transition_driver.setter
+    def transition_driver(self, value):
+        """Set transition_driver to a specific value.
+        Parameters
+        ----------
+        value : int
+            The driver value to set.
+        """
+        self._transition_driver = value
+        if value not in DRIVER_NAMES.keys():
+            raise ValueError(f"Invalid transition driver value: {value}. Must be one of: {DRIVER_NAMES.keys()}")
+
     @property
     def transition_driver_name(self):
         """Human-readable name of transition driver."""
-        return DRIVER_NAMES.get(self.transition_driver, "unknown")
+        return DRIVER_NAMES.get(self.transition_driver)
 
     # -------------------------------------------------------------------------
     # Memory management
@@ -484,7 +510,7 @@ class DecisionModel(ABC):
         # Capture baseline score before resetting (for fallback comparison)
         # This is the performance level we expect to maintain or exceed
         baseline = (
-            self.performance_tracker.weighted_score(self.farmer)
+            self.performance_tracker.weighted_slope(self.farmer)
             if n_obs > 1 else 0.0
         )
 
@@ -552,11 +578,10 @@ class TPB(DecisionModel):
         self._social_norm = 0.0  # Subjective norm
         self._pbc = 0.0          # Perceived behavioral control
 
-        # Evaluation time: farmers don't reconsider every year
-        # Randomize initial evaluation time to desynchronize farmers
+        # Observation years counter: randomize initial timing to desynchronize farmers
         # (avoids artificial waves of simultaneous evaluation)
-        interval = self.farmer.model.config.coupled_config.tpb_thresholds.evaluation_interval
-        self._years_until_evaluation = np.random.randint(0, interval)
+        min_obs = self.get_aft_param("min_observation_years")
+        self._observation_years = np.random.randint(0, min_obs)
 
     # -------------------------------------------------------------------------
     # Properties for external access to TPB components
@@ -600,45 +625,42 @@ class TPB(DecisionModel):
         """Check if farmer should evaluate practice transition this year.
 
         Farmers don't reconsider practices every year. They evaluate when
-        the time period has ended (randomized around evaluation_interval).
-
-        This saves computation and is more realistic - farmers commit to
-        observing results before reconsidering.
+        the observation period has ended (randomized around min_observation_years).
 
         Returns
         -------
         bool
             True if farmer should run TPB evaluation this year.
         """
-        return self._years_until_evaluation <= 0
+        return self._observation_years <= 0
 
-    def reset_evaluation_time(self):
-        """Reset evaluation time after a transition decision (transition or stay).
+    def reset_observation_years(self):
+        """Reset observation years after a transition decision (transition or stay).
 
-        Uses normal distribution around evaluation_interval (mean=interval,
-        std=interval/2) to create heterogeneity in re-evaluation timing.
+        Uses normal distribution around min_observation_years (mean=min_obs,
+        std=min_obs/2) to create heterogeneity in re-evaluation timing.
         This reflects that some farmers re-evaluate sooner (more proactive)
         while others wait longer (more conservative). Minimum is 1 year.
 
         Called after TPB evaluation completes, regardless of whether transition
         happened.
         """
-        interval = self.farmer.model.config.coupled_config.tpb_thresholds.evaluation_interval
-        if interval > 0:
-            # Normal distribution around interval, minimum 1 year
-            self._years_until_evaluation = max(
-                1, int(np.random.normal(interval, interval / 2))
+        min_obs = self.get_aft_param("min_observation_years")
+        if min_obs > 0:
+            # Normal distribution around min_obs, minimum 1 year
+            self._observation_years = max(
+                1, int(np.random.normal(min_obs, min_obs / 2))
             )
         else:
-            self._years_until_evaluation = 0
+            self._observation_years = 0
 
-    def decrement_evaluation_time(self):
-        """Decrement the evaluation time counter by one year.
+    def decrement_observation_years(self):
+        """Decrement the observation years counter by one year.
 
         Called each year when farmer doesn't evaluate.
         """
-        if self._years_until_evaluation > 0:
-            self._years_until_evaluation -= 1
+        if self._observation_years > 0:
+            self._observation_years -= 1
 
     # =========================================================================
     # MAIN UPDATE LOGIC
@@ -685,12 +707,12 @@ class TPB(DecisionModel):
         7. Adjust target bundle for affordability
         8. Compute TPB scores for the proposed bundle
         
-        Sets _transition_blocker to indicate why transition didn't happen (if applicable).
-        Sets _transition_driver to indicate why transition succeeded (if applicable).
+        Sets transition_blocker to indicate why transition didn't happen (if applicable).
+        Sets transition_driver to indicate why transition succeeded (if applicable).
         """
         # Reset blocker, driver, and pathway at start of each update
-        self._transition_blocker = BLOCKER_NONE
-        self._transition_driver = DRIVER_NONE
+        self.transition_blocker = BLOCKER_NONE
+        self.transition_driver = DRIVER_NONE
         self.target_pathway = None
 
         # -----------------------------------------------------------------
@@ -731,17 +753,16 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Step 4: Require minimum observation years before transitioning
         # -----------------------------------------------------------------
-        # Avoids noisy decisions based on single-year fluctuations
-        # Typical value: 3 years (allows trends to stabilize)
-        # With historic data initialization, farmers start with enough history
+        # Farmers record observations every year (above), but only evaluate
+        # TPB once the observation period is complete. This avoids noisy
+        # decisions based on single-year fluctuations.
+        # After a transition, the counter resets via reset_observation_years().
 
-        n_obs = self.performance_tracker.n
-        min_obs = self.get_aft_param("min_observation_years")
-
-        if n_obs < min_obs:
+        if not self.should_evaluate():
             self._tpb = 0.0
             self.proposed_bundle = None
-            self._transition_blocker = BLOCKER_MIN_OBS_YEARS
+            self.transition_blocker = BLOCKER_OBSERVATION_YEARS
+            self.decrement_observation_years()
             return
 
         # -----------------------------------------------------------------
@@ -753,7 +774,7 @@ class TPB(DecisionModel):
         if self.check_fallback():
             # Fallback sets proposed_bundle and _tpb internally
             # Blocker will be set by should_transition() if TPB too low
-            self._transition_blocker = BLOCKER_FALLBACK_TRIGGERED
+            self.transition_blocker = BLOCKER_FALLBACK_TRIGGERED
             self.target_pathway = "fallback"  # Track pathway for transition_driver
             return
 
@@ -784,13 +805,13 @@ class TPB(DecisionModel):
         if target_bundle is None:
             self._tpb = 0.0
             self.proposed_bundle = None
-            self._transition_blocker = BLOCKER_NO_TARGET
+            self.transition_blocker = BLOCKER_NO_TARGET
             return
 
         if target_bundle == self.practice_bundle:
             self._tpb = 0.0
             self.proposed_bundle = None
-            self._transition_blocker = BLOCKER_TARGET_SAME
+            self.transition_blocker = BLOCKER_TARGET_SAME
             return
 
         # -----------------------------------------------------------------
@@ -804,7 +825,7 @@ class TPB(DecisionModel):
         if affordable_bundle == self.practice_bundle:
             self._tpb = 0.0
             self.proposed_bundle = None
-            self._transition_blocker = BLOCKER_TARGET_UNAFFORDABLE
+            self.transition_blocker = BLOCKER_TARGET_UNAFFORDABLE
             return
 
         # -----------------------------------------------------------------
@@ -833,20 +854,13 @@ class TPB(DecisionModel):
         if self.previous_bundle is None:
             return False
 
-        # Allow grace period for new practices to show effects
-        # Grace period = min_observation_years (reuse existing param)
-        n_obs = self.performance_tracker.n
-        grace_period = self.get_aft_param("min_observation_years")
-        if n_obs < grace_period:
-            return False
-
         # -----------------------------------------------------------------
         # Compare current performance to baseline at transition time
         # -----------------------------------------------------------------
         # baseline_score captures the trend score at the time of transition.
         # If current score is worse than baseline, we're declining.
         baseline = self.performance_tracker.baseline_score
-        current_score = self.performance_tracker.weighted_score(self.farmer)
+        current_score = self.performance_tracker.weighted_slope(self.farmer)
 
         # Track consecutive years of decline
         if current_score < baseline:
@@ -903,7 +917,7 @@ class TPB(DecisionModel):
         # Poor performers explore more (searching for better options)
         # With relative trends: negative = declining, positive = improving
         # Threshold is in relative terms (e.g., 0 = any decline, -0.02 = >2% decline)
-        current_score = self.performance_tracker.weighted_score(self.farmer)
+        current_score = self.performance_tracker.weighted_slope(self.farmer)
         poor_performance_threshold = self.get_aft_param("poor_performance_threshold")
         poor_performance_multiplier = self.get_aft_param("poor_performance_multiplier")
         if current_score < poor_performance_threshold:
@@ -914,7 +928,7 @@ class TPB(DecisionModel):
         n_obs = self.performance_tracker.n
         confidence_years = self.get_aft_param("confidence_years")
         experience_factor = min(1.0, n_obs / confidence_years)
-        exploration_modifier = 0.5 + experience_factor * 1.0  # Ramps from 0.5 to 1.5
+        exploration_modifier = 0.5 + experience_factor  # Ramps from 0.5 to 1.5
         base_prob *= exploration_modifier
 
         # Cap exploration probability (configurable)
@@ -953,10 +967,12 @@ class TPB(DecisionModel):
     def should_transition(self):
         """Determine if farmer should transition to proposed bundle.
 
-        Compares TPB intention score to threshold. Higher threshold
-        when reverting (to avoid oscillation).
+        Compares TPB intention score to threshold.
+        Hysteresis (avoiding flip-flopping) is handled by min_observation_years:
+        after transitioning, the performance tracker resets (n=1), so farmers
+        need min_observation_years of new data before reconsidering.
 
-        Thresholds are non-AFT-specific (from config.tpb_thresholds).
+        Thresholds are non-AFT-specific (from config.tpb).
         Behavioral differences between AFTs come from weights and PBC.
 
         Returns
@@ -964,16 +980,8 @@ class TPB(DecisionModel):
         bool
             True if TPB exceeds threshold and transition should occur.
         """
-        # Get thresholds from config (non-AFT-specific)
-        tpb_config = self.farmer.model.config.coupled_config.tpb_thresholds
-        transition_threshold = tpb_config.transition_threshold
-        revert_threshold = tpb_config.revert_threshold
-
-        # Higher threshold for reverting (avoid flip-flopping)
-        if self.proposed_bundle == self.previous_bundle:
-            threshold = revert_threshold
-        else:
-            threshold = transition_threshold
+        tpb_config = self.farmer.model.config.coupled_config.tpb
+        threshold = tpb_config.transition_threshold
 
         return self._tpb > threshold
 
@@ -986,12 +994,14 @@ class TPB(DecisionModel):
             (enable_local, enable_country, enable_cluster)
         """
         spreading_config = getattr(
-            self.farmer.model.config.coupled_config, "spreading_levels", None
+            self.farmer.model.config.coupled_config, "tpb", None
         )
         enable_local = getattr(spreading_config, "enable_local", True) if spreading_config else True
         enable_country = getattr(spreading_config, "enable_country", True) if spreading_config else True
         enable_cluster = getattr(spreading_config, "enable_cluster", True) if spreading_config else True
         return enable_local, enable_country, enable_cluster
+
+
 
     def set_tpb_transition_blocker(self):
         """Set transition_blocker to indicate which TPB component is most limiting.
@@ -1000,7 +1010,7 @@ class TPB(DecisionModel):
         1. First identify which main component (attitude, social_norm, pbc) is lowest
         2. Then drill down into that component's sub-parts to identify the specific blocker
 
-        Only compares enabled spreading levels (respects spreading_levels config).
+        Only compares enabled spreading levels (respects tpb config).
         """
         if self.proposed_bundle is None:
             return
@@ -1020,7 +1030,7 @@ class TPB(DecisionModel):
         if main_blocker == 'attitude':
             # Compare own_land vs social_learning
             if self._attitude_own_land <= self._attitude_social_learning:
-                self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
+                self.transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
             else:
                 # Compare only ENABLED social learning levels
                 social_components = {}
@@ -1034,14 +1044,14 @@ class TPB(DecisionModel):
                 if social_components:
                     min_social = min(social_components, key=social_components.get)
                     if min_social == 'local':
-                        self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL
+                        self.transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL
                     elif min_social == 'country':
-                        self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY
+                        self.transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY
                     else:
-                        self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER
+                        self.transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER
                 else:
                     # Fallback if no social levels enabled (shouldn't happen)
-                    self._transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
+                    self.transition_blocker = BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND
 
         elif main_blocker == 'social_norm':
             # Compare only ENABLED social norm levels
@@ -1056,18 +1066,18 @@ class TPB(DecisionModel):
             if norm_components:
                 min_norm = min(norm_components, key=norm_components.get)
                 if min_norm == 'local':
-                    self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL
+                    self.transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL
                 elif min_norm == 'country':
-                    self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY
+                    self.transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY
                 else:
-                    self._transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER
+                    self.transition_blocker = BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER
             else:
                 # Fallback if no social levels enabled (shouldn't happen)
-                self._transition_blocker = BLOCKER_TPB_LOW_PBC
+                self.transition_blocker = BLOCKER_TPB_LOW_PBC
 
         else:  # pbc
             # PBC is driven by cost affordability (pbc_base captures AFT risk differences)
-            self._transition_blocker = BLOCKER_TPB_LOW_PBC
+            self.transition_blocker = BLOCKER_TPB_LOW_PBC
 
     def set_tpb_component_driver(self, pathway: str):
         """Set transition_driver to indicate which TPB component enabled the transition.
@@ -1076,7 +1086,7 @@ class TPB(DecisionModel):
         1. First identify which main component (attitude, social_norm, pbc) is highest
         2. Then drill down into that component's sub-parts to identify the specific driver
 
-        Only compares enabled spreading levels (respects spreading_levels config).
+        Only compares enabled spreading levels (respects tpb config).
 
         Parameters
         ----------
@@ -1186,7 +1196,7 @@ class TPB(DecisionModel):
         }
 
         driver_map = driver_maps.get(pathway, driver_maps["exploration"])
-        self._transition_driver = driver_map[sub_driver]
+        self.transition_driver = driver_map[sub_driver]
 
     # =========================================================================
     # APPLY BUNDLE TO AGENT
@@ -1231,7 +1241,7 @@ class TPB(DecisionModel):
             # Want CA residue retention
             if self.farmer.litter_cover < ca_threshold:
                 # Below threshold - need to increase retention if affordable
-                opp_cost = self.farmer.residue_opportunity_cost
+                opp_cost = self.farmer.compute_residue_opportunity_cost()
                 can_afford = opp_cost <= 0 or self.farmer.capital >= opp_cost
                 if can_afford:
                     self.farmer.residue_on_field = 1.0
@@ -1300,22 +1310,31 @@ class TPB(DecisionModel):
         if store is None:
             return None
 
-        # Get own weighted score from current trend
-        own_score = self.performance_tracker.weighted_score(self.farmer)
+        # Get own performance metrics from tracker
+        my_tracker = self.performance_tracker
+        own_slope = my_tracker.weighted_slope(self.farmer)
+        own_level = my_tracker.weighted_level(self.farmer)
 
         # Find best performing bundle at country level
         best_bundle = None
-        best_score = own_score  # Must beat our current performance
+        best_level = own_level  # Must beat our current level
 
         for bundle, perf in store.items():
             # Skip our own bundle
             if bundle == self.practice_bundle:
                 continue
 
-            country_score = perf.weighted_trend_score(self.farmer)
+            bundle_slope = perf.weighted_trend(self.farmer)
+            bundle_level = perf.weighted_level(self.farmer)
 
-            if country_score > best_score:
-                best_score = country_score
+            # Slope filter: only reject if declining AND worse than me
+            # Positive/zero slopes are always acceptable
+            if bundle_slope < own_slope and bundle_slope <= 0:
+                continue
+
+            # Track the best bundle (highest level)
+            if bundle_level > best_level:
+                best_level = bundle_level
                 best_bundle = bundle
 
         return best_bundle
@@ -1349,28 +1368,44 @@ class TPB(DecisionModel):
         if not isinstance(store, RegionManagementPerformanceStore):
             return None
 
-        # Get own weighted score from current trend
-        own_score = self.performance_tracker.weighted_score(self.farmer)
+        # Get own performance metrics from tracker
+        my_tracker = self.performance_tracker
+        own_slope = my_tracker.weighted_slope(self.farmer)
+        own_level = my_tracker.weighted_level(self.farmer)
 
         # Find best performing bundle at cluster level
         best_bundle = None
-        best_score = own_score  # Must beat our current performance
+        best_level = own_level  # Must beat our current level
 
         for bundle, perf in store.items():
             # Skip our own bundle
             if bundle == self.practice_bundle:
                 continue
 
-            cluster_score = perf.weighted_trend_score(self.farmer)
+            bundle_slope = perf.weighted_trend(self.farmer)
+            bundle_level = perf.weighted_level(self.farmer)
 
-            if cluster_score > best_score:
-                best_score = cluster_score
+            # Slope filter: only reject if declining AND worse than me
+            # Positive/zero slopes are always acceptable
+            if bundle_slope < own_slope and bundle_slope <= 0:
+                continue
+
+            # Track the best bundle (highest level)
+            if bundle_level > best_level:
+                best_level = bundle_level
                 best_bundle = bundle
 
         return best_bundle
 
     def is_better_performing(self, neighbour):
-        """Check if neighbour has higher weighted score than self.
+        """Check if neighbour is performing better than self.
+
+        A neighbor is considered better if:
+        1. They pass the slope filter (not declining worse than me), AND
+        2. Their absolute performance level is strictly higher
+
+        This focuses on absolute outcomes rather than trends, while still
+        filtering out neighbors who are declining faster.
 
         Parameters
         ----------
@@ -1380,16 +1415,23 @@ class TPB(DecisionModel):
         Returns
         -------
         bool
-            True if neighbour's score exceeds self's score.
+            True if neighbour's score exceeds self's score AND absolute
+            performance is at least as good.
         """
-        neighbour_score = neighbour.behaviour.performance_tracker.weighted_score(
-            self.farmer
+        # Use standardized comparison from tracker:
+        # - Checks trend (is neighbor improving faster?)
+        # - Checks level (is neighbor's absolute state at least as good?)
+        return neighbour.behaviour.performance_tracker.is_better_than(
+            self.performance_tracker,
+            self.farmer,
         )
-        own_score = self.performance_tracker.weighted_score(self.farmer)
-        return neighbour_score > own_score
 
     def performance_gap(self, neighbour):
-        """Compute positive performance difference (neighbour - self).
+        """Compute positive performance level difference (neighbour - self).
+
+        Returns the absolute level gap if the neighbour passes the slope filter
+        (not declining worse than self). This measures how much better the
+        neighbor's current state is, not just their trend.
 
         Parameters
         ----------
@@ -1399,13 +1441,24 @@ class TPB(DecisionModel):
         Returns
         -------
         float
-            Positive gap (0 if neighbour is worse).
+            Positive level gap (0 if neighbour is declining worse or has lower level).
         """
-        neighbour_score = neighbour.behaviour.performance_tracker.weighted_score(
-            self.farmer
-        )
-        own_score = self.performance_tracker.weighted_score(self.farmer)
-        return max(0.0, neighbour_score - own_score)
+        n_tracker = neighbour.behaviour.performance_tracker
+        my_tracker = self.performance_tracker
+
+        # Check slope - reject if neighbor is declining AND worse than me
+        # Positive/zero slopes are always acceptable
+        neighbour_slope = n_tracker.weighted_slope(self.farmer)
+        own_slope = my_tracker.weighted_slope(self.farmer)
+        if neighbour_slope < own_slope and neighbour_slope <= 0:
+            return 0.0
+
+        # Return level difference (neighbor - self)
+        own_level = my_tracker.weighted_level(self.farmer)
+        neighbour_level = n_tracker.weighted_level(self.farmer)
+
+        # Return positive level gap only (0 if neighbor is not better)
+        return max(0.0, neighbour_level - own_level)
 
     # =========================================================================
     # CROP SIMILARITY
@@ -1433,10 +1486,10 @@ class TPB(DecisionModel):
         # Get crop fractions via farmer's get_from_earth (handles multi-year data)
         # Exclude managed grassland - it's not a crop for similarity comparison
         cft_self = self.farmer.get_from_earth(
-            "cftfrac", drop_band=NON_CROPS
+            "cftfrac", drop_band=NON_CROPS, time_idx=-1
         ).values.flatten()
         cft_neighbour = neighbour.get_from_earth(
-            "cftfrac", drop_band=NON_CROPS
+            "cftfrac", drop_band=NON_CROPS, time_idx=-1
         ).values.flatten()
 
         # Find own dominant crop (single argmax - very fast)
@@ -1561,13 +1614,16 @@ class TPB(DecisionModel):
         # Get parameters from config
         confidence_years = self.get_aft_param("confidence_years")
 
-        # My current slope (for relative comparison)
-        my_slope = self.performance_tracker.weighted_score(self.farmer)
+        # My tracker for consistent comparison
+        my_tracker = self.performance_tracker
+        my_slope = my_tracker.weighted_slope(self.farmer)
 
-        # My current absolute values (avoid division by zero)
-        my_yield = max(self.farmer.cropyield, 1e-6)
-        my_soil = max(self.farmer.soilc, 1e-6)
-        my_moisture = max(self.farmer.root_moisture, 1e-6)
+        # My mean values from tracker (avoid division by zero)
+        # Using tracker means instead of current values for consistency
+        # and to reduce noise from single-year fluctuations
+        my_yield = max(my_tracker.mean_yield, 1e-6)
+        my_soil = max(my_tracker.mean_soilc, 1e-6)
+        my_moisture = max(my_tracker.mean_moisture, 1e-6)
 
         for neighbour in self.farmer.neighbourhood:
             # How similar is neighbour? (bundle + crop similarity)
@@ -1576,30 +1632,31 @@ class TPB(DecisionModel):
             if similarity == 0:
                 continue  # Skip completely different neighbours
 
+            n_tracker = neighbour.behaviour.performance_tracker
+
             # -----------------------------------------------------------------
             # Filter: skip neighbours declining MORE than me (relative comparison)
             # -----------------------------------------------------------------
             # This handles degrading contexts (e.g., Paraguay post-land-use-change)
             # where everyone is declining but CA declines slower than conventional.
             # Neighbours performing BETTER than me (higher slope) are included.
-            neighbour_slope = neighbour.behaviour.performance_tracker.weighted_score(
-                self.farmer
-            )
-            if neighbour_slope < my_slope:
+            neighbour_slope = n_tracker.weighted_slope(self.farmer)
+            if neighbour_slope < my_slope and neighbour_slope <= 0:
                 continue  # Skip neighbour declining more than me
 
             # Confidence: more observations → more reliable information
-            n_obs = neighbour.behaviour.performance_tracker.n
+            n_obs = n_tracker.n
             confidence = min(1.0, n_obs / confidence_years)
 
             # -----------------------------------------------------------------
-            # Absolute comparisons (ratio - 1)
+            # Absolute comparisons using tracker means (ratio - 1)
             # -----------------------------------------------------------------
             # Positive if neighbour is better, negative if worse
             # Based on social comparison theory: farmers evaluate relative to self
-            yield_cmp = neighbour.cropyield / my_yield - 1
-            soil_cmp = neighbour.soilc / my_soil - 1
-            moisture_cmp = neighbour.root_moisture / my_moisture - 1
+            # Uses tracker means for consistency with slope evaluation
+            yield_cmp = n_tracker.mean_yield / my_yield - 1
+            soil_cmp = n_tracker.mean_soilc / my_soil - 1
+            moisture_cmp = n_tracker.mean_moisture / my_moisture - 1
 
             # Weight = similarity × confidence
             weight = similarity * confidence
@@ -1668,15 +1725,17 @@ class TPB(DecisionModel):
         # Filter: skip bundles performing worse than me (relative comparison)
         # -----------------------------------------------------------------
         # My slope vs bundle's average slope - handles degrading contexts
-        my_slope = self.performance_tracker.weighted_score(self.farmer)
-        bundle_slope = perf.weighted_trend_score(self.farmer)
+        performance_tracker = self.performance_tracker
+        my_slope = performance_tracker.weighted_slope(self.farmer)
+        bundle_slope = perf.weighted_trend(self.farmer)
         if bundle_slope < my_slope:
             return 0.5  # Neutral for bundles declining more than me
 
-        # My current absolute values (avoid division by zero)
-        my_yield = max(self.farmer.cropyield, 1e-6)
-        my_soil = max(self.farmer.soilc, 1e-6)
-        my_moisture = max(self.farmer.root_moisture, 1e-6)
+        # My mean values from tracker (avoid division by zero)
+        # Using tracker means for consistency with local social learning
+        my_yield = max(performance_tracker.mean_yield, 1e-6)
+        my_soil = max(performance_tracker.mean_soilc, 1e-6)
+        my_moisture = max(performance_tracker.mean_moisture, 1e-6)
 
         # Compare my performance to country average for this bundle
         avg_yield = perf.avg_yield
@@ -1745,15 +1804,17 @@ class TPB(DecisionModel):
         # Filter: skip bundles performing worse than me (relative comparison)
         # -----------------------------------------------------------------
         # My slope vs bundle's average slope - handles degrading contexts
-        my_slope = self.performance_tracker.weighted_score(self.farmer)
-        bundle_slope = perf.weighted_trend_score(self.farmer)
+        performance_tracker = self.performance_tracker
+        my_slope = performance_tracker.weighted_slope(self.farmer)
+        bundle_slope = perf.weighted_trend(self.farmer)
         if bundle_slope < my_slope:
             return 0.5  # Neutral for bundles declining more than me
 
-        # My current absolute values (avoid division by zero)
-        my_yield = max(self.farmer.cropyield, 1e-6)
-        my_soil = max(self.farmer.soilc, 1e-6)
-        my_moisture = max(self.farmer.root_moisture, 1e-6)
+        # My mean values from tracker (avoid division by zero)
+        # Using tracker means for consistency with local social learning
+        my_yield = max(performance_tracker.mean_yield, 1e-6)
+        my_soil = max(performance_tracker.mean_soilc, 1e-6)
+        my_moisture = max(performance_tracker.mean_moisture, 1e-6)
 
         # Get cluster average performance for this bundle
         avg_yield = perf.avg_yield
@@ -1934,11 +1995,11 @@ class TPB(DecisionModel):
         Returns
         -------
         float
-            Total transition cost (scaled by farm size).
+            Total transition cost (scaled by net farm size).
         """
         return (
             old_bundle.transition_cost_per_ha(new_bundle, self.farmer.practice_costs)
-            * self.farmer.gross_farm_size
+            * self.farmer.net_farm_size
         )
 
     # =========================================================================
@@ -1978,7 +2039,7 @@ class TPB(DecisionModel):
                 field,
                 getattr(target_bundle, field),
                 getattr(self.farmer.practice_costs, field).transition
-                * self.farmer.gross_farm_size,
+                * self.farmer.net_farm_size,
             )
             for field in PRACTICE_FIELDS
             if getattr(current, field) != getattr(target_bundle, field)
@@ -2069,7 +2130,7 @@ class TPB(DecisionModel):
 
         Components are computed at local (neighbour), country, and agroecological
         cluster levels, then combined with configurable weights. Levels can be
-        disabled via config (spreading_levels), and their weights are redistributed
+        disabled via config (tpb), and their weights are redistributed
         to enabled levels.
 
         Parameters

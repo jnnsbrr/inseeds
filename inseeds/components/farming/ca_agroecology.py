@@ -103,7 +103,7 @@ def cluster_countries_by_agroecology(world, countries, n_clusters=None, k_range=
         indices = country.indices
 
         if len(indices) == 0:
-            skipped_countries.append(country.country_code)
+            skipped_countries.append(country.code)
             continue
 
         try:
@@ -111,7 +111,7 @@ def cluster_countries_by_agroecology(world, countries, n_clusters=None, k_range=
             prec = output.prec.isel(cell=indices)
             pet = output.pet.isel(cell=indices)
         except (KeyError, AttributeError):
-            skipped_countries.append(country.country_code)
+            skipped_countries.append(country.code)
             continue
 
         temp_mean = float(temp.mean())
@@ -140,10 +140,10 @@ def cluster_countries_by_agroecology(world, countries, n_clusters=None, k_range=
 
         if not any(np.isnan(features)):
             country_features.append(features)
-            country_codes.append(country.country_code)
+            country_codes.append(country.code)
         else:
             raise ValueError(
-                f"Either temp, prec, or pet are invalid for country {country.country_code}"
+                f"Either temp, prec, or pet are invalid for country {country.code}"
             )
 
     if len(country_features) < 2:
@@ -265,7 +265,7 @@ def init_agroecological_clusters(world, countries, n_clusters=None, k_range=(5, 
 
     for country in countries:
         country.agroecological_cluster = country_to_cluster.get(
-            country.country_code, -1
+            country.code, -1
         )
 
 
@@ -298,7 +298,7 @@ def cluster_management_performance(world):
         return
 
     cluster_stats = {}
-    countries_by_code = {c.country_code: c for c in world.countries}
+    countries_by_code = {c.code: c for c in world.countries}
 
     for cluster_id, country_codes in cluster_to_countries.items():
         store = RegionManagementPerformanceStore(country_codes=list(country_codes))
@@ -381,7 +381,7 @@ def save_cluster_map_netcdf(world, output_path, countries=None):
     # Fill arrays based on country assignments
     for country in countries:
         indices = country.indices
-        code = country.country_code
+        code = country.code
         cluster_id = country_to_cluster.get(code, -1)
 
         for idx in indices:

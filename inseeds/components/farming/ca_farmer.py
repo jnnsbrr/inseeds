@@ -33,33 +33,29 @@ Each simulation year, the farmer:
 
 Capital Dynamics
 ----------------
-The model uses FAO/OECD methodology with calibrated depreciation::
+FAO baseline + deviations model::
 
-    Capital_{t+1} = Capital_t - depreciation + reinvestment
+    K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
 
 Where:
-- **depreciation**: ``effective_rate × capital``
-- **reinvestment**: ``savings_rate × max(gross_profit, 0)``
+- **(i - δ)** = FAO net rate (investment - depreciation, typically +2-7%/year)
+- **Δrevenue** = current_revenue - baseline_revenue (from historic 2015-2025)
+- **Δcosts** = current_costs - baseline_costs (initial practice costs)
 
-Depreciation Rate Calibration
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-FAO Capital Stock includes land (~60-80% of agricultural capital), which
-does not depreciate. The FAO depreciation rate (~8%) applies primarily to
-machinery/equipment. We use an effective rate (~1-2%) that accounts for
-the full capital composition:
+Why This Works
+~~~~~~~~~~~~~~
+FAO (i - δ) captures everything at sector average: depreciation, reinvestment,
+subsidies, loans, typical yields and costs. We only track DEVIATIONS:
 
-- Land/improvements: ~65% of capital, 0% depreciation
-- Buildings: ~20% of capital, 2-5%/year depreciation
-- Machinery: ~15% of capital, 10-15%/year depreciation
-
-Weighted effective rate: 0.65×0% + 0.20×3% + 0.15×12% ≈ 2.4%
-
-This ensures capital dynamics are sustainable from crop revenues.
+- Better yields → Δrevenue > 0 → capital grows faster
+- Worse yields → Δrevenue < 0 → capital grows slower
+- Higher costs (CA adoption) → Δcosts > 0 → capital grows slower
+- Lower costs (no-till savings) → Δcosts < 0 → capital grows faster
 
 References:
-- OECD (2009). Measuring Capital Manual, 2nd ed. (asset service lives)
-- USDA ERS (2022). Farm Sector Balance Sheet (land = 83% of US farm assets)
-- Eurostat (2013). Handbook on prices and volumes (depreciation rates)
+- Solow, R.M. (1956). "A Contribution to the Theory of Economic Growth."
+- OECD (2009). Measuring Capital Manual, 2nd ed. (methodology)
+- FAO (2023). FAOSTAT Capital Stock (source data)
 
 Practice Encoding
 -----------------
@@ -126,40 +122,32 @@ class ConservationAgricultureFarmer(Farmer):
     practice_costs : ManagementCosts
         Costs for each practice (direct and transition).
 
-    Capital Dynamics (hybrid FAO + behavioral model)
-    ------------------------------------------------
+    Capital Dynamics (FAO baseline + deviations)
+    --------------------------------------------
     **Initial capital**::
 
         K₀ = NCS / agricultural_land_area
 
     where NCS = Net Capital Stocks from FAO (million USD)
 
-    **Depreciation** (Jorgenson 1963)::
-
-        Depreciation = δ × K
-        where δ = CFC / NCS (Consumption of Fixed Capital / Net Capital Stocks)
-
-    **Two-component investment**:
-
-    1. Replacement: ``i × K``
-       where i = GFCF / NCS (structural, FAO-derived).
-       Farmers replace worn equipment regardless of profit.
-
-    2. Discretionary: ``s × max(profit, 0)``
-       where s = savings_rate (behavioral parameter).
-       Profitable farmers invest more to expand.
-
     **Annual update**::
 
-        K_{t+1} = K_t - δK_t + i×K_t + s × max(profit, 0)
+        K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
 
-    Profit Calculation
-    ------------------
-    ::
+    Where:
 
-        Revenue = LPJmL harvest (gC) × crop fraction × area × FAO prices
-        Variable costs = direct costs per practice × farm size
-        Profit = Revenue - Variable costs - Depreciation
+    - ``i - δ`` = FAO net rate (investment - depreciation, typically +2-7%/year)
+    - ``Δrevenue`` = current_revenue - baseline_revenue
+    - ``Δcosts`` = current_costs - baseline_costs
+
+    **Why this works**: FAO (i - δ) captures sector average dynamics including
+    subsidies, typical costs, typical yields. We only track DEVIATIONS from
+    this baseline - no need to model all components explicitly.
+
+    Baselines
+    ---------
+    - ``baseline_revenue``: Average over historic period (2015-2025)
+    - ``baseline_costs``: Initial practice costs at simulation start
 
     Affordability Constraints
     -------------------------
@@ -201,55 +189,29 @@ class ConservationAgricultureFarmer(Farmer):
         super().__init__(**kwargs)
 
         # -----------------------------------------------------------------
-        # Load farm economics configuration
-        # -----------------------------------------------------------------
-        econ = self.model.config.coupled_config.farm_economics.to_dict()
-
-        # -----------------------------------------------------------------
-        # Policy/behavioral parameters (not derivable from FAO)
-        # -----------------------------------------------------------------
-        # Survival buffer: years of depreciation the farmer can sustain
-        # min_capital = n_survival_years × δ × initial_capital
-        # This ties the threshold to actual capital dynamics (Jorgenson 1963)
-        # and adapts to country-specific depreciation rates from FAO.
-        # Default 1 year based on USDA farm financial indicators: farms typically
-        # maintain working capital ratio of 0.3-0.5 (Katchova & Dinterman 2018),
-        # and current ratio ~1.5-2.0 (USDA ERS). One year of depreciation buffer
-        # represents a conservative minimum for operational continuity.
-        self.n_survival_years = econ.get("n_survival_years")
-
-        # Savings rate: fraction of profit reinvested into farm capital
-        # This is a behavioral parameter representing farmer investment decisions.
-        # Literature suggests farm savings rates of 10-30% depending on region
-        # and farm type (Lowder et al. 2016; FAO 2017).
-        self.savings_rate = econ.get("savings_rate", 0.15)
-
-        # Effective depreciation rate: optionally override FAO rate
-        # FAO rate (~8%) is for machinery, but FAO capital includes land (~60-70%)
-        # which doesn't depreciate. If set, this overrides the FAO country rate.
-        # If null/None, uses FAO country-specific rate from capital stock data.
-        self._effective_depreciation_rate_override = econ.get(
-            "effective_depreciation_rate", None
-        )
-
-        # -----------------------------------------------------------------
         # Get FAO data from country (loaded once per country, not per farmer)
         # -----------------------------------------------------------------
+        # The FAO-based capital dynamics model uses observed sector-level rates
+        # that implicitly capture all income sources and cost structures.
         country = self.cell.country
 
-        # Economic parameters from FAO capital stock
-        # Store FAO rate, but use effective rate (override or FAO) for calculations
-        self._fao_depreciation_rate = country.depreciation_rate
-        self.investment_rate = country.investment_rate
-        self.initial_capital_per_ha = country.initial_capital_per_ha
+        # FAO depreciation rate: δ = CFC / NCS (consumption of fixed capital / net capital stock)
+        # This is the observed rate at which agricultural capital loses value.
+        # Typically 3-8% per year (higher for machinery-intensive countries).
+        self.fao_depreciation_rate = country.depreciation_rate
 
-        # Use effective rate: config override if set, otherwise FAO rate
-        # FAO rate (~8%) is for machinery, but capital includes land (0% depreciation)
-        # so effective rate is typically lower (~1-2%) when land value is included
-        if self._effective_depreciation_rate_override is not None:
-            self.depreciation_rate = self._effective_depreciation_rate_override
-        else:
-            self.depreciation_rate = self._fao_depreciation_rate
+        # FAO investment rate: i = GFCF / NCS (gross fixed capital formation / net capital stock)
+        # This is the observed rate at which new capital is added to the stock.
+        # Crucially, GFCF includes ALL sources of capital formation:
+        #   - Farmer reinvestment from profits
+        #   - Bank loans and credit
+        #   - Government subsidies and grants (EU CAP, US farm bill, etc.)
+        #   - External/foreign investment
+        # Typically 5-15% per year.
+        self.fao_investment_rate = country.investment_rate
+
+        # Initial capital per hectare from FAO Net Capital Stock
+        self.initial_capital_per_ha = country.initial_capital_per_ha
 
         # Producer prices for profit calculation
         self.pft_prices = country.pft_prices
@@ -266,20 +228,33 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Load practice costs
         # -----------------------------------------------------------------
+        # Costs are scaled by farmer's capital relative to reference country.
+        # This accounts for global variation in equipment and input costs.
         # Costs include:
-        # - direct: annual operating cost per ha
-        # - transition: one-time cost when adopting practice
+        # - direct: annual operating cost per ha (scaled)
+        # - transition: one-time cost when adopting practice (scaled)
         self.practice_costs = ManagementCosts.from_config(
-            self.model.config.coupled_config.practice_costs
+            self.model.config.coupled_config.practice_costs,
+            capital_per_ha=self.initial_capital_per_ha,
+            model=self.model,
         )
-
-        # Residue opportunity cost ($/ha)
-        self._residue_opportunity_cost_per_ha = self.compute_residue_opportunity_cost()
 
         # -----------------------------------------------------------------
         # Pre-compute revenue calculation mappings (for performance)
         # -----------------------------------------------------------------
         self._init_revenue_mapping()
+
+        # Cache for current revenue (updated each year in update_capital)
+        # Used for both capital dynamics and residue opportunity cost
+        self._current_revenue = None
+
+        # -----------------------------------------------------------------
+        # Compute baseline revenue from historic data
+        # -----------------------------------------------------------------
+        # The baseline is the average revenue over the historic period
+        # (pre-coupling years, e.g., 2015-2025). This represents what
+        # the FAO capital dynamics already account for.
+        self.baseline_revenue = self._compute_baseline_revenue()
 
         # -----------------------------------------------------------------
         # Initialize behaviour
@@ -289,6 +264,10 @@ class ConservationAgricultureFarmer(Farmer):
 
         # Create TPB decision model
         self.behaviour = TPB(self)
+
+        # Store initial practice costs as baseline (assumed part of FAO)
+        self.baseline_costs = self.get_current_direct_costs()
+
 
     def __repr__(self) -> str:
         bundle = self.behaviour.practice_bundle if hasattr(self, "behaviour") else None
@@ -306,26 +285,33 @@ class ConservationAgricultureFarmer(Farmer):
     def min_capital(self):
         """Minimum sustainable capital threshold.
 
-        Defined as the capital needed to cover n_survival_years of depreciation:
-            min_capital = n_survival_years × δ × initial_capital
+        Defined as a fraction of initial capital:
+            min_capital = min_capital_fraction × initial_capital
 
-        This ties the threshold to actual capital dynamics (Jorgenson 1963)
-        and adapts to country-specific depreciation rates from FAO.
+        Based on Farm Financial Scorecard (CFFM, University of Minnesota):
+        - Working capital / gross revenue > 0.35 = strong liquidity
+        - Working capital / gross revenue < 0.20 = vulnerable
+        Default fraction of 0.25 is the midpoint.
+
         Below this threshold, farmer must deselect costly practices to survive.
+
+        Note: FAO NCS excludes land (SNA 2008 definition), so this fraction
+        applies to productive capital (machinery, equipment, buildings, crops).
 
         References
         ----------
-        - Jorgenson, D.W. (1963). Capital Theory and Investment Behavior. AER.
-        - Bandiera et al. (2017). Why Do People Stay Poor? (poverty trap thresholds)
+        - Farm Financial Scorecard (CFFM, University of Minnesota)
+        - Davis, J. (2022). "Farm's Target for Working Capital." SDSU Extension.
+        - Wisconsin Extension (2021). Farm Finance Scorecard guidelines.
 
         Returns
         -------
         float
             Minimum capital in currency units.
         """
-        # Use net_farm_size for consistency with capital initialization
         initial_capital = self.initial_capital_per_ha * self.net_farm_size
-        return self.n_survival_years * self.depreciation_rate * initial_capital
+        fraction = self.model.config.coupled_config.farm_economics.min_capital_fraction
+        return fraction * initial_capital
 
     @property
     def farm_size(self):
@@ -333,72 +319,67 @@ class ConservationAgricultureFarmer(Farmer):
         return self.gross_farm_size
 
     # =========================================================================
-    # RESIDUE ECONOMICS PROPERTIES
-    # =========================================================================
-
-    @property
-    def residue_opportunity_cost(self):
-        """Opportunity cost of retaining residue (total for farm).
-
-        Returns
-        -------
-        float
-            Opportunity cost scaled by farm size.
-        """
-        return self._residue_opportunity_cost_per_ha * self.net_farm_size
-
-    @property
-    def residue_opportunity_cost_per_ha(self):
-        """Opportunity cost per hectare (for behaviour reasonableness checks).
-
-        Returns
-        -------
-        float
-            Opportunity cost per ha.
-        """
-        return self._residue_opportunity_cost_per_ha
-
-    # =========================================================================
     # RESIDUE ECONOMICS
     # =========================================================================
 
     def compute_residue_opportunity_cost(self):
-        """Compute opportunity cost of retaining residue ($/ha).
+        """Compute opportunity cost of retaining residue (total for farm).
 
-        Uses MADRaT data for spatially-explicit fractions of residue burnt,
-        removed, and recycled. The opportunity cost is the weighted sum
-        of per-use costs from config, weighted by these fractions.
+        Implements the Singh & Schiere (1995) finding that straw value represents
+        10-15% of total crop value. The cost is computed dynamically as:
 
-        MADRaT data structure (Smerald et al. 2023):
+            residue_cost = crop_revenue × use_cost_fraction
+
+        This makes residue costs spatially and temporally variable:
+        - Higher yields → higher residue opportunity cost
+        - Lower yields → lower residue opportunity cost
+
+        Uses MADRaT data (Smerald et al. 2023) for spatially-explicit fractions
+        of residue burnt, removed, and recycled. The final cost is the weighted
+        sum across use types.
+
+        MADRaT data structure:
             production = recycled + removed + burnt
-            - burnt: burned (no economic value)
-            - removed: animal feed + other purposes (has opportunity cost)
-            - recycled: bedding that returns to field with manure
-
-        If spatial data is unavailable, falls back to config default.
+            - burnt: burned (no economic value → 0% of crop value)
+            - removed: animal feed (has value → 12.5% of crop value)
+            - recycled: returns to field (no cost → 0% of crop value)
 
         Returns
         -------
         float
-            Opportunity cost per hectare ($/ha/yr).
+            Total opportunity cost for the farm ($/yr).
+
+        References
+        ----------
+        Singh, K. & Schiere, J.B. (eds.) (1995). Handbook for Straw Feeding
+            Systems. ICAR, New Delhi. Ch. 1.1, Box 1: "straw value = 10-15%
+            of crop value". https://edepot.wur.nl/333326
         """
         res_config = self.model.config.coupled_config.residue_economics
-        use_costs = res_config.use_costs.to_dict()
-        fractions = self.get_residue_fractions()
+        cost_fractions = res_config.use_cost_fractions.to_dict()
+        use_fractions = self.get_residue_fractions()
+
+        # Use cached revenue if available (from update_capital), else compute
+        if self._current_revenue is not None:
+            revenue = self._current_revenue
+        else:
+            revenue = self.calculate_revenue()
 
         # No spatial data → use default from config
-        if fractions is None:
+        if use_fractions is None:
             default_use = res_config.default_removal_use
-            return use_costs.get(default_use, use_costs.get("other", 40.0))
+            default_fraction = cost_fractions.get(default_use, cost_fractions["other"])
+            return revenue * default_fraction
 
         # Weighted average based on actual residue use in this cell
-        return (
-            fractions["burnt"] * use_costs.get("burnt", 0.0)
-            + fractions["removed"] * use_costs.get(
-                "removed", use_costs.get("other", 40.0)
-            )
-            + fractions["recycled"] * use_costs.get("recycled", 0.0)
+        # residue_cost = revenue × Σ(use_fraction × cost_fraction)
+        weighted_cost_fraction = (
+            use_fractions["burnt"] * cost_fractions["burnt"]
+            + use_fractions["removed"] * cost_fractions["removed"]
+            + use_fractions["recycled"] * cost_fractions["recycled"]
         )
+
+        return revenue * weighted_cost_fraction
 
     def get_residue_fractions(self):
         """Get residue use fractions for this cell, weighted by crop mix.
@@ -488,172 +469,141 @@ class ConservationAgricultureFarmer(Farmer):
     def get_current_direct_costs(self):
         """Calculate annual direct costs of current practice bundle.
 
-        Direct costs are ongoing annual costs for each active practice
-        (e.g., seeds for cover crops, foregone income from residue retention).
+        Direct costs are ongoing annual costs for each active practice:
+        - Tillage: fuel savings (negative cost) from no-till
+        - Cover crop: seeds, seeding, termination
+        - Residue: opportunity cost computed DYNAMICALLY from crop revenue
+
+        The residue opportunity cost is computed dynamically using
+        compute_residue_opportunity_cost() based on current crop revenue
+        and spatially-explicit use fractions (Singh & Schiere 1995).
 
         Returns
         -------
         float
             Total annual direct cost (scaled by farm size).
         """
-        return (
-            self.behaviour.practice_bundle.direct_cost_per_ha(self.practice_costs)
-            * self.net_farm_size
-        )
+        bundle = self.behaviour.practice_bundle
+        costs = self.practice_costs
+
+        # Tillage and cover crop: use static config values
+        total = 0.0
+        if bundle.tillage == 1:
+            total += costs.tillage.direct * self.net_farm_size
+        if bundle.cover_crop == 1:
+            total += costs.cover_crop.direct * self.net_farm_size
+
+        # Residue: use DYNAMIC calculation based on crop revenue
+        if bundle.residue_on_field == 1:
+            total += self.compute_residue_opportunity_cost()
+
+        return total
 
     # =========================================================================
     # CAPITAL UPDATE
     # =========================================================================
 
     def update_capital(self):
-        """Update farmer's capital based on profit and depreciation.
+        """Update farmer's capital using FAO baseline + deviations model.
 
-        Capital changes through two mechanisms:
+        Baseline + Deviations Approach
+        ------------------------------
+        FAO provides the baseline capital dynamics at sector level. We track
+        DEVIATIONS from this baseline for individual farmers:
 
-        1. **Depreciation** (capital wear)
-           Machinery and buildings lose value over time. The effective
-           depreciation rate accounts for capital composition:
+        - **FAO baseline**: (i - δ) × K captures average sector behavior including
+          depreciation, reinvestment, subsidies, loans, and typical costs/yields.
 
-           - FAO Capital Stock includes land (~65%), buildings (~20%),
-             machinery (~15%) [USDA ERS 2022; FAO 2023]
-           - Land does NOT depreciate (appreciates over time)
-           - Buildings: 2-5%/year (40-50 year service life) [Eurostat 2013]
-           - Machinery: 10-15%/year (7-10 year service life) [OECD 2009]
-           - FAO aggregate rate (~8%) reflects machinery-weighted average
-           - Effective rate for total capital: ~1-2%
+        - **Δrevenue**: How this farmer's revenue differs from historic baseline.
+          Computed from LPJmL yields vs. average over 2015-2025 (pre-coupling).
 
-        2. **Reinvestment** (from gross profit)
-           Farmers reinvest a fraction of gross profit (revenue - costs)
-           to maintain and expand operations. Based on gross profit (cash
-           flow), not net profit, because depreciation is an accounting
-           concept, not a cash outflow.
+        - **Δcosts**: How this farmer's costs differ from initial practice costs.
+          Initial costs are assumed part of FAO baseline.
 
-        Annual update formula::
+        Annual Update Formula
+        ---------------------
+        ::
 
-            K_{t+1} = K_t - δK_t + s × max(gross_profit, 0)
+            K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
 
         where:
-        - δ = effective_depreciation_rate (~1-2%)
-        - s = savings_rate (~15-30%)
+        - i = FAO investment_rate (GFCF/NCS, typically 5-15%/year)
+        - δ = FAO depreciation_rate (CFC/NCS, typically 3-8%/year)
+        - Δrevenue = current_revenue - baseline_revenue
+        - Δcosts = current_costs - baseline_costs
 
-        Money Conservation
-        ------------------
-        All investment comes from actual revenue. No capital is created
-        from nothing. Capital grows if ``s × gross_profit > δK``, shrinks
-        if ``s × gross_profit < δK``, and is stable at equality.
+        Key Behaviors
+        -------------
+        - If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
+        - Better yields (Δrevenue > 0): capital grows faster than baseline
+        - Worse yields (Δrevenue < 0): capital grows slower than baseline
+        - CA adoption with higher costs: Δcosts > 0 → reduces capital
+        - CA adoption with savings (no-till): Δcosts < 0 → increases capital
 
-        Scientific Justification
-        ------------------------
-        The effective depreciation rate (~1.2%) rather than FAO rate (~8%)
-        is used because:
-
-        1. FAO Net Capital Stock includes land value, which dominates
-           agricultural assets (83% in US per USDA ERS 2022)
-        2. Land does not depreciate; it typically appreciates
-        3. Only machinery (~15% of capital) depreciates at ~10-15%/year
-        4. Weighted rate: 0.65×0% + 0.20×3% + 0.15×12% ≈ 2.4%
-        5. We use 1.2% as a conservative lower bound that ensures
-           capital stability with LPJmL-derived revenue levels
+        Why This Works
+        --------------
+        FAO (i - δ) already captures everything at sector average: typical yields,
+        typical costs, subsidies, loans, reinvestment behavior. We don't need to
+        model all these components explicitly - just the deviations from baseline.
 
         References
         ----------
-        Jorgenson, D.W. (1963). Capital Theory and Investment Behavior.
-            American Economic Review 53(2): 247-259.
-        OECD (2009). Measuring Capital - OECD Manual, 2nd Edition.
-            OECD Publishing, Paris. (Asset service lives)
-        Eurostat (2013). Handbook on prices and volumes in national accounts.
-            (Depreciation rates by asset type)
-        FAO (2023). FAOSTAT Capital Stock methodology.
-            (Net Capital Stock composition)
-        USDA ERS (2022). Farm Sector Balance Sheet.
-            (Land = 83% of US farm assets)
+        Solow, R.M. (1956). "A Contribution to the Theory of Economic Growth."
+        OECD (2009). Measuring Capital Manual (depreciation methodology).
+        FAO (2023). FAOSTAT Capital Stock (source data: GFCF, CFC, NCS).
         """
 
         # -----------------------------------------------------------------
-        # Step 1: Calculate profit from farming
+        # Step 1: FAO baseline capital change
         # -----------------------------------------------------------------
-        # Revenue from crop sales (LPJmL yields × FAO prices)
-        revenue = self.calculate_revenue()
-        # Variable costs for current practices (per-ha costs × farm size)
-        variable_costs = self.get_current_direct_costs()
-
-        # Gross profit before depreciation
-        gross_profit = revenue - variable_costs
-
-        # -----------------------------------------------------------------
-        # Step 2: Depreciation (capital wear)
-        # -----------------------------------------------------------------
-        # Depreciation rate can be:
-        # - FAO rate (~8%): applies to machinery, but FAO capital includes land
-        # - Effective rate (~1-2%): calibrated for capital including land value
-        #
-        # If effective_depreciation_rate is set in config, it overrides the FAO rate.
-        # This accounts for land (~60-70% of FAO capital) not depreciating.
-        #
-        # Example: FAO rate 8% × land fraction 0.15 ≈ 1.2% effective rate
-        depreciation = self.depreciation_rate * self.capital
+        # The FAO rates (i - δ) capture the NET capital change at sector level,
+        # including: depreciation, reinvestment, subsidies, loans, average costs.
+        # This is our baseline - what happens to capital at sector average.
+        if (self.model.config.coupled_config.farm_economics.fao_capital_baseline):
+            fao_net_rate = self.fao_investment_rate - self.fao_depreciation_rate
+            baseline_capital_change = fao_net_rate * self.capital
+        else:
+            baseline_capital_change = 0.0
 
         # -----------------------------------------------------------------
-        # Step 3: Reinvestment (from gross profit)
+        # Step 2: Deviation in revenue from baseline
         # -----------------------------------------------------------------
-        # Reinvestment comes from gross profit (cash flow), not net profit.
-        # Depreciation is an accounting concept - it doesn't reduce cash.
-        # Farmers reinvest from what they actually earn (revenue - costs).
+        # baseline_revenue = average revenue from historic period (2015-2025)
+        # This is what FAO already accounts for. We only track the CHANGE.
         #
-        # This is money-conserving: all capital comes from actual revenue.
-        # - If savings_rate × gross_profit > depreciation: capital grows
-        # - If savings_rate × gross_profit < depreciation: capital shrinks
-        # - If savings_rate × gross_profit = depreciation: capital stable
+        # Δrevenue > 0: yields improved → farmer does better than baseline
+        # Δrevenue < 0: yields declined → farmer does worse than baseline
         #
-        # Literature: Lowder et al. (2016); FAO (2017) suggest 10-30% range.
-        # Higher savings rates needed to maintain capital with high depreciation.
-        reinvestment = self.savings_rate * max(gross_profit, 0.0)
+        # Cache revenue for reuse (e.g., residue_opportunity_cost calculation)
+        self._current_revenue = self.calculate_revenue()
+        delta_revenue = self._current_revenue - self.baseline_revenue
 
         # -----------------------------------------------------------------
-        # Step 4: External financing (TODO)
+        # Step 3: Deviation in costs from baseline
         # -----------------------------------------------------------------
-        # TODO: Add loans/credits from banks as external capital source.
+        # baseline_costs = initial practice costs (at simulation start)
+        # Assumed to be part of what FAO captures. We track the CHANGE.
         #
-        # This would allow farmers to:
-        # - Access capital beyond their own profit (especially for transitions)
-        # - Take on debt to invest in CA practices with high upfront costs
-        # - Model credit constraints as barrier to CA adoption
-        #
-        # Implementation considerations:
-        # - Interest rates (country-specific, possibly from World Bank data)
-        # - Loan repayment schedules (reduce future net_profit)
-        # - Credit access based on farm size, collateral, or credit history
-        # - Debt-to-asset ratio limits
-        # - Microfinance vs. commercial bank access
-        #
-        # Potential references:
-        # - Feder et al. (1990). The relationship between credit and productivity
-        # - Guirkinger & Boucher (2008). Credit constraints and productivity
-        external_financing = 0.0  # Placeholder for future implementation
+        # Δcosts > 0: more expensive practices → reduces capital
+        # Δcosts < 0: cheaper practices (e.g., no-till savings) → adds capital
+        current_costs = self.get_current_direct_costs()
+        delta_costs = current_costs - self.baseline_costs
 
         # -----------------------------------------------------------------
-        # Step 5: Update capital
+        # Step 4: Update capital
         # -----------------------------------------------------------------
-        # K_next = K - δK + s × max(gross_profit, 0) + loans
+        # K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
         #
-        # Money-conserving model:
-        # - Depreciation reduces capital (physical wear)
-        # - Reinvestment adds capital (from actual earnings)
-        # - All capital flows are sourced from real revenue
+        # Interpretation:
+        # - FAO baseline: what happens at sector average (includes subsidies,
+        #   typical costs, typical reinvestment behavior)
+        # - Δrevenue: how this farmer's yields differ from baseline
+        # - Δcosts: how this farmer's costs differ from baseline
         #
-        # Capital dynamics depend on gross_profit vs depreciation:
-        # - If s × gross_profit > δK: capital grows (profitable farming)
-        # - If s × gross_profit < δK: capital shrinks (unprofitable)
-        # - If s × gross_profit = δK: capital stable (break-even)
-        #
-        # For stability, farmers need: gross_profit ≥ δK / s
-        # Example: δ=8%, s=15%, K=$1M → need gross_profit ≥ $533K
-        self.capital = (
-            self.capital
-            - depreciation
-            + reinvestment
-            + external_financing
-        )
+        # If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
+        # If yields improve or costs decrease: farmer does better than baseline
+        # If yields decline or costs increase: farmer does worse than baseline
+        self.capital = self.capital + baseline_capital_change + delta_revenue - delta_costs
 
         # Capital cannot go negative
         self.capital = max(0.0, self.capital)
@@ -670,7 +620,7 @@ class ConservationAgricultureFarmer(Farmer):
         lookups during simulation. The mapping is constant for the simulation.
         """
         # Get band names from cftfrac (excluding NON_CROPS)
-        cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS)
+        cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS, time_idx=-1)
         bands = list(cftfrac.band.values)
 
         # Get prices and their categories
@@ -705,6 +655,50 @@ class ConservationAgricultureFarmer(Farmer):
 
         # Cache cell area (constant)
         self._cell_area = self.cell.area.item()
+
+    def _compute_baseline_revenue(self):
+        """Compute baseline revenue from historic (pre-coupling) yield data.
+
+        The baseline revenue is the average revenue over the historic period
+        (typically 2015-2025, before coupled simulation starts). This baseline
+        represents what FAO capital dynamics already account for - the typical
+        yields and revenues at the sector level.
+
+        During simulation, we track DEVIATIONS from this baseline:
+        - Higher yields → positive Δrevenue → capital grows faster
+        - Lower yields → negative Δrevenue → capital grows slower
+
+        Returns
+        -------
+        float
+            Average revenue over historic period (USD).
+        """
+        # Get historic yield data (all available time steps)
+        harvestc_da = self.get_from_earth("pft_harvestc", drop_band=NON_CROPS)
+        cftfrac_da = self.get_from_earth("cftfrac", drop_band=NON_CROPS)
+
+        # Get underlying numpy arrays (faster than xarray operations)
+        harvestc = harvestc_da.values
+        cftfrac = cftfrac_da.values
+
+        # Compute production for all time steps at once (vectorized)
+        # Shape: (time, band) or (band,) if single time step
+        production = harvestc * cftfrac * self._cell_area / (0.45 * 1e6)
+
+        # Average over time if multiple time steps (faster than xarray operations)
+        if production.ndim > 1 and "time" in harvestc_da.dims:
+            # Mean over time axis (axis=0 for time-first arrays)
+            time_axis = harvestc_da.dims.index("time")
+            mean_production = np.mean(production, axis=time_axis)
+        else:
+            mean_production = production
+
+        # Compute revenue from mean production using pre-computed price mappings
+        total_revenue = 0.0
+        for indices, price in self._revenue_groups:
+            total_revenue += mean_production[indices].sum() * price
+
+        return total_revenue
 
     def calculate_revenue(self):
         """Calculate revenue from crop production.
@@ -759,8 +753,8 @@ class ConservationAgricultureFarmer(Farmer):
             Total revenue in currency units (USD).
         """
         # Get numpy arrays directly (fast)
-        harvestc = self.get_from_earth("pft_harvestc", drop_band=NON_CROPS).values
-        cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS).values
+        harvestc = self.get_from_earth("pft_harvestc", drop_band=NON_CROPS, time_idx=-1).values
+        cftfrac = self.get_from_earth("cftfrac", drop_band=NON_CROPS, time_idx=-1).values
 
         # Production in tonnes dry matter (vectorized numpy)
         # gC → tonnes DM: divide by (C_fraction × g_per_tonne)
@@ -792,6 +786,13 @@ class ConservationAgricultureFarmer(Farmer):
         1. Cover crop (typically highest cost)
         2. Residue retention
         3. Tillage change (no-till, often has negative cost = savings)
+
+        Special case for residue:
+        When residue retention is deselected, the farmer returns to baseline
+        behavior (selling/removing residue based on MADRaT fractions). This
+        generates immediate income equal to the opportunity cost they were
+        paying to retain. The income is added to capital, improving the
+        farmer's financial position beyond just reducing costs.
         """
         # Calculate current annual direct costs
         current_direct_costs = self.get_current_direct_costs()
@@ -813,14 +814,22 @@ class ConservationAgricultureFarmer(Farmer):
             if getattr(bundle, practice_name) == 0:
                 continue
 
-            # Only deselect practices with positive direct cost
-            direct_cost = getattr(costs, practice_name).direct
-            if direct_cost > 0:
+            # Get direct cost for this practice
+            # Residue uses dynamic calculation, others use static config
+            if practice_name == "residue_on_field":
+                direct_cost = self.compute_residue_opportunity_cost()
+            else:
+                direct_cost = getattr(costs, practice_name).direct * self.net_farm_size
 
-                # Recalculate costs with this practice removed
-                # (simplified: subtract the practice's direct cost)
+            # Only deselect practices with positive direct cost
+            if direct_cost > 0:
                 bundle = bundle.change_practices(**{practice_name: 0})
-                current_direct_costs -= direct_cost * self.net_farm_size
+                current_direct_costs -= direct_cost
+
+                # Special case: deselecting residue retention means SELLING residue
+                # Farmer gets immediate cash from the sale (income = opportunity cost)
+                if practice_name == "residue_on_field":
+                    self.capital += direct_cost  # Get cash from selling residue
 
                 # Check if costs are now within budget
                 if current_direct_costs <= available_capital:
@@ -833,8 +842,8 @@ class ConservationAgricultureFarmer(Farmer):
             self.behaviour.apply_bundle(bundle)
             self.behaviour.record_transition(bundle)
             # Record that this was a forced transition due to affordability
-            self.behaviour._transition_blocker = BLOCKER_AFFORDABILITY_FORCED
-            self.behaviour._transition_driver = DRIVER_AFFORDABILITY_FORCED
+            self.behaviour.transition_blocker = BLOCKER_AFFORDABILITY_FORCED
+            self.behaviour.transition_driver = DRIVER_AFFORDABILITY_FORCED
 
     # =========================================================================
     # MAIN UPDATE METHOD
@@ -851,7 +860,7 @@ class ConservationAgricultureFarmer(Farmer):
         5. Run TPB decision logic
         6. Apply practice transition if TPB threshold exceeded
 
-        Sets behaviour._transition_blocker to indicate why transition didn't happen.
+        Sets behaviour.transition_blocker to indicate why transition didn't happen.
 
         Parameters
         ----------
@@ -861,7 +870,7 @@ class ConservationAgricultureFarmer(Farmer):
         # Import blocker/driver constants here to avoid circular imports
         from inseeds.components.farming.ca_behaviour import (
             BLOCKER_NONE, BLOCKER_CONTROL_RUN, BLOCKER_CAPITAL_SURVIVAL,
-            BLOCKER_TRANSITION_UNAFFORDABLE, BLOCKER_EVALUATION_TIME,
+            BLOCKER_TRANSITION_UNAFFORDABLE, BLOCKER_OBSERVATION_YEARS,
             DRIVER_NONE, DRIVER_FALLBACK
         )
 
@@ -874,8 +883,8 @@ class ConservationAgricultureFarmer(Farmer):
         # Step 2: Skip CA dynamics in control run
         # -----------------------------------------------------------------
         if self.control_run:
-            self.behaviour._transition_blocker = BLOCKER_CONTROL_RUN
-            self.behaviour._transition_driver = DRIVER_NONE
+            self.behaviour.transition_blocker = BLOCKER_CONTROL_RUN
+            self.behaviour.transition_driver = DRIVER_NONE
             return
 
         # -----------------------------------------------------------------
@@ -892,28 +901,20 @@ class ConservationAgricultureFarmer(Farmer):
         # Step 5: Skip TPB if capital-constrained (survival mode)
         # -----------------------------------------------------------------
         if self.capital < self.min_capital:
-            self.behaviour._transition_blocker = BLOCKER_CAPITAL_SURVIVAL
-            self.behaviour._transition_driver = DRIVER_NONE
+            self.behaviour.transition_blocker = BLOCKER_CAPITAL_SURVIVAL
+            self.behaviour.transition_driver = DRIVER_NONE
             return
 
         # -----------------------------------------------------------------
-        # Step 6: Check if farmer should evaluate this year
+        # Step 6: Run TPB decision logic
         # -----------------------------------------------------------------
-
-        if not self.behaviour.should_evaluate():
-            self.behaviour._transition_blocker = BLOCKER_EVALUATION_TIME
-            self.behaviour._transition_driver = DRIVER_NONE
-            self.behaviour.decrement_evaluation_time()
-            return
-
-        # -----------------------------------------------------------------
-        # Step 7: Run TPB decision logic
-        # -----------------------------------------------------------------
+        # This records observations every year and checks if observation
+        # period is complete before running full TPB evaluation.
 
         self.behaviour.update()
 
         # -----------------------------------------------------------------
-        # Step 8: Apply transition if TPB threshold exceeded
+        # Step 7: Apply transition if TPB threshold exceeded
         # -----------------------------------------------------------------
         if self.behaviour.should_transition():
             new_bundle = self.behaviour.proposed_bundle
@@ -943,24 +944,25 @@ class ConservationAgricultureFarmer(Farmer):
                         self.behaviour.apply_bundle(new_bundle)
                         self.behaviour.record_transition(new_bundle)
                         # Clear blocker since transition succeeded
-                        self.behaviour._transition_blocker = BLOCKER_NONE
+                        self.behaviour.transition_blocker = BLOCKER_NONE
 
                         # Set driver to indicate why transition succeeded
                         pathway = self.behaviour.target_pathway
                         if pathway == "fallback":
-                            self.behaviour._transition_driver = DRIVER_FALLBACK
+                            self.behaviour.transition_driver = DRIVER_FALLBACK
                         elif pathway in ("social", "exploration"):
                             self.behaviour.set_tpb_component_driver(pathway)
                     else:
                         # Can't afford transition cost
-                        self.behaviour._transition_blocker = BLOCKER_TRANSITION_UNAFFORDABLE
+                        self.behaviour.transition_blocker = BLOCKER_TRANSITION_UNAFFORDABLE
         else:
             # TPB score below threshold - identify which component is limiting
             self.behaviour.set_tpb_transition_blocker()
 
         # -----------------------------------------------------------------
-        # Step 9: Reset evaluation time after evaluation completes
+        # Step 8: Reset observation years after FULL evaluation completes
         # -----------------------------------------------------------------
-        # Whether farmer transitioned or not, they've evaluated and will wait
-        # before reconsidering (randomized interval around evaluation_interval)
-        self.behaviour.reset_evaluation_time()
+        # Only reset if we actually ran the full TPB evaluation (not blocked
+        # by observation period). After evaluation, farmer waits again.
+        if self.behaviour.transition_blocker != BLOCKER_OBSERVATION_YEARS:
+            self.behaviour.reset_observation_years()

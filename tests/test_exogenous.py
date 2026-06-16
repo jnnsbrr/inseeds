@@ -126,7 +126,7 @@ class TestExogenousAccessor:
         world_exo = Exogenous(world, datasets=mock_datasets, sources=mock_sources)
         
         country = MagicMock()
-        country.country_code = "NLD"
+        country.code = "NLD"
         # No grid attribute = not a cell
         del country.grid
         
@@ -143,7 +143,7 @@ class TestExogenousAccessor:
         cell = MagicMock()
         cell.grid.cell.item.return_value = 1
         cell.country = MagicMock()
-        cell.country.country_code = "DEU"
+        cell.country.code = "DEU"
         
         cell_exo = Exogenous.for_entity(cell, world_exo)
         

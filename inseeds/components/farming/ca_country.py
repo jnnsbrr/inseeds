@@ -92,10 +92,10 @@ class CACountry(Country):
         return self._exogenous
 
     @property
-    def neighbourhood_code(self):
+    def neighbourhood_codes(self):
         """Neighbourhood country codes for fallback."""
         if not hasattr(self, "_neighbour_codes"):
-            self._neighbour_codes = [n.country_code for n in self.neighbourhood if hasattr(n, "country_code")]
+            self._neighbour_codes = [n.code for n in self.neighbourhood]
         return self._neighbour_codes
 
     def _ensure_fao_data(self):
@@ -124,8 +124,11 @@ class CACountry(Country):
             )
 
         year = CACountry._fao_reference_year
-        code = self.country_code
-        nb = self.neighbourhood_code  # Fallback countries if data missing
+        code = self.code
+
+        # Fallback countries if data missing
+        neighbour_codes = self.neighbourhood_codes
+
         world = self.model.world.exogenous
 
         # ---------------------------------------------------------------------
@@ -137,17 +140,17 @@ class CACountry(Country):
         # Depreciation rate: annual fraction of capital value lost (wear/obsolescence)
         # Aggregator="mean" averages over available years if multiple exist
         self._depreciation_rate = _extract_with_fallback(
-            cap, "depreciation_rate", code, year, nb, aggregator="mean"
+            cap, "depreciation_rate", code, year, neighbour_codes, aggregator="mean"
         )
 
         # Investment rate: annual gross fixed capital formation / existing stock
         self._investment_rate_value = _extract_with_fallback(
-            cap, "investment_rate", code, year, nb, aggregator="mean"
+            cap, "investment_rate", code, year, neighbour_codes, aggregator="mean"
         )
 
         # Net Capital Stock (NCS): total value of agricultural capital in million USD
         # Aggregator="last" uses most recent available year
-        ncs = _extract_with_fallback(cap, "ncs", code, year, nb, aggregator="last")
+        ncs = _extract_with_fallback(cap, "ncs", code, year, neighbour_codes, aggregator="last")
 
         # ---------------------------------------------------------------------
         # Step 3: Compute crop-specific capital share
@@ -158,12 +161,12 @@ class CACountry(Country):
 
         # Gross Production Value of crops (USD) - with 20-year lookback for sparse data
         crops_gpv = _extract_with_fallback(
-            gpv, "gpv_crops", code, year, nb, max_lookback=20, aggregator="mean"
+            gpv, "gpv_crops", code, year, neighbour_codes, max_lookback=20, aggregator="mean"
         )
 
         # Gross Production Value of all agriculture (crops + livestock + ...)
         ag_gpv = _extract_with_fallback(
-            gpv, "gpv_agriculture", code, year, nb, max_lookback=20, aggregator="mean"
+            gpv, "gpv_agriculture", code, year, neighbour_codes, max_lookback=20, aggregator="mean"
         )
 
         # Agriculture's share of AFF sector (country-specific, accounts for
@@ -186,7 +189,7 @@ class CACountry(Country):
         # Step 4: Extract producer prices per crop type
         # ---------------------------------------------------------------------
         # Farm-gate prices (USD/tonne) for each PFT, used to compute farm revenue
-        self._pft_prices = self.extract_prices(world.prices, code, year, nb)
+        self._pft_prices = self.extract_prices(world.prices, code, year, neighbour_codes)
 
         self._fao_loaded = True
 
@@ -422,7 +425,7 @@ class CACountry(Country):
                 continue
             store.add_observation(farmer.behaviour.practice_bundle, farmer)
 
-        nb_weight = self.model.config.coupled_config.tpb_thresholds.neighbour_country_weight
+        nb_weight = self.model.config.coupled_config.tpb.neighbour_country_weight
 
         if nb_weight > 0:
             store = store.merge_with_neighbours(
@@ -442,7 +445,7 @@ class CACountry(Country):
         all_country_stats = self.world.statistic.get(
             "countries_management_performance", {}
         )
-        neighbour_codes = getattr(self, "neighbourhood_code", [])
+        neighbour_codes = getattr(self, "neighbourhood_codes", [])
         return [
             all_country_stats[code]
             for code in neighbour_codes

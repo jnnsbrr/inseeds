@@ -41,15 +41,19 @@ class TestCAModelWithDummyFAO:
             if not math.isnan(farmer.capital):
                 assert farmer.capital >= 0
 
-    def test_ca_farmers_have_depreciation_rate(self, ca_model_instance):
-        """CA farmers should have depreciation rate from FAO."""
+    def test_ca_farmers_have_fao_rates(self, ca_model_instance):
+        """CA farmers should have FAO depreciation and investment rates."""
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
         
         for farmer in farmers[:3]:
-            assert hasattr(farmer, "depreciation_rate")
-            assert 0 < farmer.depreciation_rate < 1
+            # FAO depreciation rate (typically 3-8%)
+            assert hasattr(farmer, "fao_depreciation_rate")
+            assert 0 < farmer.fao_depreciation_rate < 1
+            # FAO investment rate (typically 5-15%)
+            assert hasattr(farmer, "fao_investment_rate")
+            assert 0 < farmer.fao_investment_rate < 1
 
     def test_ca_farmers_have_tpb_behaviour(self, ca_model_instance):
         """CA farmers should have TPB behaviour model."""
@@ -314,31 +318,19 @@ class TestCAFarmerAFTTypes:
 class TestResidueEconomics:
     """Tests for residue opportunity cost calculations."""
 
-    def test_residue_opportunity_cost_exists(self, ca_model_instance):
-        """Farmers should have residue opportunity cost."""
+    def test_compute_residue_opportunity_cost_exists(self, ca_model_instance):
+        """Farmers should have compute_residue_opportunity_cost method."""
         import math
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
         
         farmer = farmers[0]
-        if hasattr(farmer, "residue_opportunity_cost"):
-            cost = farmer.residue_opportunity_cost
+        if hasattr(farmer, "compute_residue_opportunity_cost"):
+            cost = farmer.compute_residue_opportunity_cost()
             # Cost may be NaN if FAO data extraction fails for test data
             if not math.isnan(cost):
                 assert cost >= 0
-
-    def test_residue_opportunity_cost_per_ha_exists(self, ca_model_instance):
-        """Farmers should have per-hectare residue opportunity cost."""
-        import math
-        farmers = getattr(ca_model_instance, "_farmers", [])
-        if not farmers:
-            pytest.skip("No farmers")
-        
-        farmer = farmers[0]
-        if hasattr(farmer, "residue_opportunity_cost_per_ha"):
-            cost_per_ha = farmer.residue_opportunity_cost_per_ha
-            assert cost_per_ha >= 0
 
 
 class TestPracticeCosts:

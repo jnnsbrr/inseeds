@@ -397,12 +397,11 @@ class TestCAFarmerCoverCropLogic:
 class TestCAFarmerResidueEconomics:
     """Tests for residue opportunity cost calculation."""
 
-    def test_residue_opportunity_cost_properties_exist(self):
-        """Residue opportunity cost properties should exist."""
+    def test_compute_residue_opportunity_cost_method_exists(self):
+        """Residue opportunity cost method should exist."""
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert "residue_opportunity_cost" in dir(ConservationAgricultureFarmer)
-        assert "residue_opportunity_cost_per_ha" in dir(ConservationAgricultureFarmer)
+        assert "compute_residue_opportunity_cost" in dir(ConservationAgricultureFarmer)
 
 
 class TestCAFarmerCellProperties:

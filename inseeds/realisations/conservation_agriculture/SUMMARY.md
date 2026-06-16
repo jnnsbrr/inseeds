@@ -13,7 +13,11 @@ Model
  └── World
       ├── Countries (CACountry)
       │    ├── FAO economic data (capital, prices, depreciation)
-      │    └── Country-level statistics for social learning
+      │    ├── Country-level statistics for social learning
+      │    └── Agroecological cluster membership
+      │
+      ├── Agroecological Clusters
+      │    └── Cross-border social learning statistics
       │
       └── Cells
            └── Farmers (CAFarmer)
@@ -27,6 +31,7 @@ Model
 | `CACountry` | `ca_country.py` | Country-level FAO data, capital parameters, prices |
 | `CAFarmer` | `ca_farmer.py` | Farmer agent with capital, costs, revenue |
 | `TPB` | `ca_behaviour.py` | Decision model: bundles, social learning, attitude, norms, PBC |
+| `ca_agroecology` | `ca_agroecology.py` | Agroecological clustering for cross-border learning |
 | `Country` | `region.py` | Base class with cropland area calculation |
 | `FaoDataset` | `data/fao/base.py` | Abstract base for FAO data handlers |
 
@@ -73,22 +78,26 @@ Attitude combines two sources, weighted by AFT parameters (`weight_own_land`, `w
 
 1. **Own-land experience** (`compute_attitude_own_land`): Trend-based evaluation of soil carbon, root moisture, and crop yield since last transition. Uses linear regression over observation period to filter inter-annual noise. Declining performance → higher attitude toward change.
 
-2. **Social learning** (`compute_attitude_social_learning_local/country`): Performance comparison with neighbours using the proposed bundle.
-   - **Local**: Weighted by bundle similarity + crop similarity (AFT params: `weight_bundle_similarity`, `weight_crop_similarity`)
-   - **Country**: Uses cached country statistics comparing own performance to country average for the proposed bundle
+2. **Social learning** (`compute_attitude_social_learning`): Performance comparison at three spatial scales:
+   - **Local**: Weighted by bundle similarity + crop similarity
+   - **Country**: Country-level average performance for the proposed bundle
+   - **Cluster**: Agroecological cluster average (climatically similar countries)
 
-Local vs country contributions are weighted by `weight_attitude_local` and `weight_attitude_country`.
+Weights (`weight_attitude_local`, `weight_attitude_country`, `weight_attitude_cluster`) are AFT-specific and redistributed when levels are disabled.
 
 ### 3.2 Social Norm
 
-Social norm reflects "what others are doing" (descriptive norm).
+Social norm reflects "what others are doing" (descriptive norm) at three scales:
 
-- **Local** (`compute_social_norm_local`): Similarity-weighted average across neighbours → sigmoid transformation with AFT-specific threshold (`threshold_social_norm_local`)
-- **Country** (`compute_social_norm_country`): Fraction of farmers using the bundle → sigmoid with threshold (`threshold_social_norm_country`)
+- **Local** (`compute_social_norm_local`): Similarity-weighted adoption fraction among neighbours
+- **Country** (`compute_social_norm_country`): Fraction of farmers using the bundle nationally
+- **Cluster** (`compute_social_norm_cluster`): Adoption fraction across climatically similar countries
 
-Local vs country contributions are weighted by `weight_social_norm_local` and `weight_social_norm_country`.
+Each uses a sigmoid transformation with AFT-specific thresholds (e.g., `threshold_social_norm_local`).
 
 The sigmoid threshold model (Granovetter 1978): below threshold → social drag; above threshold → social boost.
+
+Weights (`weight_social_norm_local`, `weight_social_norm_country`, `weight_social_norm_cluster`) are AFT-specific and redistributed when levels are disabled.
 
 ### 3.3 Perceived Behavioral Control (PBC)
 
@@ -102,6 +111,15 @@ Where:
 
 PBC approaches 0 as costs approach available capital. AFT differences are captured via `pbc_base`.
 
+### 3.4 Weight Redistribution
+
+When a spreading level is disabled (e.g., `enable_cluster: false` for single-country runs), its weight is redistributed proportionally to enabled levels:
+
+```python
+# Example: if cluster disabled with weights (0.7, 0.2, 0.1)
+# Redistributed: (0.778, 0.222, 0.0) - total unchanged
+```
+
 ---
 
 ## 4. Decision Flow
@@ -109,14 +127,15 @@ PBC approaches 0 as costs approach available capital. AFT differences are captur
 Each year, TPB executes:
 
 1. **Re-evaluate residue status** — Update bundle based on actual litter cover vs CA threshold (30%)
-2. **Add observation** — Update regression accumulators (soil C, moisture, yield)
+2. **Add observation** — Update regression accumulators (soil C, moisture, yield)Up
 3. **Update bundle memory** — Store current trends for neighbour visibility
 4. **Decay old memories** — Bounded rationality (`memory_decay_years`)
-5. **Check minimum observation** — Require sufficient data before reconsidering (`min_observation_years`)
+5. **Check minimum observation** — Require sufficient data before reconsidering
 6. **Check fallback** — Revert if sustained decline (`fallback_years` consecutive years below baseline)
 7. **Find target bundle**:
    - Try local neighbour imitation (best-performing neighbour's bundle)
    - If none better, try country-level best performer
+   - If none better, try cluster-level best performer
    - If still none, maybe explore randomly (innovation diffusion)
 8. **Adjust for affordability** — Reduce to partial bundle if full target unaffordable
 9. **Compute TPB components** — Attitude, social norm, PBC
@@ -126,25 +145,33 @@ Each year, TPB executes:
 
 | Threshold | Value | Purpose |
 |-----------|-------|---------|
-| `transition_threshold` | 0.5 | TPB score to adopt new bundle |
-| `revert_threshold` | 0.6 | TPB score to revert (higher = hysteresis) |
-| `evaluation_interval` | 0 | Years between re-evaluations |
+| `transition_threshold` | 0.5 | TPB score for any practice change |
 
-### 4.2 Transition Blockers
+### 4.2 Evaluation Timing
+
+`min_observation_years` serves dual purpose:
+1. **Data quality**: n_obs must be >= min_observation_years before transitioning
+2. **Evaluation timing**: Counter (`_observation_years`) is randomized around min_observation_years to desynchronize farmers and prevent artificial evaluation waves
+
+After each evaluation (whether transition happens or not), the counter is reset to a random value drawn from `Normal(min_obs, min_obs/2)`.
+
+### 4.3 Transition Blockers
 
 The model tracks why transitions don't happen:
 
 | Blocker | Meaning |
 |---------|---------|
-| `min_obs_years` | Not enough observation time yet |
+| `observation_years` | Not yet time to re-evaluate (commitment period) |
+| `min_obs_years` | Not enough observation data yet |
 | `no_target` | No better neighbour + exploration didn't trigger |
 | `target_same` | Target bundle equals current (already optimal) |
 | `tpb_low_pbc` | TPB failed due to cost/capital constraints |
-| `tpb_low_social_norm_local/country` | TPB failed due to low social norm |
+| `tpb_low_social_norm_local/country/cluster` | TPB failed due to low social norm |
 | `tpb_low_attitude_*` | TPB failed due to low attitude |
 | `capital_survival` | Capital below survival threshold |
+| `affordability_forced` | Practices deselected due to unaffordable direct costs |
 
-### 4.3 Transition Drivers
+### 4.4 Transition Drivers
 
 When transitions succeed, the model tracks the enabling factor:
 
@@ -152,6 +179,7 @@ When transitions succeed, the model tracks the enabling factor:
 |--------|---------|
 | `local_*` | Inspired by local neighbour |
 | `country_*` | Inspired by country-level performer |
+| `cluster_*` | Inspired by cluster-level performer |
 | `exploration_*` | Discovered via random exploration |
 | `fallback` | Reverted due to sustained decline |
 
@@ -170,32 +198,117 @@ Where:
 - **ag_share**: Agriculture fraction of AFF (country-specific static table)
 - **crop_share**: Field crops fraction of agriculture (from FAO GPV data)
 
-### 5.2 Annual Update
+### 5.2 FAO Baseline + Deviations Model
 
-> K_{t+1} = K_t − δK_t + s × max(profit, 0)
+FAO provides the baseline capital dynamics. We track DEVIATIONS from this baseline:
+
+> K_{t+1} = K × (1 + i − δ) + Δrevenue − Δcosts
 
 Where:
-- **δ**: Depreciation rate (CFC / NCS from FAO)
-- **s**: Savings rate (default 0.15)
-- **profit**: Revenue − variable costs − depreciation
+- **i − δ**: FAO net rate (investment − depreciation, typically +2-7%/year)
+- **Δrevenue**: current_revenue − baseline_revenue
+- **Δcosts**: current_costs − baseline_costs
 
-### 5.3 Revenue Calculation
+### 5.3 Baselines (Set at Initialization)
 
-1. Get per-PFT harvest from LPJmL (gC/m²)
-2. Multiply by crop fraction and cell area
-3. Convert gC to tonnes dry matter (0.45 C fraction)
-4. Aggregate irrigation variants to match FAO price categories
-5. Multiply by FAO producer prices (USD/tonne)
+| Baseline | Source | Represents |
+|----------|--------|------------|
+| **baseline_revenue** | Average over 2015-2025 (historic LPJmL data) | Typical yields already in FAO |
+| **baseline_costs** | Initial practice costs at simulation start | Typical costs already in FAO |
 
-### 5.4 Practice Costs (from config)
+### 5.4 How Deviations Work
 
-| Practice | Transition ($/ha) | Direct ($/ha/yr) |
-|----------|-------------------|------------------|
-| No-till | 70 | -50 (savings) |
-| Cover crop | 25 | 75 |
-| Residue retention | 10 | 50 |
+| Condition | Effect |
+|-----------|--------|
+| Δrevenue = 0, Δcosts = 0 | Farmer follows FAO baseline exactly |
+| Better yields (Δrevenue > 0) | Capital grows faster than baseline |
+| Worse yields (Δrevenue < 0) | Capital grows slower than baseline |
+| CA with higher costs (Δcosts > 0) | Reduces capital vs baseline |
+| CA with savings, e.g. no-till (Δcosts < 0) | Increases capital vs baseline |
 
-When capital falls below minimum threshold (`n_survival_years × δ × K₀`), costly practices are dropped: cover crop first (highest direct cost), then residue, then no-till.
+### 5.5 Why This Works
+
+FAO (i − δ) already captures everything at sector average:
+- Depreciation (physical capital loss)
+- Reinvestment from typical profits
+- Government subsidies (EU CAP, US farm bill)
+- Bank loans and credit
+- Typical yields and costs
+
+We don't need to model all these components explicitly - just the DEVIATIONS.
+This keeps the model simple while allowing individual farmer performance to matter.
+
+### 5.6 Practice Costs
+
+These are the costs that differ from conventional farming, used in Δcosts calculation.
+
+**Capital-Scaled Costs**
+
+Costs are scaled by farmer's capital intensity relative to a reference country (default: USA, where literature values originate). The reference capital is dynamically retrieved from FAO data for the configured reference country:
+
+> cost = min + (max - min) × clamp(capital_per_ha / reference_capital_per_ha, 0, 1)
+
+Configuration: `practice_costs.reference_capital_country: "USA"` in config.yaml
+
+This accounts for global variation in equipment and input costs. Variation is **conservative** (1.3-2x), reflecting that:
+- Equipment: India custom hire $15-27/ha vs US $66/ha (~2-3x) [1,6]
+- Fuel prices: Global variation ~1.5x (excluding oil-producer outliers)
+- Seeds: Similar global prices; import costs can increase developing country prices
+
+| Practice | Transition Range | Direct Range | Source |
+|----------|-----------------|--------------|--------|
+| No-till | $40-66/ha | -$40 to -$55/ha (savings) | [1,2,3,6,7] |
+| Cover crop | $12-22/ha | $55-85/ha | [4,5] |
+| Residue retention | $0 | *dynamic* | Singh & Schiere 1995 |
+
+**Transition costs** (one-time equipment/setup):
+- No-till: US literature $66/ha [1]; India custom hire $15-27/ha [6]; Bangladesh small seeder $7-10/ha [7]
+- Cover crop: US literature $20/ha [4]; range $12-22/ha for broadcasting to precision
+- Residue: $0/ha (modern combines have spreaders as standard equipment)
+
+**Direct costs** (annual operating):
+- No-till: US literature -$50/ha fuel savings [2,3]; range -$40 to -$55/ha (less/more mechanized)
+- Cover crop: US literature $75/ha [4]; range $55-85/ha accounting for seed cost variation
+- Residue: Computed **dynamically** as crop_revenue × use_cost_fraction
+
+**Dynamic Residue Opportunity Cost**
+
+The residue direct cost is computed dynamically in `compute_residue_opportunity_cost()`:
+
+```
+residue_cost = crop_revenue × Σ(use_fraction × cost_fraction)
+```
+
+Where:
+- `use_fraction`: Spatially-explicit fractions from MADRaT data (Smerald et al. 2023)
+- `cost_fraction`: From Singh & Schiere (1995) finding that straw value = 10-15% of crop value:
+  - Burnt: 0% (no economic value)
+  - Removed (feed/sale): 12.5% (midpoint of 10-15%)
+  - Recycled: 0% (returns to field)
+
+This makes residue costs vary spatially (different use patterns) and temporally (yield changes).
+
+**References:**
+1. University of Illinois farmdoc (2023). *Machinery Cost Estimates: Field Operations*.
+   https://farmdoc.illinois.edu/assets/management/machinery-costs/field_operations_2023.pdf
+2. USDA CEAP (2022). *Save Money on Fuel with No-Till Farming*.
+   https://www.farmers.gov/blog/save-money-on-fuel-with-no-till-farming
+3. SARE (2019). *Cover Crop Economics*.
+   https://www.sare.org/wp-content/uploads/Cover-Crop-Economics.pdf
+4. Indigo Ag / Iowa State (2020). *Cover Crop Equipment & Custom Rates*.
+   https://app.indigoag.com/programs/learn/paper/what-equipment-is-needed-to-plant-cover-crops
+5. Singh, K. & Schiere, J.B. (eds.) (1995). *Handbook for Straw Feeding Systems*.
+   ICAR, New Delhi. Ch. 1.1, Box 1. https://edepot.wur.nl/333326
+
+### 5.7 Survival Threshold
+
+When capital falls below minimum threshold (configurable, default $100/ha), costly practices are dropped in order: cover crop first (highest direct cost), then residue, then no-till.
+
+### 5.8 Capital Dynamics References
+
+- Solow, R.M. (1956). "A Contribution to the Theory of Economic Growth." *Quarterly Journal of Economics*, 70(1), 65-94.
+- OECD (2009). *Measuring Capital - OECD Manual*, 2nd ed. (Methodology for computing rates)
+- FAO (2023). FAOSTAT Capital Stock database. (Source data: GFCF, CFC, NCS)
 
 ---
 
@@ -233,17 +346,69 @@ FAO data is cached at class level. Pre-download via `CACountry.preload_fao_data(
 
 ---
 
-## 7. Residue Economics
+## 7. Agroecological Clustering
 
-### 7.1 Opportunity Cost
+Countries are grouped by climate similarity to enable cross-border social learning.
 
-Residue retention has an opportunity cost based on spatial MADRaT data (Smerald et al. 2023):
+### 7.1 Clustering Method
 
-> opportunity_cost = burnt × 0 + removed × 80 + recycled × 0 ($/ha/yr)
+K-means clustering on 6 climate features per country:
+
+| Feature | Description |
+|---------|-------------|
+| temp_mean | Annual mean temperature (°C) |
+| temp_amplitude | Seasonal temperature range |
+| prec_mean | Annual mean precipitation (mm) |
+| prec_amplitude | Seasonal precipitation range |
+| pet_mean | Annual mean potential evapotranspiration |
+| pet_amplitude | Seasonal PET range |
+
+Number of clusters determined via elbow method (default) or manually specified.
+
+### 7.2 Usage
+
+- `init_agroecological_clusters()`: Runs at model initialization
+- `cluster_management_performance()`: Aggregates country stats into cluster stats after each year
+- Farmers use cluster statistics for cross-border social learning (attitude + social norm)
+
+---
+
+## 8. Residue Economics
+
+### 8.1 Opportunity Cost
+
+Residue retention has an opportunity cost based on spatial MADRaT data (Smerald et al. 2023).
+
+**Scientific basis:**
+Singh & Schiere (1995, Ch. 1.1, Box 1): "the value of the straw yield can represent between **10-15% or higher** of the total crop value"
+
+**Dynamic implementation:**
+Instead of fixed costs, we compute: `residue_cost = crop_revenue × use_fraction`
+- This makes costs spatially variable (higher yields → higher opportunity cost)
+- This makes costs temporally variable (responds to climate/yield changes)
+
+| Use Type | Fraction of Crop Value | Justification |
+|----------|------------------------|---------------|
+| burnt | 0% | No market value (common in South Asia) |
+| removed | 12.5% | Midpoint of 10-15% (Singh & Schiere 1995) |
+| recycled | 0% | Returns to field via manure |
+| other | 6.25% | Conservative (half of removed) |
+
+**Cross-validation:**
+- 12.5% of $600/ha crop value = $75/ha
+- Germany market: ~$66-71/ha (Karras et al. 2024)
+- India market: ~$30-35/ha (Duncan et al. 2020)
+- Our dynamic approach gives reasonable values
+
+**References:**
+- Singh, K. & Schiere, J.B. (eds.) (1995). *Handbook for Straw Feeding Systems*. ICAR, New Delhi / Wageningen Agricultural University. https://edepot.wur.nl/333326
+- Smerald, A. et al. (2023). A global dataset for the production and usage of cereal residues. *Scientific Data* 10: 639.
+- Karras, T., Noack, V. & Thrän, D. (2024). The Costs of Straw in Germany. *Waste and Biomass Valorization* 15: 5369-5385.
+- Duncan, A.J., Samaddar, A. & Blümmel, M. (2020). Rice and wheat straw fodder trading in India. *Field Crops Research* 246: 107680.
 
 Fractions are weighted by actual crop composition from LPJmL.
 
-### 7.2 Residue Status
+### 8.2 Residue Status
 
 The bundle's residue component (0/1) is dynamically updated based on actual litter cover:
 - If `litter_cover ≥ 30%` and residue=0 → upgrade to 1 (certified CA)
@@ -251,7 +416,7 @@ The bundle's residue component (0/1) is dynamically updated based on actual litt
 
 ---
 
-## 8. Agent Functional Types (AFT)
+## 9. Agent Functional Types (AFT)
 
 Farmers are differentiated into pioneers (25%) and traditionalists (75%).
 
@@ -262,27 +427,31 @@ Farmers are differentiated into pioneers (25%) and traditionalists (75%).
 | `pbc_base` | 0.85 | 0.65 |
 | `weight_attitude` | 0.8 | 0.6 |
 | `weight_norm` | 0.2 | 0.4 |
-| `exploration_base_prob` | 0.05 | 0.01 |
-| `min_observation_years` | 2 | 3 |
+| `weight_social_learning` | 0.6 | 0.4 |
+| `weight_own_land` | 0.4 | 0.6 |
+| `min_observation_years` | 5 | 8 |
+| `exploration_base_prob` | 0.12 | 0.02 |
 | `fallback_years` | 8 | 10 |
 | `threshold_social_norm_local` | 0.10 | 0.20 |
+| `weight_attitude_local` | 0.5 | 0.7 |
+| `weight_attitude_cluster` | 0.2 | 0.1 |
 
-**Pioneers**: Higher PBC, weight attitude more, explore more, require less observation time.
-**Traditionalists**: Lower PBC, weight norms more, explore less, more cautious.
+**Pioneers**: Higher PBC, weight attitude more, explore more, re-evaluate more frequently, more open to cross-border learning.
+**Traditionalists**: Lower PBC, weight norms more, explore less, more cautious, rely more on local community.
 
 ---
 
-## 9. Adaptive Management
+## 10. Adaptive Management
 
-### 9.1 Fallback Mechanism
+### 10.1 Fallback Mechanism
 
-After grace period (`min_observation_years`):
+After minimum observation period:
 1. Track consecutive years where performance < baseline at transition
 2. If decline continues for `fallback_years` → revert to previous bundle
 3. Mark failed bundle (increment failure count)
 4. Bundles with `failure_count ≥ max_failures` (default 2) excluded from exploration
 
-### 9.2 Bundle Memory
+### 10.2 Bundle Memory
 
 Per-bundle memory with:
 - Observed trends (soil C, moisture, yield)
@@ -294,25 +463,28 @@ Memories decay after `memory_decay_years`.
 
 ---
 
-## 10. Cropland Area Calculation
+## 11. Spreading Level Toggles
 
-Country-level cropland from LPJmL data:
+Social learning can be enabled/disabled at each spatial scale:
 
-> cropland_ha = Σ (cftfrac × cell_area)
+| Config | Default | Purpose |
+|--------|---------|---------|
+| `enable_local` | true | Neighbour-based spreading |
+| `enable_country` | true | Country-level spreading |
+| `enable_cluster` | true | Agroecological cluster spreading |
 
-Implementation uses `np.squeeze()` to prevent numpy broadcasting bugs when multiplying arrays with singleton dimensions.
-
-Farm size at initialization uses mean `cftfrac` over spinup years for robustness.
+When a level is disabled, its weight is redistributed to enabled levels. Set `enable_cluster: false` for single-country runs.
 
 ---
 
-## 11. File Structure
+## 12. File Structure
 
 | File | Purpose |
 |------|---------|
 | `ca_farmer.py` | CAFarmer: capital, costs, revenue, practice application |
 | `ca_behaviour.py` | TPB: bundles, memory, social learning, norms, PBC, fallback |
 | `ca_country.py` | CACountry: FAO data loading, economic parameters |
+| `ca_agroecology.py` | Agroecological clustering for cross-border learning |
 | `region.py` | Country base class: cropland area |
 | `model.py` | Model: initialization, update loop |
 | `config.yaml` | All configuration parameters |
@@ -324,8 +496,10 @@ Farm size at initialization uses mean `cftfrac` over spinup years for robustness
 ## References
 
 - Ajzen, I. (1991). The theory of planned behavior. *Organizational Behavior and Human Decision Processes*, 50(2), 179–211.
+- Bandura, A. (1977). *Social Learning Theory*. Prentice Hall.
 - Granovetter, M. (1978). Threshold models of collective behavior. *American Journal of Sociology*, 83(6), 1420–1443.
-- Jorgenson, D.W. (1963). Capital theory and investment behavior. *American Economic Review*, 53(2), 247–259.
+- Holling, C.S. (1978). *Adaptive Environmental Assessment and Management*. Wiley.
+- Solow, R.M. (1956). "A Contribution to the Theory of Economic Growth." Quarterly Journal of Economics, 70(1), 65-94.
 - Kassam, A., Friedrich, T., Shaxson, F., & Pretty, J. (2009). The spread of Conservation Agriculture. *International Journal of Environmental Studies*, 66(6), 677–697.
 - OECD (2009). *Measuring Capital — OECD Manual*, 2nd ed. OECD Publishing.
 - Rogers, E.M. (2003). *Diffusion of Innovations*, 5th ed. Free Press.

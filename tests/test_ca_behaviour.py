@@ -203,7 +203,7 @@ class TestBundleTracking:
         from inseeds.components.farming.ca_management import ManagementPerformanceTracker
 
         assert hasattr(ManagementPerformanceTracker, "trend")
-        assert hasattr(ManagementPerformanceTracker, "weighted_score")
+        assert hasattr(ManagementPerformanceTracker, "weighted_slope")
 
     def test_record_transition_method_exists(self):
         """DecisionModel should have record_transition method."""
@@ -249,17 +249,11 @@ class TestProposedBundleGeneration:
 class TestResidueOpportunityCost:
     """Tests for residue opportunity cost in decision making."""
 
-    def test_residue_opportunity_cost_property_exists(self):
-        """Farmer should have residue_opportunity_cost property."""
+    def test_compute_residue_opportunity_cost_method_exists(self):
+        """Farmer should have compute_residue_opportunity_cost method."""
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert "residue_opportunity_cost" in dir(ConservationAgricultureFarmer)
-
-    def test_residue_opportunity_cost_per_ha_exists(self):
-        """Farmer should have per-hectare residue opportunity cost."""
-        from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
-        
-        assert "residue_opportunity_cost_per_ha" in dir(ConservationAgricultureFarmer)
+        assert "compute_residue_opportunity_cost" in dir(ConservationAgricultureFarmer)
 
 
 class TestTPBAttitudeCalculation:
@@ -421,17 +415,19 @@ class TestTPBHysteresis:
     """Tests for hysteresis in transitioning behavior."""
 
     def test_transition_threshold_exists(self):
-        """AFT parameters should include transition_threshold."""
+        """TPB config should include transition_threshold."""
         assert hasattr(TPB, "__init__")
 
-    def test_revert_threshold_exists(self):
-        """AFT parameters should include revert_threshold."""
-        assert hasattr(TPB, "__init__")
-
-    def test_revert_threshold_higher_than_transition(self):
-        """Revert threshold should be higher than transition threshold (hysteresis)."""
-        # This is enforced in the config, tested through config validation
-        assert hasattr(TPB, "__init__")
+    def test_observation_years_counter(self):
+        """TPB should track observation_years for evaluation timing.
+        
+        min_observation_years serves dual purpose:
+        1. Data quality check (n_obs >= min_observation_years)
+        2. Evaluation timing (randomized counter desynchronizes farmers)
+        """
+        assert hasattr(TPB, "should_evaluate")
+        assert hasattr(TPB, "reset_observation_years")
+        assert hasattr(TPB, "decrement_observation_years")
 
 
 class TestTPBMinObservationYears:

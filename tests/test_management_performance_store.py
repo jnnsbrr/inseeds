@@ -121,7 +121,7 @@ class RegionManagementPerformance:
         self.moisture_trend_sum += other.moisture_trend_sum
         self.count += other.count
 
-    def weighted_trend_score(self, farmer: Any) -> float:
+    def weighted_trend(self, farmer: Any) -> float:
         return (
             farmer.weight_yield * self.avg_yield_trend
             + farmer.weight_soil * self.avg_soilc_trend
@@ -207,7 +207,7 @@ def mock_farmer(sample_trends):
 def mock_country():
     """Create a mock country with statistic."""
     country = MagicMock()
-    country.country_code = "DEU"
+    country.code = "DEU"
     country.indices = np.array([0, 1, 2])
 
     class MockStatistic:
@@ -316,7 +316,7 @@ class TestRegionManagementPerformance:
         assert perf1.yield_sum == pytest.approx(18000.0)
         assert perf1.soilc_sum == pytest.approx(27000.0)
 
-    def test_weighted_trend_score(self, sample_trends, mock_farmer):
+    def test_weighted_trend(self, sample_trends, mock_farmer):
         """Weighted trend score should combine trends with farmer weights."""
         perf = RegionManagementPerformance.empty()
         perf.add_observation(5000.0, 8000.0, 0.35, sample_trends)
@@ -325,7 +325,7 @@ class TestRegionManagementPerformance:
         # trends: yield=0.02, soilc=0.01, moisture=-0.005
         expected = 0.4 * 0.02 + 0.4 * 0.01 + 0.2 * (-0.005)
 
-        score = perf.weighted_trend_score(mock_farmer)
+        score = perf.weighted_trend(mock_farmer)
         assert score == pytest.approx(expected)
 
 

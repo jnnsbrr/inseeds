@@ -4,7 +4,7 @@ This module downloads capital stock data from FAOSTAT (CS domain) including
 Gross Fixed Capital Formation (GFCF), Consumption of Fixed Capital (CFC),
 and Net Capital Stocks (NCS) for the Agriculture, Forestry and Fishing sector.
 
-Derived rates follow standard capital accounting (Jorgenson, 1963; OECD, 2009):
+Derived rates follow standard capital accounting (Solow, 1956; OECD, 2009):
 - Depreciation rate: δ = CFC / NCS (annual capital wear)
 - Investment rate: i = GFCF / NCS (gross investment relative to stock)
 
@@ -13,7 +13,7 @@ through new investment. This can serve as a proxy for savings/reinvestment
 behavior at the country level.
 
 References:
-- Jorgenson, D.W. (1963). Capital Theory and Investment Behavior. AER.
+- Solow, R.M. (1956). "A Contribution to the Theory of Economic Growth." Quarterly Journal of Economics, 70(1), 65-94.
 - OECD (2009). Measuring Capital - OECD Manual.
 - FAO (2023). FAOSTAT Capital Stock methodology.
 
@@ -101,7 +101,7 @@ class FaoCapitalStock(FaoDataset):
         In CS domain, items represent capital stock types (GFCF, CFC, NCS).
         The element code (6110) represents "Value US$".
 
-        Following standard capital accounting (Jorgenson 1963, OECD 2009):
+        Following standard capital accounting (Solow 1956, OECD 2009):
         - Depreciation rate δ = CFC / NCS: annual capital wear
         - Investment rate i = GFCF / NCS: gross investment relative to stock
         """
@@ -146,7 +146,7 @@ class FaoCapitalStock(FaoDataset):
             result_ds["depreciation_rate"].attrs["units"] = "1/year"
             result_ds["depreciation_rate"].attrs["long_name"] = "Depreciation rate"
             result_ds["depreciation_rate"].attrs["formula"] = "CFC / NCS"
-            result_ds["depreciation_rate"].attrs["reference"] = "Jorgenson (1963), OECD (2009)"
+            result_ds["depreciation_rate"].attrs["reference"] = "Solow (1956), OECD (2009)"
 
         if "gfcf" in result_ds and "ncs" in result_ds:
             result_ds["investment_rate"] = result_ds["gfcf"] / result_ds["ncs"]
