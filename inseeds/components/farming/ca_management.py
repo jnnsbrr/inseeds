@@ -60,7 +60,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from inseeds.components.farming.farmer import NON_CROPS
+import numpy as np
+
+from inseeds.components.farming.farmer import NON_CROPS, sigmoid
 
 
 # =============================================================================
@@ -85,6 +87,162 @@ _BUNDLE_METADATA: dict[str, tuple[int, str]] = {
     "covercrop": (6, "cover crop"),
     "covercrop_residue": (7, "cover crop + residue retention"),
 }
+
+
+# =============================================================================
+# UNIFIED PERFORMANCE SCORING
+# =============================================================================
+
+def compute_metric_score(
+    level: float,
+    trend: float,
+    ref_level: float,
+    ref_trend: float,
+    trend_weight: float,
+) -> float:
+    """Compute normalized score for a single metric (yield, soilc, or moisture).
+
+    Both level and trend are normalized to country references using the same
+    approach: ratio to reference. This provides symmetric, intuitive scaling
+    where 1.0 = "at reference", >1.0 = "above reference", <1.0 = "below".
+
+    Scientific basis:
+    - Level ratio: Yield gap analysis (van Ittersum et al. 2013)
+    - Trend normalization: Analogous to z-score standardization, using std as
+      the reference scale for "what counts as meaningful change"
+
+    Parameters
+    ----------
+    level : float
+        Absolute metric value (e.g., yield in gC/m², soilc in gC/m²).
+    trend : float
+        Annual rate of change (same units as level, per year).
+    ref_level : float
+        Country mean level for normalization. Must be > 0.
+    ref_trend : float
+        Country reference trend (std of trends) for normalization.
+        Represents "typical variation" - a natural scale for trends.
+    trend_weight : float
+        Weight for trend component (0-1). Level weight = 1 - trend_weight.
+
+    Returns
+    -------
+    float
+        Normalized score. Level component centered at 1.0, trend component
+        centered at 0.0 (since mean trend is typically near zero).
+        Total score of ~1.0 means "at reference level with average trend".
+
+    Notes
+    -----
+    - Level: ratio to reference (level/ref_level), centered at 1.0
+    - Trend: ratio to reference (trend/ref_trend), centered at ~0.0
+    - Both use the same normalization principle (ratio to country reference)
+    - The attitude_sensitivity parameter scales the final score difference
+      before the attitude sigmoid
+    """
+    # Level: ratio to country reference, centered at 1.0
+    norm_level = level / ref_level if ref_level > 0 else 1.0
+
+    # Trend: ratio to reference trend (std of trends)
+    # This automatically handles different metric scales:
+    # - Yield trends might have std ~2 gC/m²/yr
+    # - Soil C trends might have std ~5 gC/m²/yr
+    # - Both get normalized to comparable scales
+    norm_trend = trend / ref_trend if ref_trend > 0 else 0.0
+
+    # Combine level and trend with configured weighting
+    # Level component centered at 1.0, trend component centered at ~0
+    level_weight = 1.0 - trend_weight
+    return level_weight * norm_level + trend_weight * norm_trend
+
+
+def compute_performance_score(
+    tracker_or_region: Any,
+    farmer: Any,
+    country: Any,
+) -> float:
+    """Compute unified performance score for comparing practices or farmers.
+
+    This function provides a single, consistent scoring mechanism used across
+    all comparison points: neighbor comparison, bundle selection, and attitude
+    calculation. Both levels and trends are normalized to country references
+    using the same ratio approach.
+
+    Parameters
+    ----------
+    tracker_or_region : ManagementPerformanceTracker or RegionManagementPerformance
+        Performance data source. Can be an individual farmer's tracker or
+        aggregated regional statistics.
+    farmer : Farmer
+        Farmer whose weights (weight_yield, weight_soil, etc.) and trend
+        weights (trend_weight_yield, etc.) are used for scoring.
+    country : CACountry
+        Country providing reference values for normalization.
+
+    Returns
+    -------
+    float
+        Weighted performance score. Higher is better.
+        Level component centered at ~1.0, trend component centered at ~0.
+
+    Notes
+    -----
+    The score combines three metrics (yield, soil carbon, moisture) with:
+    1. Per-metric level/trend weighting (based on metric dynamics)
+    2. Per-farmer importance weighting (based on AFT psychology)
+
+    Both levels and trends use the same normalization principle:
+    - Level: ratio to country mean (1.0 = average)
+    - Trend: ratio to country std of trends (0.0 = average, 1.0 = 1 std above)
+
+    The attitude_sensitivity parameter (in config) scales the final score
+    difference before the attitude sigmoid.
+
+    See Also
+    --------
+    compute_metric_score : Per-metric scoring with normalization.
+    """
+    # Get reference values for LEVELS (country means)
+    ref_yield_level = country.reference_yield_level
+    ref_soilc_level = country.reference_soilc_level
+    ref_moisture_level = country.reference_moisture_level
+
+    # Get reference values for TRENDS (country std of trends)
+    ref_yield_trend = country.reference_yield_trend
+    ref_soilc_trend = country.reference_soilc_trend
+    ref_moisture_trend = country.reference_moisture_trend
+
+    # Get metrics from tracker (works for both individual and region)
+    mean_yield = tracker_or_region.mean_yield
+    mean_soilc = tracker_or_region.mean_soilc
+    mean_moisture = tracker_or_region.mean_moisture
+    yield_trend = tracker_or_region.yield_trend
+    soilc_trend = tracker_or_region.soilc_trend
+    moisture_trend = tracker_or_region.moisture_trend
+
+    # Compute per-metric scores with symmetric level/trend normalization
+    score_yield = compute_metric_score(
+        mean_yield, yield_trend,
+        ref_yield_level, ref_yield_trend,
+        farmer.trend_weight_yield
+    )
+    score_soilc = compute_metric_score(
+        mean_soilc, soilc_trend,
+        ref_soilc_level, ref_soilc_trend,
+        farmer.trend_weight_soil
+    )
+    score_moisture = compute_metric_score(
+        mean_moisture, moisture_trend,
+        ref_moisture_level, ref_moisture_trend,
+        farmer.trend_weight_moisture
+    )
+
+    # Aggregate with farmer's importance weights
+    return (
+        farmer.weight_yield * score_yield
+        + farmer.weight_soil * score_soilc
+        + farmer.weight_moisture * score_moisture
+    )
 
 
 # =============================================================================
@@ -677,9 +835,9 @@ class RegionManagementPerformance:
 
     Why Store Sums?
     ---------------
-    We store sums (not averages) internally because:
+    We store sums (not means) internally because:
     1. Sums can be combined when merging regions (country + neighbors)
-    2. Averages are computed on-demand via properties (avg_yield, etc.)
+    2. Means are computed on-demand via properties (mean_yield, etc.)
     3. This avoids precision loss when re-aggregating
 
     Attributes
@@ -701,10 +859,10 @@ class RegionManagementPerformance:
 
     Example
     -------
-    >>> # Country-level average for no-till bundle:
+    >>> # Country-level mean for no-till bundle:
     >>> perf = country_store.get(ManagementBundle.notill)
-    >>> print(f"Average yield: {perf.avg_yield:.2f} t/ha")
-    >>> print(f"Yield trend: {perf.avg_yield_trend:+.1%}/year")
+    >>> print(f"Mean yield: {perf.mean_yield:.2f} t/ha")
+    >>> print(f"Yield trend: {perf.mean_yield_trend:+.1%}/year")
     >>> print(f"Based on {perf.count} farmers")
     """
 
@@ -725,32 +883,50 @@ class RegionManagementPerformance:
         return self.count
 
     @property
-    def crop_yield(self) -> float:
+    def mean_yield(self) -> float:
+        """Mean yield across farmers in this region."""
         return self.yield_sum / self.count if self.count else 0.0
 
     @property
-    def avg_yield(self) -> float:
-        return self.crop_yield
-
-    @property
-    def avg_soilc(self) -> float:
+    def mean_soilc(self) -> float:
+        """Mean soil carbon across farmers in this region."""
         return self.soilc_sum / self.count if self.count else 0.0
 
     @property
-    def avg_moisture(self) -> float:
+    def mean_moisture(self) -> float:
+        """Mean root moisture across farmers in this region."""
         return self.moisture_sum / self.count if self.count else 0.0
 
     @property
-    def avg_yield_trend(self) -> float:
+    def mean_yield_trend(self) -> float:
+        """Mean yield trend across farmers in this region."""
         return self.yield_trend_sum / self.count if self.count else 0.0
 
     @property
-    def avg_soilc_trend(self) -> float:
+    def mean_soilc_trend(self) -> float:
+        """Mean soil carbon trend across farmers in this region."""
         return self.soilc_trend_sum / self.count if self.count else 0.0
 
     @property
-    def avg_moisture_trend(self) -> float:
+    def mean_moisture_trend(self) -> float:
+        """Mean moisture trend across farmers in this region."""
         return self.moisture_trend_sum / self.count if self.count else 0.0
+
+    # Trend aliases for unified scoring API
+    @property
+    def yield_trend(self) -> float:
+        """Alias for mean_yield_trend (unified scoring API)."""
+        return self.mean_yield_trend
+
+    @property
+    def soilc_trend(self) -> float:
+        """Alias for mean_soilc_trend (unified scoring API)."""
+        return self.mean_soilc_trend
+
+    @property
+    def moisture_trend(self) -> float:
+        """Alias for mean_moisture_trend (unified scoring API)."""
+        return self.mean_moisture_trend
 
     def add_observation(
         self,
@@ -778,7 +954,7 @@ class RegionManagementPerformance:
         self.count += other.count
 
     @classmethod
-    def from_weighted_averages(
+    def from_weighted_means(
         cls,
         own: RegionManagementPerformance,
         other: RegionManagementPerformance,
@@ -787,55 +963,55 @@ class RegionManagementPerformance:
         other_weight: float,
         n_farmers: int,
     ) -> RegionManagementPerformance:
-        """Merge two aggregates using weights applied to their averages."""
+        """Merge two aggregates using weights applied to their means."""
         if n_farmers <= 0:
             return cls.empty()
 
-        avg_yield = own_weight * own.avg_yield + other_weight * other.avg_yield
-        avg_soilc = own_weight * own.avg_soilc + other_weight * other.avg_soilc
-        avg_moisture = own_weight * own.avg_moisture + other_weight * other.avg_moisture
-        avg_yield_trend = (
-            own_weight * own.avg_yield_trend + other_weight * other.avg_yield_trend
+        m_yield = own_weight * own.mean_yield + other_weight * other.mean_yield
+        m_soilc = own_weight * own.mean_soilc + other_weight * other.mean_soilc
+        m_moisture = own_weight * own.mean_moisture + other_weight * other.mean_moisture
+        m_yield_trend = (
+            own_weight * own.mean_yield_trend + other_weight * other.mean_yield_trend
         )
-        avg_soilc_trend = (
-            own_weight * own.avg_soilc_trend + other_weight * other.avg_soilc_trend
+        m_soilc_trend = (
+            own_weight * own.mean_soilc_trend + other_weight * other.mean_soilc_trend
         )
-        avg_moisture_trend = (
-            own_weight * own.avg_moisture_trend
-            + other_weight * other.avg_moisture_trend
+        m_moisture_trend = (
+            own_weight * own.mean_moisture_trend
+            + other_weight * other.mean_moisture_trend
         )
 
         return cls(
-            yield_sum=avg_yield * n_farmers,
-            soilc_sum=avg_soilc * n_farmers,
-            moisture_sum=avg_moisture * n_farmers,
-            yield_trend_sum=avg_yield_trend * n_farmers,
-            soilc_trend_sum=avg_soilc_trend * n_farmers,
-            moisture_trend_sum=avg_moisture_trend * n_farmers,
+            yield_sum=m_yield * n_farmers,
+            soilc_sum=m_soilc * n_farmers,
+            moisture_sum=m_moisture * n_farmers,
+            yield_trend_sum=m_yield_trend * n_farmers,
+            soilc_trend_sum=m_soilc_trend * n_farmers,
+            moisture_trend_sum=m_moisture_trend * n_farmers,
             count=n_farmers,
         )
 
     def weighted_trend(self, farmer: Any) -> float:
-        """Weighted sum of average trends (slope score)."""
+        """Weighted sum of mean trends."""
         return (
-            farmer.weight_yield * self.avg_yield_trend
-            + farmer.weight_soil * self.avg_soilc_trend
-            + farmer.weight_moisture * self.avg_moisture_trend
+            farmer.weight_yield * self.mean_yield_trend
+            + farmer.weight_soil * self.mean_soilc_trend
+            + farmer.weight_moisture * self.mean_moisture_trend
         )
 
     def weighted_level(self, farmer: Any) -> float:
-        """Weighted sum of average absolute values (level score)."""
+        """Weighted sum of mean absolute values (level score)."""
         return (
-            farmer.weight_yield * self.avg_yield
-            + farmer.weight_soil * self.avg_soilc
-            + farmer.weight_moisture * self.avg_moisture
+            farmer.weight_yield * self.mean_yield
+            + farmer.weight_soil * self.mean_soilc
+            + farmer.weight_moisture * self.mean_moisture
         )
 
     def __repr__(self) -> str:
         return (
             f"RegionManagementPerformance(n={self.count}, "
-            f"yield={self.avg_yield:.2f}, soilc={self.avg_soilc:.2f}, "
-            f"yield_trend={self.avg_yield_trend:+.2%}/yr)"
+            f"yield={self.mean_yield:.2f}, soilc={self.mean_soilc:.2f}, "
+            f"yield_trend={self.mean_yield_trend:+.2%}/yr)"
         )
 
 
@@ -876,7 +1052,7 @@ class RegionManagementPerformanceStore:
     >>>
     >>> # How does no-till perform on average?
     >>> notill_perf = store.get(ManagementBundle.notill)
-    >>> print(f"Average yield: {notill_perf.avg_yield:.2f} t/ha")
+    >>> print(f"Mean yield: {notill_perf.mean_yield:.2f} t/ha")
     >>>
     >>> # What fraction of farmers use no-till?
     >>> adoption_rate = store.bundle_counts.get(ManagementBundle.notill, 0) / store.total_farmers
@@ -1011,10 +1187,10 @@ class RegionManagementPerformanceStore:
                     bundle, 0
                 )
 
-            # Performance merge: weighted average of bundle-level means
+            # Performance merge: weighted mean of bundle-level means
             if own_performance_n > 0 and neighbour_performance_n > 0:
                 merged_store._bundles[bundle] = (
-                    RegionManagementPerformance.from_weighted_averages(
+                    RegionManagementPerformance.from_weighted_means(
                         own_bundle_performance,
                         neighbour_bundle_performance,
                         own_weight=own_weight,
@@ -1272,6 +1448,15 @@ class ManagementPerformanceTracker:
         }
 
     @property
+    def level(self) -> dict[str, float]:
+        """Absolute performance level (mean of soil, moisture, and yield)."""
+        return {
+            "soilc": self.mean_soilc,
+            "moisture": self.mean_moisture,
+            "yield": self.mean_yield,
+        }
+
+    @property
     def mean_yield(self) -> float:
         """Average yield over tracking period."""
         return self.sum_yield / self.n if self.n else 0.0
@@ -1286,8 +1471,23 @@ class ManagementPerformanceTracker:
         """Average root moisture over tracking period."""
         return self.sum_moisture / self.n if self.n else 0.0
 
-    def weighted_slope(self, farmer: Any) -> float:
-        """Combine soil, moisture, and yield TRENDS into a single slope score.
+    @property
+    def yield_trend(self) -> float:
+        """Annual yield trend (absolute change per year)."""
+        return self.trend["yield"]
+
+    @property
+    def soilc_trend(self) -> float:
+        """Annual soil carbon trend (absolute change per year)."""
+        return self.trend["soilc"]
+
+    @property
+    def moisture_trend(self) -> float:
+        """Annual moisture trend (absolute change per year)."""
+        return self.trend["moisture"]
+
+    def weighted_trend(self, farmer: Any) -> float:
+        """Combine soil, moisture, and yield TRENDS into a single trend score.
 
         This measures the RATE OF CHANGE - is performance improving or declining?
         Uses the farmer's outcome weights to represent overall trend direction.
@@ -1306,11 +1506,10 @@ class ManagementPerformanceTracker:
         float
             Weighted sum of trends (positive = improving, negative = declining).
         """
-        trend = self.trend
         return (
-            farmer.weight_soil * trend["soilc"]
-            + farmer.weight_moisture * trend["moisture"]
-            + farmer.weight_yield * trend["yield"]
+            farmer.weight_soil * self.soilc_trend
+            + farmer.weight_moisture * self.moisture_trend
+            + farmer.weight_yield * self.yield_trend
         )
 
     def weighted_level(self, farmer: Any) -> float:
@@ -1361,11 +1560,11 @@ class ManagementPerformanceTracker:
         bool
             True if this tracker is better than the other.
         """
-        # Slope filter: only reject if I'm declining AND worse than other
-        # Positive/zero slopes pass this filter (not declining)
-        my_slope = self.weighted_slope(farmer)
-        other_slope = other.weighted_slope(farmer)
-        if my_slope < other_slope and my_slope <= 0:
+        # Trend filter: only reject if I'm declining AND worse than other
+        # Positive/zero trends pass this filter (not declining)
+        my_trend = self.weighted_trend(farmer)
+        other_trend = other.weighted_trend(farmer)
+        if my_trend < other_trend and my_trend <= 0:
             return False
 
         # Level comparison - must have strictly better absolute level
@@ -1376,7 +1575,8 @@ class ManagementPerformanceTracker:
 
     def __repr__(self) -> str:
         trend = self.trend
+        level = self.level
         return (
             f"ManagementPerformanceTracker(n={self.n}, "
-            f"yield={trend['yield']:+.2f}/yr, soilc={trend['soilc']:+.2f}/yr)"
+            f"yield_trend={trend['yield']:+.2f}/yr, yield_level={level['yield']:+.2f}, soilc_trend={trend['soilc']:+.2f}/yr, soilc_level={level['soilc']:+.2f}, moisture_trend={trend['moisture']:+.2f}/yr, moisture_level={level['moisture']:+.2f})"
         )

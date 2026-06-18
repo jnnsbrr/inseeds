@@ -74,27 +74,27 @@ class RegionManagementPerformance:
         return cls()
 
     @property
-    def avg_yield(self) -> float:
+    def mean_yield(self) -> float:
         return self.yield_sum / self.count if self.count else 0.0
 
     @property
-    def avg_soilc(self) -> float:
+    def mean_soilc(self) -> float:
         return self.soilc_sum / self.count if self.count else 0.0
 
     @property
-    def avg_moisture(self) -> float:
+    def mean_moisture(self) -> float:
         return self.moisture_sum / self.count if self.count else 0.0
 
     @property
-    def avg_yield_trend(self) -> float:
+    def mean_yield_trend(self) -> float:
         return self.yield_trend_sum / self.count if self.count else 0.0
 
     @property
-    def avg_soilc_trend(self) -> float:
+    def mean_soilc_trend(self) -> float:
         return self.soilc_trend_sum / self.count if self.count else 0.0
 
     @property
-    def avg_moisture_trend(self) -> float:
+    def mean_moisture_trend(self) -> float:
         return self.moisture_trend_sum / self.count if self.count else 0.0
 
     def add_observation(
@@ -123,9 +123,9 @@ class RegionManagementPerformance:
 
     def weighted_trend(self, farmer: Any) -> float:
         return (
-            farmer.weight_yield * self.avg_yield_trend
-            + farmer.weight_soil * self.avg_soilc_trend
-            + farmer.weight_moisture * self.avg_moisture_trend
+            farmer.weight_yield * self.mean_yield_trend
+            + farmer.weight_soil * self.mean_soilc_trend
+            + farmer.weight_moisture * self.mean_moisture_trend
         )
 
 
@@ -264,12 +264,12 @@ class TestRegionManagementPerformance:
     def test_empty_averages_are_zero(self):
         """Averages on empty aggregate should return 0, not NaN."""
         perf = RegionManagementPerformance.empty()
-        assert perf.avg_yield == 0.0
-        assert perf.avg_soilc == 0.0
-        assert perf.avg_moisture == 0.0
-        assert perf.avg_yield_trend == 0.0
-        assert perf.avg_soilc_trend == 0.0
-        assert perf.avg_moisture_trend == 0.0
+        assert perf.mean_yield == 0.0
+        assert perf.mean_soilc == 0.0
+        assert perf.mean_moisture == 0.0
+        assert perf.mean_yield_trend == 0.0
+        assert perf.mean_soilc_trend == 0.0
+        assert perf.mean_moisture_trend == 0.0
 
     def test_add_single_observation(self, sample_trends):
         """Adding one observation should correctly set sums and count."""
@@ -296,10 +296,10 @@ class TestRegionManagementPerformance:
         perf.add_observation(6000.0, 9000.0, 0.40, sample_trends)
 
         assert perf.count == 2
-        assert perf.avg_yield == pytest.approx(5500.0)
-        assert perf.avg_soilc == pytest.approx(8500.0)
-        assert perf.avg_moisture == pytest.approx(0.375)
-        assert perf.avg_yield_trend == pytest.approx(0.02)
+        assert perf.mean_yield == pytest.approx(5500.0)
+        assert perf.mean_soilc == pytest.approx(8500.0)
+        assert perf.mean_moisture == pytest.approx(0.375)
+        assert perf.mean_yield_trend == pytest.approx(0.02)
 
     def test_merge_two_aggregates(self, sample_trends):
         """Merging should combine counts and sums."""
@@ -362,7 +362,7 @@ class TestRegionManagementPerformanceStore:
 
         perf = store.get(ManagementBundle.conservation)
         assert perf.count == 1
-        assert perf.avg_yield == pytest.approx(5000.0)
+        assert perf.mean_yield == pytest.approx(5000.0)
 
     def test_get_missing_bundle_returns_empty(self):
         """Getting non-existent bundle should return empty performance."""
@@ -370,7 +370,7 @@ class TestRegionManagementPerformanceStore:
 
         perf = store.get(ManagementBundle.notill)
         assert perf.count == 0
-        assert perf.avg_yield == 0.0
+        assert perf.mean_yield == 0.0
 
     def test_finalize_store_sets_counts(self, mock_farmer):
         """finalize_store should compute bundle_counts and total_farmers."""
@@ -619,7 +619,7 @@ class TestStoreSerializationForDask:
 
         assert perf_copy.count == perf.count
         assert perf_copy.yield_sum == perf.yield_sum
-        assert perf_copy.avg_yield == perf.avg_yield
+        assert perf_copy.mean_yield == perf.mean_yield
 
 
 # =============================================================================
@@ -638,8 +638,8 @@ class TestEdgeCases:
         assert store.total_farmers == 0
         
         perf = store.get(ManagementBundle.conservation)
-        assert perf.avg_yield == 0.0
-        assert perf.avg_soilc == 0.0
+        assert perf.mean_yield == 0.0
+        assert perf.mean_soilc == 0.0
 
     def test_negative_trends_handled(self):
         """Negative trends should be stored correctly."""
@@ -647,9 +647,9 @@ class TestEdgeCases:
         perf = RegionManagementPerformance.empty()
         perf.add_observation(5000.0, 8000.0, 0.35, trends)
 
-        assert perf.avg_yield_trend == pytest.approx(-0.05)
-        assert perf.avg_soilc_trend == pytest.approx(-0.02)
-        assert perf.avg_moisture_trend == pytest.approx(-0.01)
+        assert perf.mean_yield_trend == pytest.approx(-0.05)
+        assert perf.mean_soilc_trend == pytest.approx(-0.02)
+        assert perf.mean_moisture_trend == pytest.approx(-0.01)
 
     def test_large_farmer_counts(self, sample_trends):
         """Store should handle large numbers of observations."""
@@ -660,7 +660,7 @@ class TestEdgeCases:
             perf.add_observation(5000.0, 8000.0, 0.35, sample_trends)
 
         assert perf.count == n_farmers
-        assert perf.avg_yield == pytest.approx(5000.0)
+        assert perf.mean_yield == pytest.approx(5000.0)
 
     def test_bundle_counts_preserved_after_merge(self, mock_farmer):
         """Bundle counts should be correctly summed after merge."""

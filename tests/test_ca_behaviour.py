@@ -203,7 +203,7 @@ class TestBundleTracking:
         from inseeds.components.farming.ca_management import ManagementPerformanceTracker
 
         assert hasattr(ManagementPerformanceTracker, "trend")
-        assert hasattr(ManagementPerformanceTracker, "weighted_slope")
+        assert hasattr(ManagementPerformanceTracker, "weighted_trend")
 
     def test_record_transition_method_exists(self):
         """DecisionModel should have record_transition method."""

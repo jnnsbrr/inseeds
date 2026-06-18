@@ -77,6 +77,7 @@ from inseeds.components.farming.ca_management import (
     ManagementPerformanceTracker,
     PRACTICE_FIELDS,
     RegionManagementPerformanceStore,
+    compute_performance_score,
 )
 
 
@@ -383,7 +384,7 @@ class DecisionModel(ABC):
         # Initialize baseline score for fallback comparison
         if self.performance_tracker.n > 1:
             self.performance_tracker.baseline_score = (
-                self.performance_tracker.weighted_slope(self.farmer)
+                self.performance_tracker.weighted_trend(self.farmer)
             )
 
     # -------------------------------------------------------------------------
@@ -510,7 +511,7 @@ class DecisionModel(ABC):
         # Capture baseline score before resetting (for fallback comparison)
         # This is the performance level we expect to maintain or exceed
         baseline = (
-            self.performance_tracker.weighted_slope(self.farmer)
+            self.performance_tracker.weighted_trend(self.farmer)
             if n_obs > 1 else 0.0
         )
 
@@ -693,6 +694,26 @@ class TPB(DecisionModel):
                 residue_on_field=0
             )
 
+    def reevaluate_cover_crop_type(self):
+        """Re-evaluate cover crop type based on fertilization and leaching.
+
+        Cover crop *type* (legume vs non-legume) is stored on the farmer,
+        not the bundle. The bundle only tracks whether cover crops are ON/OFF.
+
+        Type values:
+        - 1 = non-legume (catch crop, captures excess nutrients)
+        - 2 = legume (N-fixing, reduces fertilizer need)
+        """
+        # Only re-evaluate if cover crops are enabled
+        if self.practice_bundle.cover_crop == 0:
+            return
+
+        indicated_type = self.farmer.indicate_cover_crop_type()
+        current_type = self.farmer.cover_crop
+
+        if indicated_type != current_type:
+            self.farmer.cover_crop = indicated_type
+
     def update(self):
         """Compute proposed bundle and TPB scores for this timestep.
 
@@ -716,10 +737,12 @@ class TPB(DecisionModel):
         self.target_pathway = None
 
         # -----------------------------------------------------------------
-        # Step 0: Re-evaluate residue status based on actual litter cover
+        # Step 0: Re-evaluate residue status and cover crop type
         # -----------------------------------------------------------------
         # Farmers may cross CA threshold organically - certify/de-certify
         self.reevaluate_residue_status()
+
+        self.reevaluate_cover_crop_type()
 
         # -----------------------------------------------------------------
         # Step 1: Add current year's observation to regression
@@ -860,7 +883,7 @@ class TPB(DecisionModel):
         # baseline_score captures the trend score at the time of transition.
         # If current score is worse than baseline, we're declining.
         baseline = self.performance_tracker.baseline_score
-        current_score = self.performance_tracker.weighted_slope(self.farmer)
+        current_score = self.performance_tracker.weighted_trend(self.farmer)
 
         # Track consecutive years of decline
         if current_score < baseline:
@@ -917,7 +940,7 @@ class TPB(DecisionModel):
         # Poor performers explore more (searching for better options)
         # With relative trends: negative = declining, positive = improving
         # Threshold is in relative terms (e.g., 0 = any decline, -0.02 = >2% decline)
-        current_score = self.performance_tracker.weighted_slope(self.farmer)
+        current_score = self.performance_tracker.weighted_trend(self.farmer)
         poor_performance_threshold = self.get_aft_param("poor_performance_threshold")
         poor_performance_multiplier = self.get_aft_param("poor_performance_multiplier")
         if current_score < poor_performance_threshold:
@@ -1298,7 +1321,8 @@ class TPB(DecisionModel):
         Country stats are already merged with neighbouring countries (configured
         via neighbour_country_weight) at the country level.
 
-        Uses cached country statistics for O(1) lookup.
+        Uses unified performance scoring with proper normalization and
+        metric-specific trend/level weighting.
 
         Returns
         -------
@@ -1306,35 +1330,30 @@ class TPB(DecisionModel):
             Best country-level bundle, or None if no bundle performs better
             than current practice or if country data is unavailable.
         """
-        store = _country_performance_store(self.farmer.cell.country)
+        country = self.farmer.cell.country
+        store = _country_performance_store(country)
         if store is None:
             return None
 
-        # Get own performance metrics from tracker
-        my_tracker = self.performance_tracker
-        own_slope = my_tracker.weighted_slope(self.farmer)
-        own_level = my_tracker.weighted_level(self.farmer)
+        # Compute own performance using unified scoring
+        own_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
+        )
 
         # Find best performing bundle at country level
         best_bundle = None
-        best_level = own_level  # Must beat our current level
+        best_score = own_score  # Must beat our current score
 
         for bundle, perf in store.items():
             # Skip our own bundle
             if bundle == self.practice_bundle:
                 continue
 
-            bundle_slope = perf.weighted_trend(self.farmer)
-            bundle_level = perf.weighted_level(self.farmer)
+            bundle_score = compute_performance_score(perf, self.farmer, country)
 
-            # Slope filter: only reject if declining AND worse than me
-            # Positive/zero slopes are always acceptable
-            if bundle_slope < own_slope and bundle_slope <= 0:
-                continue
-
-            # Track the best bundle (highest level)
-            if bundle_level > best_level:
-                best_level = bundle_level
+            # Track the best bundle (highest unified score)
+            if bundle_score > best_score:
+                best_score = bundle_score
                 best_bundle = bundle
 
         return best_bundle
@@ -1346,7 +1365,8 @@ class TPB(DecisionModel):
         is better, farmers may look to successful practices in agroecologically
         similar countries (same temperature, precipitation, PET patterns).
 
-        Uses cached cluster statistics from world.statistic for O(1) lookup.
+        Uses unified performance scoring with proper normalization and
+        metric-specific trend/level weighting.
 
         Returns
         -------
@@ -1368,31 +1388,25 @@ class TPB(DecisionModel):
         if not isinstance(store, RegionManagementPerformanceStore):
             return None
 
-        # Get own performance metrics from tracker
-        my_tracker = self.performance_tracker
-        own_slope = my_tracker.weighted_slope(self.farmer)
-        own_level = my_tracker.weighted_level(self.farmer)
+        # Compute own performance using unified scoring
+        own_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
+        )
 
         # Find best performing bundle at cluster level
         best_bundle = None
-        best_level = own_level  # Must beat our current level
+        best_score = own_score  # Must beat our current score
 
         for bundle, perf in store.items():
             # Skip our own bundle
             if bundle == self.practice_bundle:
                 continue
 
-            bundle_slope = perf.weighted_trend(self.farmer)
-            bundle_level = perf.weighted_level(self.farmer)
+            bundle_score = compute_performance_score(perf, self.farmer, country)
 
-            # Slope filter: only reject if declining AND worse than me
-            # Positive/zero slopes are always acceptable
-            if bundle_slope < own_slope and bundle_slope <= 0:
-                continue
-
-            # Track the best bundle (highest level)
-            if bundle_level > best_level:
-                best_level = bundle_level
+            # Track the best bundle (highest unified score)
+            if bundle_score > best_score:
+                best_score = bundle_score
                 best_bundle = bundle
 
         return best_bundle
@@ -1400,12 +1414,9 @@ class TPB(DecisionModel):
     def is_better_performing(self, neighbour):
         """Check if neighbour is performing better than self.
 
-        A neighbor is considered better if:
-        1. They pass the slope filter (not declining worse than me), AND
-        2. Their absolute performance level is strictly higher
-
-        This focuses on absolute outcomes rather than trends, while still
-        filtering out neighbors who are declining faster.
+        Uses unified performance scoring with proper normalization and
+        metric-specific trend/level weighting. A neighbor is better if their
+        unified score exceeds ours.
 
         Parameters
         ----------
@@ -1415,23 +1426,24 @@ class TPB(DecisionModel):
         Returns
         -------
         bool
-            True if neighbour's score exceeds self's score AND absolute
-            performance is at least as good.
+            True if neighbour's unified score exceeds self's score.
         """
-        # Use standardized comparison from tracker:
-        # - Checks trend (is neighbor improving faster?)
-        # - Checks level (is neighbor's absolute state at least as good?)
-        return neighbour.behaviour.performance_tracker.is_better_than(
-            self.performance_tracker,
-            self.farmer,
+        country = self.farmer.cell.country
+
+        my_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
+        )
+        their_score = compute_performance_score(
+            neighbour.behaviour.performance_tracker, self.farmer, country
         )
 
-    def performance_gap(self, neighbour):
-        """Compute positive performance level difference (neighbour - self).
+        return their_score > my_score
 
-        Returns the absolute level gap if the neighbour passes the slope filter
-        (not declining worse than self). This measures how much better the
-        neighbor's current state is, not just their trend.
+    def performance_gap(self, neighbour):
+        """Compute positive performance score difference (neighbour - self).
+
+        Uses unified performance scoring with proper normalization and
+        metric-specific trend/level weighting.
 
         Parameters
         ----------
@@ -1441,24 +1453,19 @@ class TPB(DecisionModel):
         Returns
         -------
         float
-            Positive level gap (0 if neighbour is declining worse or has lower level).
+            Positive score gap (0 if neighbour has lower or equal score).
         """
-        n_tracker = neighbour.behaviour.performance_tracker
-        my_tracker = self.performance_tracker
+        country = self.farmer.cell.country
 
-        # Check slope - reject if neighbor is declining AND worse than me
-        # Positive/zero slopes are always acceptable
-        neighbour_slope = n_tracker.weighted_slope(self.farmer)
-        own_slope = my_tracker.weighted_slope(self.farmer)
-        if neighbour_slope < own_slope and neighbour_slope <= 0:
-            return 0.0
+        my_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
+        )
+        their_score = compute_performance_score(
+            neighbour.behaviour.performance_tracker, self.farmer, country
+        )
 
-        # Return level difference (neighbor - self)
-        own_level = my_tracker.weighted_level(self.farmer)
-        neighbour_level = n_tracker.weighted_level(self.farmer)
-
-        # Return positive level gap only (0 if neighbor is not better)
-        return max(0.0, neighbour_level - own_level)
+        # Return positive gap only (0 if neighbor is not better)
+        return max(0.0, their_score - my_score)
 
     # =========================================================================
     # CROP SIMILARITY
@@ -1575,18 +1582,15 @@ class TPB(DecisionModel):
     def compute_attitude_social_learning_local(self, new_bundle):
         """Compute attitude from LOCAL neighbours using the proposed bundle.
 
-        Evaluates neighbours based on observable outcome differences, weighted
-        by similarity and confidence. Neighbours declining MORE than the farmer
-        are filtered out (relative comparison).
+        Evaluates neighbours using unified performance scoring with proper
+        normalization and metric-specific trend/level weighting, weighted by
+        similarity and confidence.
 
         Scientific basis:
         - Social comparison theory (Festinger 1954): relative performance evaluation
         - Homophily (McPherson et al. 2001): similarity-weighted learning
         - Adaptive learning (Boyd & Richerson 1985): filter out worse performers
-
-        The relative slope comparison handles contexts like post-land-use-change
-        (e.g., Paraguay) where ALL farmers are declining but CA declines slower
-        than conventional. Using an absolute threshold would filter out everyone.
+        - Yield gap analysis (van Ittersum et al. 2013): normalized comparisons
 
         This is the LOCAL component - uses direct neighbour comparisons with
         full similarity weighting. See compute_attitude_social_learning_country()
@@ -1605,25 +1609,18 @@ class TPB(DecisionModel):
         if not self.farmer.neighbourhood:
             return 0.5  # Neutral without neighbours
 
-        # Accumulate weighted comparisons
-        weighted_yield = 0.0
-        weighted_soil = 0.0
-        weighted_moisture = 0.0
-        total_weight = 0.0
-
         # Get parameters from config
         confidence_years = self.get_aft_param("confidence_years")
+        country = self.farmer.cell.country
 
-        # My tracker for consistent comparison
-        my_tracker = self.performance_tracker
-        my_slope = my_tracker.weighted_slope(self.farmer)
+        # My unified performance score
+        my_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
+        )
 
-        # My mean values from tracker (avoid division by zero)
-        # Using tracker means instead of current values for consistency
-        # and to reduce noise from single-year fluctuations
-        my_yield = max(my_tracker.mean_yield, 1e-6)
-        my_soil = max(my_tracker.mean_soilc, 1e-6)
-        my_moisture = max(my_tracker.mean_moisture, 1e-6)
+        # Accumulate weighted score differences
+        weighted_score_diff = 0.0
+        total_weight = 0.0
 
         for neighbour in self.farmer.neighbourhood:
             # How similar is neighbour? (bundle + crop similarity)
@@ -1634,71 +1631,51 @@ class TPB(DecisionModel):
 
             n_tracker = neighbour.behaviour.performance_tracker
 
-            # -----------------------------------------------------------------
-            # Filter: skip neighbours declining MORE than me (relative comparison)
-            # -----------------------------------------------------------------
-            # This handles degrading contexts (e.g., Paraguay post-land-use-change)
-            # where everyone is declining but CA declines slower than conventional.
-            # Neighbours performing BETTER than me (higher slope) are included.
-            neighbour_slope = n_tracker.weighted_slope(self.farmer)
-            if neighbour_slope < my_slope and neighbour_slope <= 0:
-                continue  # Skip neighbour declining more than me
-
             # Confidence: more observations → more reliable information
             n_obs = n_tracker.n
             confidence = min(1.0, n_obs / confidence_years)
 
-            # -----------------------------------------------------------------
-            # Absolute comparisons using tracker means (ratio - 1)
-            # -----------------------------------------------------------------
-            # Positive if neighbour is better, negative if worse
-            # Based on social comparison theory: farmers evaluate relative to self
-            # Uses tracker means for consistency with slope evaluation
-            yield_cmp = n_tracker.mean_yield / my_yield - 1
-            soil_cmp = n_tracker.mean_soilc / my_soil - 1
-            moisture_cmp = n_tracker.mean_moisture / my_moisture - 1
+            # Compute neighbour's unified performance score
+            neighbour_score = compute_performance_score(
+                n_tracker, self.farmer, country
+            )
+
+            # Score difference: positive if neighbour is better
+            score_diff = neighbour_score - my_score
 
             # Weight = similarity × confidence
             weight = similarity * confidence
 
-            # Accumulate (no slope multiplication - keeps stable performers influential)
-            weighted_yield += weight * yield_cmp
-            weighted_soil += weight * soil_cmp
-            weighted_moisture += weight * moisture_cmp
+            # Accumulate weighted score differences
+            weighted_score_diff += weight * score_diff
             total_weight += weight
 
         if total_weight == 0:
             return 0.5  # Neutral if no relevant neighbours
 
-        # Normalize by total weight
-        avg_yield = weighted_yield / total_weight
-        avg_soil = weighted_soil / total_weight
-        avg_moisture = weighted_moisture / total_weight
+        # Normalize by total weight to get average score difference
+        avg_score_diff = weighted_score_diff / total_weight
 
-        # Weighted sum of comparisons (multi-attribute utility theory)
-        raw_score = (
-            self.farmer.weight_yield * avg_yield
-            + self.farmer.weight_soil * avg_soil
-            + self.farmer.weight_moisture * avg_moisture
-        )
+        # Scale by attitude_sensitivity before sigmoid
+        # This single parameter controls how strongly score differences translate
+        # to attitudes (both level and trend are already normalized to country refs)
+        tpb_config = self.farmer.model.config.coupled_config.tpb
+        sensitivity = getattr(tpb_config, "attitude_sensitivity", 4.0)
 
         # Sigmoid maps to (0, 1) attitude score
-        return sigmoid(raw_score)
+        return sigmoid(avg_score_diff * sensitivity)
 
     def compute_attitude_social_learning_country(self, new_bundle):
         """Compute attitude from COUNTRY-LEVEL bundle performance.
 
-        Uses cached country statistics to compare own performance against
-        average performance of farmers using the proposed bundle across
-        the entire country. Bundles with average slope worse than the farmer's
-        own slope are filtered out (relative comparison).
+        Uses unified performance scoring with proper normalization and
+        metric-specific trend/level weighting to compare own performance
+        against average performance of farmers using the proposed bundle.
 
         Scientific basis:
         - Social comparison theory (Festinger 1954): relative performance evaluation
         - Adaptive learning (Boyd & Richerson 1985): filter out worse strategies
-
-        The relative slope comparison handles degrading contexts where all practices
-        decline but some decline slower than others.
+        - Yield gap analysis (van Ittersum et al. 2013): normalized comparisons
 
         No similarity weighting at country level - uses simpler bundle-based
         grouping for computational efficiency (O(1) vs O(n²)).
@@ -1713,7 +1690,8 @@ class TPB(DecisionModel):
         float
             Attitude score in [0, 1].
         """
-        store = _country_performance_store(self.farmer.cell.country)
+        country = self.farmer.cell.country
+        store = _country_performance_store(country)
         if store is None:
             return 0.5  # Neutral if no country data
 
@@ -1721,55 +1699,34 @@ class TPB(DecisionModel):
         if perf.count == 0:
             return 0.5  # Neutral if no data for this bundle
 
-        # -----------------------------------------------------------------
-        # Filter: skip bundles performing worse than me (relative comparison)
-        # -----------------------------------------------------------------
-        # My slope vs bundle's average slope - handles degrading contexts
-        performance_tracker = self.performance_tracker
-        my_slope = performance_tracker.weighted_slope(self.farmer)
-        bundle_slope = perf.weighted_trend(self.farmer)
-        if bundle_slope < my_slope:
-            return 0.5  # Neutral for bundles declining more than me
-
-        # My mean values from tracker (avoid division by zero)
-        # Using tracker means for consistency with local social learning
-        my_yield = max(performance_tracker.mean_yield, 1e-6)
-        my_soil = max(performance_tracker.mean_soilc, 1e-6)
-        my_moisture = max(performance_tracker.mean_moisture, 1e-6)
-
-        # Compare my performance to country average for this bundle
-        avg_yield = perf.avg_yield
-        avg_soilc = perf.avg_soilc
-        avg_moisture = perf.avg_moisture
-
-        # Absolute comparisons (ratio - 1)
-        yield_cmp = avg_yield / my_yield - 1 if my_yield > 0 else 0.0
-        soil_cmp = avg_soilc / my_soil - 1 if my_soil > 0 else 0.0
-        moisture_cmp = avg_moisture / my_moisture - 1 if my_moisture > 0 else 0.0
-
-        # Weighted sum of comparisons (no slope multiplication)
-        raw_score = (
-            self.farmer.weight_yield * yield_cmp
-            + self.farmer.weight_soil * soil_cmp
-            + self.farmer.weight_moisture * moisture_cmp
+        # Compute performance scores using unified scoring
+        my_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
         )
+        bundle_score = compute_performance_score(perf, self.farmer, country)
 
-        return sigmoid(raw_score)
+        # Score difference as attitude input
+        # Positive if bundle is better (higher score), negative if worse
+        score_diff = bundle_score - my_score
+
+        # Scale by attitude_sensitivity before sigmoid
+        tpb_config = self.farmer.model.config.coupled_config.tpb
+        sensitivity = getattr(tpb_config, "attitude_sensitivity", 4.0)
+
+        # Sigmoid maps to (0, 1) attitude score
+        return sigmoid(score_diff * sensitivity)
 
     def compute_attitude_social_learning_cluster(self, new_bundle):
         """Compute attitude from AGROECOLOGICAL CLUSTER-level bundle performance.
 
         Cross-border social learning: farmers learn from countries with similar
-        agroecological conditions. This captures diffusion of agricultural innovations
-        across national boundaries within similar agro-ecological zones.
-        Bundles with average slope worse than the farmer's own slope are filtered out.
+        agroecological conditions. Uses unified performance scoring with proper
+        normalization and metric-specific trend/level weighting.
 
         Scientific basis:
         - Social comparison theory (Festinger 1954): relative performance evaluation
         - Adaptive learning (Boyd & Richerson 1985): filter out worse strategies
-
-        The relative slope comparison handles degrading contexts where all practices
-        decline but some decline slower than others (e.g., Paraguay post-land-use-change).
+        - Yield gap analysis (van Ittersum et al. 2013): normalized comparisons
 
         Uses aggregated cluster statistics from world.statistic (computed from
         peer countries in the same agroecological cluster).
@@ -1800,40 +1757,22 @@ class TPB(DecisionModel):
         if perf.count == 0:
             return 0.5  # Neutral if no data for this bundle
 
-        # -----------------------------------------------------------------
-        # Filter: skip bundles performing worse than me (relative comparison)
-        # -----------------------------------------------------------------
-        # My slope vs bundle's average slope - handles degrading contexts
-        performance_tracker = self.performance_tracker
-        my_slope = performance_tracker.weighted_slope(self.farmer)
-        bundle_slope = perf.weighted_trend(self.farmer)
-        if bundle_slope < my_slope:
-            return 0.5  # Neutral for bundles declining more than me
-
-        # My mean values from tracker (avoid division by zero)
-        # Using tracker means for consistency with local social learning
-        my_yield = max(performance_tracker.mean_yield, 1e-6)
-        my_soil = max(performance_tracker.mean_soilc, 1e-6)
-        my_moisture = max(performance_tracker.mean_moisture, 1e-6)
-
-        # Get cluster average performance for this bundle
-        avg_yield = perf.avg_yield
-        avg_soilc = perf.avg_soilc
-        avg_moisture = perf.avg_moisture
-
-        # Absolute comparisons (ratio - 1)
-        yield_cmp = avg_yield / my_yield - 1 if my_yield > 0 else 0.0
-        soil_cmp = avg_soilc / my_soil - 1 if my_soil > 0 else 0.0
-        moisture_cmp = avg_moisture / my_moisture - 1 if my_moisture > 0 else 0.0
-
-        # Weighted sum of comparisons (no slope multiplication)
-        raw_score = (
-            self.farmer.weight_yield * yield_cmp
-            + self.farmer.weight_soil * soil_cmp
-            + self.farmer.weight_moisture * moisture_cmp
+        # Compute performance scores using unified scoring
+        my_score = compute_performance_score(
+            self.performance_tracker, self.farmer, country
         )
+        bundle_score = compute_performance_score(perf, self.farmer, country)
 
-        return sigmoid(raw_score)
+        # Score difference as attitude input
+        # Positive if bundle is better (higher score), negative if worse
+        score_diff = bundle_score - my_score
+
+        # Scale by attitude_sensitivity before sigmoid
+        tpb_config = self.farmer.model.config.coupled_config.tpb
+        sensitivity = getattr(tpb_config, "attitude_sensitivity", 4.0)
+
+        # Sigmoid maps to (0, 1) attitude score
+        return sigmoid(score_diff * sensitivity)
 
     # =========================================================================
     # TPB COMPONENT: SOCIAL NORM

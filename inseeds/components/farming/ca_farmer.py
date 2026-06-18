@@ -440,12 +440,12 @@ class ConservationAgricultureFarmer(Farmer):
         # Get environmental conditions from cell
         runoff = self.cell_runoff
         leaching_val = self.cell_leaching
-        # fertilizer_val = self.cell_fertilizer
+        fertilizer_val = self.cell_fertilizer
 
         # Get thresholds from config
         cc = self.model.config.coupled_config.practice_dimensions.cover_crop
         leaching_limit = cc.leaching_high
-        # fertilizer_limit = cc.fertilizer_high
+        fertilizer_limit = cc.fertilizer_high
 
         # Calculate leaching rate (normalized by runoff)
         leaching = leaching_val *1e3 / runoff if runoff > 0 else 0
@@ -455,7 +455,7 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # High leaching: soil has excess N that's being lost
         # → Use non-legume catch crop to capture nutrients
-        if leaching >= leaching_limit: # and fertilizer_val >= fertilizer_limit:
+        if leaching >= leaching_limit or fertilizer_val >= fertilizer_limit:
             return 1  # Non-legume
 
         # Otherwise: soil may be N-limited
@@ -903,6 +903,9 @@ class ConservationAgricultureFarmer(Farmer):
         if self.capital < self.min_capital:
             self.behaviour.transition_blocker = BLOCKER_CAPITAL_SURVIVAL
             self.behaviour.transition_driver = DRIVER_NONE
+            # Still decrement observation counter so farmer can evaluate
+            # promptly when they recover from survival mode (avoids limbo)
+            self.behaviour.decrement_observation_years()
             return
 
         # -----------------------------------------------------------------

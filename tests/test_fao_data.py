@@ -144,11 +144,11 @@ class TestCACountryStatsCache:
             count=5,
         )
 
-        assert perf.avg_yield == 5.0
-        assert perf.avg_soilc == 10.0
-        assert perf.avg_moisture == 0.5
-        assert perf.avg_yield_trend == 0.01
-        assert perf.avg_soilc_trend == 0.02
+        assert perf.mean_yield == 5.0
+        assert perf.mean_soilc == 10.0
+        assert perf.mean_moisture == 0.5
+        assert perf.mean_yield_trend == 0.01
+        assert perf.mean_soilc_trend == 0.02
         assert perf.count == 5
 
     def test_update_method_exists(self):

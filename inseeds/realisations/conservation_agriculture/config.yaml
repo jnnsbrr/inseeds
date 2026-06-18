@@ -78,7 +78,7 @@ practice_dimensions:
     cover_crop:
         n_options: 3  # 0=none, 1=non-legumes, 2=legumes
         leaching_high: 5    # mgN/l threshold for non-legume selection
-        fertilizer_high: 5  # gN/m2/yr threshold for non-legume selection
+        fertilizer_high: 10  # gN/m2/yr threshold for non-legume selection
     residue:
         # FAO CA threshold: 30% soil cover from crop residues
         # Below this, farmer increases retention; at/above, maintains current level
@@ -87,11 +87,6 @@ practice_dimensions:
 # Exploration constraints for random bundle exploration
 # Prevents farmers from repeatedly trying unreasonable or failed combinations
 exploration:
-    # Minimum residue opportunity cost ($/ha) to consider notill_cover reasonable
-    # Below this threshold, no-till + cover crops without residue is considered
-    # wasteful since residue is cheap to keep. Above it, cover crops become a
-    # rational alternative for soil coverage when residue is valuable elsewhere.
-    residue_cost_threshold: 30.0
     # Number of failures (fallbacks) before excluding bundle from exploration
     # Farmers learn from their mistakes and avoid bundles that have failed twice
     max_failures: 2
@@ -267,6 +262,24 @@ practice_costs:
 # TPB specifc settings and parameters
 tpb:
     transition_threshold: 0.5   # TPB threshold for any practice change
+
+    # ATTITUDE SENSITIVITY
+    # --------------------
+    # Single calibration parameter for the scoring system.
+    # Scales score differences before the attitude sigmoid.
+    #
+    # Both levels and trends are normalized to country references:
+    #   - Level: ratio to country mean (1.0 = average)
+    #   - Trend: ratio to country std of trends (z-score style)
+    #
+    # Score differences are typically small (±0.2-0.5), so this sensitivity
+    # amplifies them to produce meaningful attitude shifts via sigmoid.
+    # Higher values → more responsive to performance differences
+    # Lower values → more conservative, requires larger gaps to shift
+    #
+    # Typical values: 3-8 (5.0 calibrated for attitude ~0.70 with typical CA benefit)
+    attitude_sensitivity: 6.0
+
     # Spreading level toggles for social learning
     # Allows enabling/disabling each level of spreading for testing or single-country runs
     # When a level is disabled, its weight is redistributed to enabled levels
@@ -276,7 +289,7 @@ tpb:
     # if enablele_country: cross-border social learning: blend own country stats with neighbouring countries
     # Weight for neighbouring countries' influence (0.0 = no cross-border, 0.5 = equal)
     # Own country weight = 1.0 - neighbour_country_weight
-    neighbour_country_weight: 0.25  # 25% neighbours, 75% own country
+    neighbour_country_weight: 0  # 25% neighbours, 75% own country
 
 # Pioneer share for the simulation
 pioneer_share: 0.25
@@ -305,10 +318,18 @@ aftpar:
         weight_attitude_country: 0.2       # Country-level less influential
         weight_attitude_cluster: 0.1       # Minimal cross-border learning
 
-        # weight variables for yield, soil, moisture
+        # weight variables for yield, soil, moisture (outcome importance)
         weight_yield: 0.65 # Yield is everything
         weight_soil: 0.1 # "I'll worry about that later"
         weight_moisture: 0.25  # Drought scares me
+
+        # Trend weights per metric: how much to weight trend vs level (0-1)
+        # level_weight = 1 - trend_weight
+        # Based on metric dynamics: yield/moisture need maintenance (level);
+        # soil carbon has legacy effects (trend matters more)
+        trend_weight_yield: 0.2     # Level-dominant (good yields should be maintained)
+        trend_weight_soil: 0.7      # Trend-dominant (legacy effects, trajectory matters)
+        trend_weight_moisture: 0.3  # Mostly level-based
 
         # Similarity weights for social learning
         weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
@@ -358,10 +379,16 @@ aftpar:
         weight_attitude_country: 0.3       # More willing to learn from afar
         weight_attitude_cluster: 0.2       # Open to cross-border learning
 
-        # weight variables for yield, soil, moisture
+        # weight variables for yield, soil, moisture (outcome importance)
         weight_yield: 0.5 # Still need to make money
         weight_soil: 0.25 # More educated about long-term
         weight_moisture: 0.25  # Same drought concern
+
+        # Trend weights per metric: how much to weight trend vs level (0-1)
+        # Pioneers weight soil trends even more (long-term thinking)
+        trend_weight_yield: 0.2     # Level-dominant (good yields should be maintained)
+        trend_weight_soil: 0.8      # Very trend-focused (pioneers care about trajectory)
+        trend_weight_moisture: 0.3  # Mostly level-based
 
         # Similarity weights for social learning
         weight_bundle_similarity: 0.5   # Weight for practice bundle similarity

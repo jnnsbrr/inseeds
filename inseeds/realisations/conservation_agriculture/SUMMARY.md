@@ -85,6 +85,89 @@ Attitude combines two sources, weighted by AFT parameters (`weight_own_land`, `w
 
 Weights (`weight_attitude_local`, `weight_attitude_country`, `weight_attitude_cluster`) are AFT-specific and redistributed when levels are disabled.
 
+#### 3.1.1 Unified Performance Scoring
+
+Performance comparisons use a unified scoring system that handles the challenge of comparing metrics with different scales (yield ~70 gC/m², soil carbon ~5000 gC/m², moisture ~200 mm):
+
+**Per-Metric Scoring:**
+
+```
+score_metric = (1 - trend_weight) × norm_level + trend_weight × trend_score
+```
+
+Where:
+- **norm_level** = level / reference — ratio to country mean, centered at 1.0
+- **trend_score** = trend / ref_trend_country — ratio to country std (z-score style)
+- **ref_trend_country** — std of trends across all farmers in the country
+- **trend_weight** — from config, metric-specific (e.g., `trend_weight_soil: 0.7`)
+
+**Symmetric Normalization Design:**
+
+Both levels AND trends use the same normalization principle — ratio to country reference:
+
+| Component | Normalization | Reference | Interpretation |
+|-----------|---------------|-----------|----------------|
+| Level | level / ref_level | country mean | 1.0 = average level |
+| Trend | trend / ref_trend | country std | 0.0 = average, ±1 = ±1 std |
+
+This provides:
+1. **Automatic scale handling** — different metrics are normalized automatically
+2. **Country-specific calibration** — adapts to local conditions
+3. **Single calibration parameter** — `attitude_sensitivity` controls the overall sensitivity
+4. **Clean architecture** — same normalization logic for both components
+
+**Country Reference Values:**
+
+| Reference | Computed From | Purpose |
+|-----------|---------------|---------|
+| `reference_yield_level` | mean(farmer yields) | Normalize yield levels |
+| `reference_soilc_level` | mean(farmer soil C) | Normalize soil C levels |
+| `reference_moisture_level` | mean(farmer moisture) | Normalize moisture levels |
+| `reference_yield_trend` | std(farmer yield trends) | Normalize yield trends |
+| `reference_soilc_trend` | std(farmer soil C trends) | Normalize soil C trends |
+| `reference_moisture_trend` | std(farmer moisture trends) | Normalize moisture trends |
+
+Using **std** (not mean) for trend references ensures:
+- Mean trend is often ~0, which would break normalization
+- Std represents "typical variation" — a natural scale for trends
+- trend/ref_trend = 1 means "one std above average" (clearly good!)
+
+**Attitude Calculation:**
+
+```
+attitude = sigmoid(score_diff × attitude_sensitivity)
+```
+
+The single `attitude_sensitivity` parameter (config: `tpb.attitude_sensitivity`) controls how strongly normalized score differences translate to attitudes:
+- Typical CA benefit → score_diff ≈ 0.16 → with sensitivity 5 → attitude ≈ 0.70
+- Exceptional CA benefit → score_diff ≈ 0.45 → with sensitivity 5 → attitude ≈ 0.91
+- Declining farm → score_diff ≈ -0.25 → with sensitivity 5 → attitude ≈ 0.21
+
+**Overall Performance Score:**
+
+```
+score = weight_yield × score_yield + weight_soil × score_soil + weight_moisture × score_moisture
+```
+
+**Why Metric-Specific Trend Weighting?**
+
+| Metric | Trend Weight | Rationale |
+|--------|-------------|-----------|
+| Yield | 0.2 | Level-dominant: current productivity matters most |
+| Soil C | 0.7-0.8 | Trend-dominant: legacy effects, decades to rebuild |
+| Moisture | 0.3 | Mostly level-based with some trend sensitivity |
+
+Pioneers have higher `trend_weight_soil` (0.8 vs 0.7) reflecting their longer-term orientation (Rogers 2003).
+
+**Country Reference Values:**
+
+Country means (`reference_yield`, `reference_soilc`, `reference_moisture`) are computed as the mean across all farmers in the country, updated each simulation year. This enables meaningful comparison within and across countries.
+
+**Scientific Basis:**
+- Normalization approach: Yield gap analysis (van Ittersum et al. 2013)
+- Soil carbon trends: IPCC relative stock change methods (Paustian et al. 2016)
+- Multi-attribute utility: Andrews et al. (2004) Soil Quality Index
+
 ### 3.2 Social Norm
 
 Social norm reflects "what others are doing" (descriptive norm) at three scales:

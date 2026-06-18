@@ -203,7 +203,10 @@ class Model(lpjml.Model):
         self.init_countries(country_class=Country)
         
         # Initialize agroecological clusters for tele-coupled social learning
-        self.init_agroecological_clusters()
+        self.init_agroecological_clusters(
+            n_clusters=self.config.coupled_config.agroecological_clustering.n_clusters,
+            k_range=self.config.coupled_config.agroecological_clustering.k_range,
+        )
 
         # Initialize cells and farmers
         self.init_cells(cell_class=Cell)
