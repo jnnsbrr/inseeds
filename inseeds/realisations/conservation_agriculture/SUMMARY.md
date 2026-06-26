@@ -290,14 +290,14 @@ FAO provides the baseline capital dynamics. We track DEVIATIONS from this baseli
 Where:
 - **i − δ**: FAO net rate (investment − depreciation, typically +2-7%/year)
 - **Δrevenue**: current_revenue − baseline_revenue
-- **Δcosts**: current_costs − baseline_costs
+- **Δcosts**: cost difference between current and baseline bundle
 
 ### 5.3 Baselines (Set at Initialization)
 
 | Baseline | Source | Represents |
 |----------|--------|------------|
 | **baseline_revenue** | Average over 2015-2025 (historic LPJmL data) | Typical yields already in FAO |
-| **baseline_costs** | Initial practice costs at simulation start | Typical costs already in FAO |
+| **baseline_bundle** | Initial practice bundle at simulation start | Typical costs already in FAO |
 
 ### 5.4 How Deviations Work
 
@@ -370,6 +370,33 @@ Where:
   - Recycled: 0% (returns to field)
 
 This makes residue costs vary spatially (different use patterns) and temporally (yield changes).
+
+**Residue Economics by State**
+
+Residue costs depend on whether the farmer is **retaining** or **selling**:
+
+| State | Cost Formula | Rationale |
+|-------|-------------|-----------|
+| **Retention** (residue=1) | `baseline_residue_cost` (fixed) | Farmer committed to giving up baseline income |
+| **Selling** (residue=0) | `baseline - current` | Income/loss relative to baseline |
+
+**Retention (residue=1):**
+- Cost = baseline (frozen) — farmer committed to giving up this income
+- Higher yields: extra residue is "free" to leave on field (no extra cost)
+- Lower yields: still pays baseline cost, just leaves less physically
+
+**Selling (residue=0):**
+- Cost = baseline - current (can be negative = income)
+- Higher yields: sells more than baseline → negative cost (extra income)
+- Lower yields: sells less than baseline → positive cost (lost income)
+
+This captures the economic reality:
+- When you commit to retention, you budgeted to forgo baseline income
+- When you sell, your income fluctuates with yields
+
+**Capital Update vs Affordability:**
+- **delta_costs** (capital update): Uses frozen baseline for practice CHANGES only (yield-driven income changes are in delta_revenue)
+- **Affordability/PBC**: Uses dynamic `get_bundle_direct_costs()` which includes current residue economics
 
 **References:**
 1. University of Illinois farmdoc (2023). *Machinery Cost Estimates: Field Operations*.

@@ -40,7 +40,7 @@ FAO baseline + deviations model::
 Where:
 - **(i - δ)** = FAO net rate (investment - depreciation, typically +2-7%/year)
 - **Δrevenue** = current_revenue - baseline_revenue (from historic 2015-2025)
-- **Δcosts** = current_costs - baseline_costs (initial practice costs)
+- **Δcosts** = cost difference between current and baseline bundle
 
 Why This Works
 ~~~~~~~~~~~~~~
@@ -96,7 +96,7 @@ from inseeds.components.farming.ca_management import (
     PRACTICE_FIELDS,
 )
 from inseeds.components.exogenous.madrat import ResidueSource
-
+from inseeds.components.farming.ca_management import ManagementBundle
 
 class ConservationAgricultureFarmer(Farmer):
     """A farming household that makes Conservation Agriculture decisions.
@@ -138,7 +138,7 @@ class ConservationAgricultureFarmer(Farmer):
 
     - ``i - δ`` = FAO net rate (investment - depreciation, typically +2-7%/year)
     - ``Δrevenue`` = current_revenue - baseline_revenue
-    - ``Δcosts`` = current_costs - baseline_costs
+    - ``Δcosts`` = cost difference between current and baseline bundle
 
     **Why this works**: FAO (i - δ) captures sector average dynamics including
     subsidies, typical costs, typical yields. We only track DEVIATIONS from
@@ -147,7 +147,7 @@ class ConservationAgricultureFarmer(Farmer):
     Baselines
     ---------
     - ``baseline_revenue``: Average over historic period (2015-2025)
-    - ``baseline_costs``: Initial practice costs at simulation start
+    - ``baseline_bundle``: Initial practice bundle at simulation start
 
     Affordability Constraints
     -------------------------
@@ -256,6 +256,12 @@ class ConservationAgricultureFarmer(Farmer):
         # the FAO capital dynamics already account for.
         self.baseline_revenue = self._compute_baseline_revenue()
 
+        # Store baseline residue opportunity cost (frozen at simulation start)
+        # Used for cost difference calculations to avoid dynamic cost changes
+        self.baseline_residue_cost = self.compute_residue_opportunity_cost(
+            revenue=self.baseline_revenue
+        )
+
         # -----------------------------------------------------------------
         # Initialize behaviour
         # -----------------------------------------------------------------
@@ -265,8 +271,10 @@ class ConservationAgricultureFarmer(Farmer):
         # Create TPB decision model
         self.behaviour = TPB(self)
 
-        # Store initial practice costs as baseline (assumed part of FAO)
-        self.baseline_costs = self.get_current_direct_costs()
+        # Store initial practice bundle as baseline
+        # Cost differences are computed relative to this bundle, since FAO
+        # baseline already includes whatever costs the farmer had at start.
+        self.baseline_bundle = self.behaviour.practice_bundle
 
 
     def __repr__(self) -> str:
@@ -322,7 +330,7 @@ class ConservationAgricultureFarmer(Farmer):
     # RESIDUE ECONOMICS
     # =========================================================================
 
-    def compute_residue_opportunity_cost(self):
+    def compute_residue_opportunity_cost(self, revenue: float | None = None):
         """Compute opportunity cost of retaining residue (total for farm).
 
         Implements the Singh & Schiere (1995) finding that straw value represents
@@ -344,6 +352,12 @@ class ConservationAgricultureFarmer(Farmer):
             - removed: animal feed (has value → 12.5% of crop value)
             - recycled: returns to field (no cost → 0% of crop value)
 
+        Parameters
+        ----------
+        revenue : float, optional
+            Revenue to use for computation. If None, uses cached current revenue
+            or computes it. Pass baseline_revenue for baseline cost calculation.
+
         Returns
         -------
         float
@@ -359,17 +373,12 @@ class ConservationAgricultureFarmer(Farmer):
         cost_fractions = res_config.use_cost_fractions.to_dict()
         use_fractions = self.get_residue_fractions()
 
-        # Use cached revenue if available (from update_capital), else compute
-        if self._current_revenue is not None:
-            revenue = self._current_revenue
-        else:
-            revenue = self.calculate_revenue()
-
-        # No spatial data → use default from config
-        if use_fractions is None:
-            default_use = res_config.default_removal_use
-            default_fraction = cost_fractions.get(default_use, cost_fractions["other"])
-            return revenue * default_fraction
+        # Use provided revenue, cached revenue, or compute fresh
+        if revenue is None:
+            if self._current_revenue is not None:
+                revenue = self._current_revenue
+            else:
+                revenue = self.calculate_revenue()
 
         # Weighted average based on actual residue use in this cell
         # residue_cost = revenue × Σ(use_fraction × cost_fraction)
@@ -385,6 +394,7 @@ class ConservationAgricultureFarmer(Farmer):
         """Get residue use fractions for this cell, weighted by crop mix.
 
         Uses MADRaT CFT-specific data weighted by actual cftfrac from LPJmL.
+        Result is cached since residue use fractions don't change during simulation.
 
         Returns
         -------
@@ -392,7 +402,12 @@ class ConservationAgricultureFarmer(Farmer):
             Dict with 'burnt', 'removed', 'recycled' fractions (0-1),
             or None if residue data not available.
         """
+        # Return cached value if available (computed once, used throughout simulation)
+        if hasattr(self, "_cached_residue_fractions"):
+            return self._cached_residue_fractions
+
         if "residue" not in self.model.world.exogenous.keys():
+            self._cached_residue_fractions = None
             return None
 
         cftfrac = get_cell_var(self.cell, "cftfrac", drop_band=NON_CROPS)
@@ -411,11 +426,15 @@ class ConservationAgricultureFarmer(Farmer):
         if cell_idx is None:
             cell_idx = self.cell.grid.cell.item()
 
-        return ResidueSource.weighted_fractions(
+        result = ResidueSource.weighted_fractions(
             self.model.world.exogenous.residue,
             cell_idx,
             rf_vals.flatten() + ir_vals.flatten(),
         )
+
+        # Cache for subsequent calls
+        self._cached_residue_fractions = result
+        return result
 
     # =========================================================================
     # COVER CROP TYPE SELECTION
@@ -466,38 +485,243 @@ class ConservationAgricultureFarmer(Farmer):
     # COST CALCULATIONS
     # =========================================================================
 
-    def get_current_direct_costs(self):
-        """Calculate annual direct costs of current practice bundle.
+    def get_practice_direct_cost_per_ha(self, field: str, value: int) -> float:
+        """Get per-hectare direct cost for a single practice state.
 
-        Direct costs are ongoing annual costs for each active practice:
-        - Tillage: fuel savings (negative cost) from no-till
-        - Cover crop: seeds, seeding, termination
-        - Residue: opportunity cost computed DYNAMICALLY from crop revenue
+        Costs are defined relative to the CA reference point (no-till, no cover crop):
+        - tillage=0 (no-till): 0 (reference point)
+        - tillage=1 (conventional): +cost (pays more than no-till)
+        - cover_crop=0: 0 (no cover crop)
+        - cover_crop=1: +cost (pays for cover crop)
 
-        The residue opportunity cost is computed dynamically using
-        compute_residue_opportunity_cost() based on current crop revenue
-        and spatially-explicit use fractions (Singh & Schiere 1995).
+        This encoding ensures correct cost differences when comparing bundles:
+        conventional→no-till: 0 - (+cost) = -cost (saves money) ✓
+
+        Parameters
+        ----------
+        field : str
+            Practice name ('tillage', 'cover_crop')
+        value : int
+            Practice state (0 or 1)
 
         Returns
         -------
         float
-            Total annual direct cost (scaled by farm size).
+            Per-hectare direct cost relative to CA reference.
         """
-        bundle = self.behaviour.practice_bundle
         costs = self.practice_costs
 
-        # Tillage and cover crop: use static config values
+        if field == "tillage":
+            # Conventional (tillage=1) costs more; no-till (tillage=0) is reference
+            return costs.tillage.direct if value == 1 else 0.0
+        elif field == "cover_crop":
+            # Cover crop (value=1) has cost; no cover crop (value=0) is reference
+            return costs.cover_crop.direct if value == 1 else 0.0
+        else:
+            # Residue handled separately (not per-ha)
+            return 0.0
+
+    def get_residue_cost_for_bundle(self, residue_on_field: int) -> float:
+        """Get residue cost/income based on retention state.
+
+        The residue model captures opportunity costs and income dynamics:
+
+        **Retention (residue=1):**
+        - Farmer committed to leaving residue on field
+        - Cost = baseline (frozen) — the income they committed to give up
+        - Higher yields: extra residue is "free" to leave (no extra cost)
+        - Lower yields: still pays baseline cost, just leaves less physically
+
+        **Selling (residue=0):**
+        - Farmer sells residue at market price
+        - Cost = baseline - current (can be negative = income)
+        - Higher yields: sells more → negative cost (extra income)
+        - Lower yields: sells less → positive cost (lost income vs baseline)
+
+        Parameters
+        ----------
+        residue_on_field : int
+            1 = retaining residue, 0 = selling residue
+
+        Returns
+        -------
+        float
+            Residue cost (positive) or income (negative).
+        """
+        if residue_on_field == 1:
+            # Retention: fixed opportunity cost (committed to giving up baseline income)
+            # No need to compute current cost - we use frozen baseline
+            return self.baseline_residue_cost
+        else:
+            # Selling: income/loss relative to baseline
+            # Good year (current > baseline): negative cost = extra income
+            # Bad year (current < baseline): positive cost = lost income
+            current = self.compute_residue_opportunity_cost()
+            return self.baseline_residue_cost - current
+
+    def get_bundle_direct_costs(self, bundle: ManagementBundle, per_ha: bool = False):
+        """Calculate annual direct costs of current practice bundle.
+
+        Direct costs are ongoing annual costs for each practice state, defined
+        relative to the CA reference point (no-till, no cover crop):
+        - Tillage: conventional (tillage=1) costs +$X/ha; no-till (tillage=0) = 0
+        - Cover crop: active (value=1) costs +$Y/ha; none (value=0) = 0
+        - Residue: see get_residue_cost_for_bundle() for retention vs selling logic
+
+        Note: Tillage and cover_crop costs are per-ha (scaled by farm size).
+        Residue cost is already total (computed from total revenue).
+
+        This encoding ensures correct cost differences between bundles:
+        - Full CA bundle (no-till + cover crop): 0 + cover_cost + residue_cost
+        - Conventional bundle: tillage_cost + 0 + 0
+        - Difference correctly reflects actual cost change
+
+        Returns
+        -------
+        float
+            Total annual direct cost (or per-ha if per_ha is True).
+        """
+        # Per-ha costs (tillage, cover_crop)
+        total_per_ha = (
+            self.get_practice_direct_cost_per_ha("tillage", bundle.tillage)
+            + self.get_practice_direct_cost_per_ha("cover_crop", bundle.cover_crop)
+        )
+
+        # Scale per-ha costs to total farm cost
+        total = total_per_ha * self.net_farm_size
+
+        # Residue: cost depends on retention state (see get_residue_cost_for_bundle)
+        total += self.get_residue_cost_for_bundle(bundle.residue_on_field)
+
+        return total / self.net_farm_size if per_ha else total
+
+    def get_bundle_costs_difference(
+        self,
+        from_bundle: ManagementBundle,
+        to_bundle: ManagementBundle,
+        per_ha: bool = False,
+    ) -> float:
+        """Compute direct cost DIFFERENCE when switching between bundles.
+
+        Computes: to_bundle_cost - from_bundle_cost
+
+        Cost differences:
+        - Tillage: conventional→no-till = -cost (saves), no-till→conv = +cost
+        - Cover crop: adopting = +cost, abandoning = -cost
+        - Residue: uses baseline_residue_cost (FROZEN at sim start) for practice
+          changes to separate practice-driven costs from yield-driven income
+
+        Note: Tillage and cover_crop costs are per-ha (scaled by farm size).
+        Residue cost is already total (computed from total revenue).
+
+        Parameters
+        ----------
+        from_bundle : ManagementBundle
+            Starting bundle (e.g., baseline at simulation start).
+        to_bundle : ManagementBundle
+            Current bundle.
+        per_ha : bool
+            If True, return per-hectare cost; if False, scale by farm size.
+
+        Returns
+        -------
+        float
+            Cost difference: positive = to_bundle costs more than from_bundle.
+        """
+        # Per-hectare cost differences (tillage, cover_crop)
+        # diff = to_cost - from_cost
+        diff_per_ha = (
+            self.get_practice_direct_cost_per_ha("tillage", to_bundle.tillage)
+            - self.get_practice_direct_cost_per_ha("tillage", from_bundle.tillage)
+            + self.get_practice_direct_cost_per_ha("cover_crop", to_bundle.cover_crop)
+            - self.get_practice_direct_cost_per_ha("cover_crop", from_bundle.cover_crop)
+        )
+
+        # Scale per-ha costs to total farm cost
+        diff_total = diff_per_ha * self.net_farm_size
+
+        # Residue: use frozen baseline cost for practice changes
+        # (yield-driven income changes are in delta_revenue)
+        # Cost is ALREADY total (from revenue × fraction), don't scale again
+        if from_bundle.residue_on_field != to_bundle.residue_on_field:
+            if to_bundle.residue_on_field == 1:  # Started retaining
+                diff_total += self.baseline_residue_cost
+            else:  # Stopped retaining (selling residue)
+                diff_total -= self.baseline_residue_cost
+
+        if per_ha:
+            return diff_total / self.net_farm_size
+        return diff_total
+
+    def get_practice_transition_cost(
+        self,
+        field: str,
+        from_val: int,
+        to_val: int,
+        per_ha: bool = False,
+    ) -> float:
+        """Get transition cost for a single practice change.
+
+        Cost asymmetry by practice:
+        - Tillage: SYMMETRIC - both directions require equipment
+        - Cover crop: ASYMMETRIC - only adoption (0→1) has cost
+        - Residue: No transition cost either direction
+
+        Parameters
+        ----------
+        field : str
+            Practice name ('tillage', 'cover_crop', 'residue_on_field')
+        from_val : int
+            Current practice value (0 or 1)
+        to_val : int
+            Target practice value (0 or 1)
+        per_ha : bool
+            If True, return per-hectare cost; if False, scale by farm size.
+
+        Returns
+        -------
+        float
+            Transition cost for this single practice change.
+        """
+        if from_val == to_val:
+            return 0.0
+
+        costs = self.practice_costs
+        cost_per_ha = 0.0
+
+        if field == "cover_crop":
+            # ASYMMETRIC: only adoption (0→1) has cost
+            if from_val == 0 and to_val == 1:
+                cost_per_ha = costs.cover_crop.transition
+            # Abandoning (1→0): no cost, just stop planting
+        elif field == "tillage":
+            # SYMMETRIC: both directions require equipment
+            cost_per_ha = costs.tillage.transition
+        # Residue: no transition cost (choppers are standard equipment)
+
+        return cost_per_ha if per_ha else cost_per_ha * self.net_farm_size
+
+    def get_bundle_transition_costs(
+        self,
+        current_bundle: ManagementBundle,
+        target_bundle: ManagementBundle,
+        per_ha: bool = False
+    ) -> float:
+        """One-time transition cost for all practice changes in a bundle switch.
+
+        See get_practice_transition_cost() for per-practice cost logic.
+
+        Returns
+        -------
+        float
+            Total transition cost (per-ha if per_ha is True).
+        """
         total = 0.0
-        if bundle.tillage == 1:
-            total += costs.tillage.direct * self.net_farm_size
-        if bundle.cover_crop == 1:
-            total += costs.cover_crop.direct * self.net_farm_size
+        for field, old, new in zip(PRACTICE_FIELDS, current_bundle.value, target_bundle.value):
+            total += self.get_practice_transition_cost(field, old, new, per_ha=True)
 
-        # Residue: use DYNAMIC calculation based on crop revenue
-        if bundle.residue_on_field == 1:
-            total += self.compute_residue_opportunity_cost()
+        return total if per_ha else total * self.net_farm_size
 
-        return total
 
     # =========================================================================
     # CAPITAL UPDATE
@@ -530,7 +754,7 @@ class ConservationAgricultureFarmer(Farmer):
         - i = FAO investment_rate (GFCF/NCS, typically 5-15%/year)
         - δ = FAO depreciation_rate (CFC/NCS, typically 3-8%/year)
         - Δrevenue = current_revenue - baseline_revenue
-        - Δcosts = current_costs - baseline_costs
+        - Δcosts = cost difference from baseline_bundle to current bundle
 
         Key Behaviors
         -------------
@@ -579,16 +803,17 @@ class ConservationAgricultureFarmer(Farmer):
         delta_revenue = self._current_revenue - self.baseline_revenue
 
         # -----------------------------------------------------------------
-        # Step 3: Deviation in costs from baseline
+        # Step 3: Deviation in costs from baseline bundle
         # -----------------------------------------------------------------
-        # baseline_costs = initial practice costs (at simulation start)
-        # Assumed to be part of what FAO captures. We track the CHANGE.
+        # Computes cost change from baseline bundle (at simulation start) to
+        # current bundle. FAO baseline already includes starting practice costs.
         #
-        # Δcosts > 0: more expensive practices → reduces capital
-        # Δcosts < 0: cheaper practices (e.g., no-till savings) → adds capital
-        current_costs = self.get_current_direct_costs()
-        delta_costs = current_costs - self.baseline_costs
-
+        # Δcosts > 0: current bundle costs more than baseline → reduces capital
+        # Δcosts < 0: current bundle costs less (e.g., no-till savings) → adds capital
+        delta_costs = self.get_bundle_costs_difference(
+            self.baseline_bundle,
+            self.behaviour.practice_bundle,
+        )
         # -----------------------------------------------------------------
         # Step 4: Update capital
         # -----------------------------------------------------------------
@@ -603,6 +828,8 @@ class ConservationAgricultureFarmer(Farmer):
         # If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
         # If yields improve or costs decrease: farmer does better than baseline
         # If yields decline or costs increase: farmer does worse than baseline
+        # if delta_costs != 0:
+        #     breakpoint()
         self.capital = self.capital + baseline_capital_change + delta_revenue - delta_costs
 
         # Capital cannot go negative
@@ -785,20 +1012,21 @@ class ConservationAgricultureFarmer(Farmer):
         Deselection order:
         1. Cover crop (typically highest cost)
         2. Residue retention
-        3. Tillage change (no-till, often has negative cost = savings)
+        3. Tillage change (conventional→no-till gives savings)
 
-        Special case for residue:
-        When residue retention is deselected, the farmer returns to baseline
-        behavior (selling/removing residue based on MADRaT fractions). This
-        generates immediate income equal to the opportunity cost they were
-        paying to retain. The income is added to capital, improving the
-        farmer's financial position beyond just reducing costs.
+        Special cases:
+        - Residue: When deselected, farmer sells residue and gets immediate income
+          equal to the opportunity cost they were paying to retain.
+        - Tillage: When switching from conventional (1) to no-till (0), farmer
+          gains SAVINGS (negative cost), not just removal of cost. This is handled
+          correctly by recalculating costs after each change.
         """
-        # Calculate current annual direct costs
-        current_direct_costs = self.get_current_direct_costs()
-
         # Available capital for costs (above survival threshold)
         available_capital = self.capital - self.min_capital
+
+        # Calculate current annual direct costs
+        bundle = self.behaviour.practice_bundle
+        current_direct_costs = self.get_bundle_direct_costs(bundle=bundle)
 
         # No action needed if costs are within budget
         if current_direct_costs <= available_capital:
@@ -806,30 +1034,28 @@ class ConservationAgricultureFarmer(Farmer):
 
         # -----------------------------------------------------------------
         # Deselect practices until costs are affordable
+        # Recalculate costs after each change to handle bidirectional tillage
         # -----------------------------------------------------------------
-        bundle = self.behaviour.practice_bundle
-        costs = self.practice_costs
-
         for practice_name in DESELECT_ORDER:
             if getattr(bundle, practice_name) == 0:
                 continue
 
-            # Get direct cost for this practice
-            # Residue uses dynamic calculation, others use static config
-            if practice_name == "residue_on_field":
-                direct_cost = self.compute_residue_opportunity_cost()
-            else:
-                direct_cost = getattr(costs, practice_name).direct * self.net_farm_size
+            # Try deselecting this practice
+            new_bundle = bundle.change_practices(**{practice_name: 0})
+            new_costs = self.get_bundle_direct_costs(bundle=new_bundle)
 
-            # Only deselect practices with positive direct cost
-            if direct_cost > 0:
-                bundle = bundle.change_practices(**{practice_name: 0})
-                current_direct_costs -= direct_cost
-
+            # Only deselect if it actually reduces costs (or provides savings)
+            if new_costs < current_direct_costs:
                 # Special case: deselecting residue retention means SELLING residue
                 # Farmer gets immediate cash from the sale (income = opportunity cost)
                 if practice_name == "residue_on_field":
-                    self.capital += direct_cost  # Get cash from selling residue
+                    residue_value = self.compute_residue_opportunity_cost()
+                    self.capital += residue_value  # Get cash from selling
+                    # Update available capital since we just got income
+                    available_capital = self.capital - self.min_capital
+
+                bundle = new_bundle
+                current_direct_costs = new_costs
 
                 # Check if costs are now within budget
                 if current_direct_costs <= available_capital:
@@ -931,11 +1157,8 @@ class ConservationAgricultureFarmer(Farmer):
                 ]
 
                 if flipped:
-                    cost = (
-                        old_bundle.transition_cost_per_ha(
-                            new_bundle, self.practice_costs
-                        )
-                        * self.net_farm_size  # Costs scale with crop area
+                    cost = self.get_bundle_transition_costs(
+                        old_bundle, new_bundle
                     )
 
                     # Only apply if farmer can afford transition
@@ -953,7 +1176,7 @@ class ConservationAgricultureFarmer(Farmer):
                         pathway = self.behaviour.target_pathway
                         if pathway == "fallback":
                             self.behaviour.transition_driver = DRIVER_FALLBACK
-                        elif pathway in ("social", "exploration"):
+                        elif pathway in ("local", "country", "cluster", "exploration"):
                             self.behaviour.set_tpb_component_driver(pathway)
                     else:
                         # Can't afford transition cost

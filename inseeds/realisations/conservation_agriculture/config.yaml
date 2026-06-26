@@ -127,9 +127,6 @@ residue_economics:
         burnt: 0.0            # Burned - no economic value
         removed: 0.125        # 12.5% of crop value (midpoint of 10-15%)
         recycled: 0.0         # Returns to field via manure - no cost
-        other: 0.0625         # 6.25% - conservative for unknown uses
-    # Default use type when spatial data unavailable
-    default_removal_use: "other"
 
 # Agroecological country clustering for tele-coupled social learning
 # Countries with similar agroecological conditions share social learning signals
@@ -152,11 +149,11 @@ agroecological_clustering:
 # where:
 #   - i - δ = FAO net rate (investment - depreciation, typically +2-7%/year)
 #   - Δrevenue = current_revenue - baseline_revenue
-#   - Δcosts = current_costs - baseline_costs
+#   - Δcosts = cost difference between current and baseline bundle
 #
 # BASELINES (set at initialization):
 #   - baseline_revenue: Average over historic period (2015-2025 LPJmL data)
-#   - baseline_costs: Initial practice costs at simulation start
+#   - baseline_bundle: Initial practice bundle at simulation start
 #
 # KEY BEHAVIORS:
 #   - If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
@@ -197,6 +194,12 @@ farm_economics:
 # Each cost has [min, max] range; actual cost = interpolated by capital ratio.
 #   cost = min + (max - min) × clamp(capital_per_ha / reference_capital, 0, 1)
 #
+# Cost components are additive - code sums all entries in 'costs' dict.
+# For cover_crop/residue_on_field: positive = annual cost when practice is active.
+# For tillage: costs are defined for conventional tillage (tillage=1); negated for
+# no-till (tillage=0). Herbicide can be negative (lower chemical use with tillage).
+# New components can be added without code changes.
+#
 # Note: When capital is low, practices are deselected in order of direct cost
 #       (highest first): cover_crop > residue > tillage
 #
@@ -205,7 +208,7 @@ farm_economics:
 #       https://farmdoc.illinois.edu/assets/management/machinery-costs/field_operations_2023.pdf
 #   [2] USDA CEAP (2022). Save Money on Fuel with No-Till Farming.
 #       https://www.farmers.gov/blog/save-money-on-fuel-with-no-till-farming
-#   [3] No-Till Farmer (2022). Fuel Savings Analysis.
+#   [3] No-Till Farmer (2022). Fuel Savings Analysis. $17/acre = $42/ha.
 #       https://www.no-tillfarmer.com/articles/12068-usda-save-17-per-acre-on-fuel-by-switching-to-no-till
 #   [4] SARE (2019). Cover Crop Economics. https://www.sare.org/wp-content/uploads/Cover-Crop-Economics.pdf
 #   [5] Indigo Ag / Iowa State (2020). Cover Crop Equipment & Custom Rates.
@@ -216,48 +219,103 @@ farm_economics:
 #   [7] Hossain et al. (2017). Cost effective small No-till seeder for Bangladesh.
 #       Bangladesh J. Agril. Res. 42(1): 27-34. Small seeder cost: $350-400.
 #       https://doi.org/10.3329/bjar.v42i1.31970
+#   [8] Modern Ag Alliance (2025). Crop Protection and Farm Bill Programs.
+#       Labor: $7.54-14.65/acre = $19-36/ha additional for conventional tillage.
+#   [9] SD State Extension (2026). Economic Advantages of No-Till: Diesel Fuel.
+#       Equipment: $15-30/acre = $37-74/ha higher for conventional tillage.
+#       Repair costs 30-50% higher in multi-pass tillage systems.
+#   [10] Soil Health Partnership / EDF (2021). Conservation tillage reduces operating costs.
+#        Burndown herbicide: +$9.33/acre = $23/ha for no-till.
+#   [11] Bowman et al. (2024). Herbicide use for conservation tillage adoption.
+#        PLOS One 19(11), e0311960. Herbicide: +$6/acre = $15/ha baseline.
 #
 practice_costs:
     # Reference country for cost scaling - costs are scaled relative to this country's
     # capital per ha from FAO data. USA used because literature values originate there.
     reference_capital_country: "USA"
+
     tillage:
+        # ONE-TIME TRANSITION COST (equipment)
         # US literature value: $66/ha (no-till planter amortized) [1]
         # India custom hire: ₹500-900/acre = $15-27/ha [6]
         # Bangladesh small seeder: $350-400 total ≈ $7-10/ha amortized [7]
-        # Conservative range: 2-3x variation from low-capital to high-capital
-        # NOTE: Applied in BOTH directions (no-till→conventional also needs equipment)
-        # Conventional tillage equipment (plows, discs) costs are similar magnitude.
-        transition: [40.0, 66.0]   # $/ha - equipment cost BOTH directions [1,6,7]
-        # US literature value: -$50/ha fuel savings [2,3]
-        # Fuel prices vary ~1.5x globally (GlobalPetrolPrices 2026)
-        # Less mechanized farms have smaller baseline fuel use → less savings
-        # Conservative range: ~1.3x variation
-        direct: [-40.0, -55.0]     # $/ha/yr - fuel SAVINGS range [2,3]
+        # SYMMETRIC: Applied in BOTH directions (equipment needed either way)
+        transition: [40.0, 66.0]   # $/ha [1,6,7]
+
+        # ANNUAL OPERATING COSTS (conventional tillage relative to no-till)
+        # Defined for TILLAGE (tillage=1): positive = higher cost vs no-till baseline.
+        # No-till (tillage=0) is the REFERENCE POINT with cost = 0.
+        # Switching from conventional to no-till SAVES money (negative cost diff).
+        # Switching from no-till to conventional COSTS more (positive cost diff).
+        # Range: [low-capital, high-capital]
+        costs:
+            # Higher fuel use from extra field passes (4-6 conv vs 1-2 no-till)
+            # USA: 4 gal/acre extra × $4-5/gal = $16-20/acre = $40-50/ha [2,3]
+            # Low-capital: less mechanization, smaller tractors, less baseline fuel
+            fuel: [15.0, 45.0]         # $/ha/yr [2,3]
+
+            # Higher labor from extra field operations
+            # USA: 4-6 extra passes × ~$3-6/acre/pass = $12-36/acre = $30-90/ha
+            # Conservative estimate: $19-36/ha [8]
+            labor: [5.0, 25.0]         # $/ha/yr [8]
+
+            # Higher equipment/repair costs from machinery wear
+            # USA: 30-50% higher repair costs for conventional = $15-30/acre [9]
+            equipment: [8.0, 30.0]    # $/ha/yr [9]
+
+            # Lower herbicide use (mechanical weed control replaces chemicals)
+            # USA: burndown avoided +$9/acre = $23/ha [10]; net +$6-20/acre [11]
+            # Negative = cost reduction vs no-till (herbicide savings with tillage)
+            herbicide: [-35.0, -8.0]   # $/ha/yr [10,11]
+
+        # NET ANNUAL COST when tillage=1 (sum of components):
+        #   Low-capital:  15 + 5 + 8  - 8  =  20 $/ha/yr vs no-till
+        #   High-capital: 45 + 25 + 30 - 35 =  65 $/ha/yr vs no-till
+        # When tillage=0 (no-till): cost = 0 (reference point)
+        # Cost DIFFERENCE (conv→no-till) = 0 - 65 = -65 $/ha/yr (savings)
+
     cover_crop:
+        # ONE-TIME TRANSITION COST (seeder equipment)
         # US literature value: $20/ha transition (seeder attachment) [4,5]
-        # Developing countries: simple broadcasting vs precision drilling
-        # Conservative range: ~2x variation
-        # NOTE: Primarily one-way cost (adopting needs seeder; abandoning is just
-        # not planting anymore, minimal cost). Code applies symmetrically but
-        # the actual abandonment cost is near zero.
-        transition: [12.0, 22.0]   # $/ha - seeder equipment range [4,5]
-        # US literature value: $75/ha (seeds, seeding, termination) [4]
-        # Total range in literature: $15-78/acre = $37-193/ha [4]
-        # Seed costs vary less globally; import costs can increase developing country prices
-        # Conservative range: ~1.5x variation around literature value
-        direct: [55.0, 75.0]       # $/ha/yr - seeds/labor range [4]
+        # Low-capital: simple broadcasting vs precision drilling
+        # ASYMMETRIC: Only applied when ADOPTING (0→1), not abandoning (1→0)
+        # Abandoning cover crops = just stop planting, no new equipment needed
+        transition: [12.0, 22.0]   # $/ha [4,5]
+
+        # ANNUAL OPERATING COSTS
+        # All positive (cover crops are an additional investment)
+        costs:
+            # Seed purchase costs
+            # USA: $20-40/acre = $50-100/ha depending on species mix [4]
+            # Low-capital: can be similar due to imports; use simpler mixes
+            seeds: [28.0, 40.0]        # $/ha/yr [4]
+
+            # Seeding/planting labor and fuel
+            # USA: $10-15/acre = $25-37/ha for drilling [4]
+            # Low-capital: cheaper labor, often broadcasting vs drilling
+            labor: [15.0, 20.0]        # $/ha/yr [4]
+
+            # Termination costs (rolling/crimping or burndown herbicide)
+            # USA: $5-15/acre = $12-37/ha [4]
+            # Low-capital: often mechanical termination, cheaper herbicide
+            termination: [12.0, 15.0]  # $/ha/yr [4]
+
+        # NET ANNUAL COST (sum of components):
+        #   Low-capital:  28 + 15 + 12 = 55 $/ha/yr
+        #   High-capital: 40 + 20 + 15 = 75 $/ha/yr
+
     residue_on_field:
         # Modern combines have straw choppers/spreaders as standard equipment.
         # No additional equipment needed for retention vs removal.
         # Purdue Extension CT-5: spreaders/choppers are standard attachments.
-        transition: 0.0    # $/ha - no special equipment needed (no range)
-        # Opportunity cost is computed DYNAMICALLY in get_current_direct_costs()
+        transition: 0.0    # $/ha - no special equipment needed
+
+        # Opportunity cost is computed DYNAMICALLY in get_bundle_direct_costs()
         # using compute_residue_opportunity_cost() which calculates:
         #   crop_revenue × use_cost_fractions (from residue_economics section)
         # Based on Singh & Schiere (1995): straw value = 10-15% of crop value.
         # This makes residue costs spatially and temporally variable with yields.
-        direct: 0.0        # $/ha/yr - NOT USED (computed dynamically)
+        costs: {}          # Empty - costs computed dynamically
 
 # TPB specifc settings and parameters
 tpb:
@@ -277,8 +335,7 @@ tpb:
     # Higher values → more responsive to performance differences
     # Lower values → more conservative, requires larger gaps to shift
     #
-    # Typical values: 3-8 (5.0 calibrated for attitude ~0.70 with typical CA benefit)
-    attitude_sensitivity: 6.0
+    attitude_sensitivity: 1
 
     # Spreading level toggles for social learning
     # Allows enabling/disabling each level of spreading for testing or single-country runs
@@ -300,7 +357,7 @@ aftpar:
     # AFT for conservative/traditional values following farmer tending to stay
     #   with conventional agriculture
     traditionalist:
-        pbc_base: 0.65  # base perceived behavioral control (captures risk aversion)
+        pbc_base: 0.75  # base perceived behavioral control (captures risk aversion)
         weight_norm: 0.4  # Rogers "Late Majority": strong reliance on social proof
         weight_attitude: 0.6
 
@@ -361,7 +418,7 @@ aftpar:
     # AFT for pioneer farmer who more likely tends to transition to new (promising)
     #   regenerative agriculture practices
     pioneer:
-        pbc_base: 0.85  # base perceived behavioral control (captures risk aversion)
+        pbc_base: 0.95  # base perceived behavioral control (captures risk aversion)
         weight_attitude: 0.8
         weight_norm: 0.2  # Rogers "Innovators/Early Adopters": low but non-zero
 

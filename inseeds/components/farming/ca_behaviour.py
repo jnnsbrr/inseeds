@@ -381,9 +381,9 @@ class DecisionModel(ABC):
             current_year,
         )
 
-        # Initialize baseline score for fallback comparison
+        # Initialize baseline trend for fallback comparison
         if self.performance_tracker.n > 1:
-            self.performance_tracker.baseline_score = (
+            self.performance_tracker.baseline_trend = (
                 self.performance_tracker.weighted_trend(self.farmer)
             )
 
@@ -519,7 +519,7 @@ class DecisionModel(ABC):
         self.performance_tracker = ManagementPerformanceTracker.reset_for_transition(
             farmer=self.farmer,
             current_year=current_year,
-            baseline_score=baseline
+            baseline_trend=baseline
         )
 
         # Transition to new bundle
@@ -736,6 +736,21 @@ class TPB(DecisionModel):
         self.transition_driver = DRIVER_NONE
         self.target_pathway = None
 
+        # Reset TPB components so they show 0.0 if not computed this year
+        # (e.g., farmer doesn't evaluate due to observation_years)
+        self._tpb = 0.0
+        self._attitude = 0.0
+        self._attitude_own_land = 0.0
+        self._attitude_social_learning = 0.0
+        self._attitude_social_learning_local = 0.0
+        self._attitude_social_learning_country = 0.0
+        self._attitude_social_learning_cluster = 0.0
+        self._social_norm = 0.0
+        self._social_norm_local = 0.0
+        self._social_norm_country = 0.0
+        self._social_norm_cluster = 0.0
+        self._pbc = 0.0
+
         # -----------------------------------------------------------------
         # Step 0: Re-evaluate residue status and cover crop type
         # -----------------------------------------------------------------
@@ -880,13 +895,13 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Compare current performance to baseline at transition time
         # -----------------------------------------------------------------
-        # baseline_score captures the trend score at the time of transition.
-        # If current score is worse than baseline, we're declining.
-        baseline = self.performance_tracker.baseline_score
-        current_score = self.performance_tracker.weighted_trend(self.farmer)
+        # baseline_trend captures the weighted trend at the time of transition.
+        # If current trend is worse than baseline, we're declining.
+        baseline = self.performance_tracker.baseline_trend
+        current_trend = self.performance_tracker.weighted_trend(self.farmer)
 
         # Track consecutive years of decline
-        if current_score < baseline:
+        if current_trend < baseline:
             self.decline_years += 1
         else:
             self.decline_years = 0  # Reset if performance improves
@@ -940,10 +955,10 @@ class TPB(DecisionModel):
         # Poor performers explore more (searching for better options)
         # With relative trends: negative = declining, positive = improving
         # Threshold is in relative terms (e.g., 0 = any decline, -0.02 = >2% decline)
-        current_score = self.performance_tracker.weighted_trend(self.farmer)
+        current_trend = self.performance_tracker.weighted_trend(self.farmer)
         poor_performance_threshold = self.get_aft_param("poor_performance_threshold")
         poor_performance_multiplier = self.get_aft_param("poor_performance_multiplier")
-        if current_score < poor_performance_threshold:
+        if current_trend < poor_performance_threshold:
             base_prob *= poor_performance_multiplier
 
         # Experience affects willingness to explore (smooth ramp based on confidence_years)
@@ -1114,8 +1129,9 @@ class TPB(DecisionModel):
         Parameters
         ----------
         pathway : str
-            One of "social" (learned from local neighbor), "country" (inspired
-            by country-level data), or "exploration" (random exploration).
+            One of "local" (learned from local neighbor), "country" (inspired
+            by country-level data), "cluster" (agroecological cluster learning),
+            or "exploration" (random exploration).
         """
         if self.proposed_bundle is None:
             return
@@ -1185,8 +1201,10 @@ class TPB(DecisionModel):
             sub_driver = 'pbc'
 
         # Map based on pathway and sub-component
+        # Pathways: "local" (learned from local neighbor), "country" (inspired by
+        # country-level stats), "cluster" (agroecological cluster), "exploration"
         driver_maps = {
-            "social": {
+            "local": {
                 'attitude_own_land': DRIVER_LOCAL_ATTITUDE_OWN_LAND,
                 'attitude_social_local': DRIVER_LOCAL_ATTITUDE_SOCIAL_LOCAL,
                 'attitude_social_country': DRIVER_LOCAL_ATTITUDE_SOCIAL_COUNTRY,
@@ -1197,6 +1215,16 @@ class TPB(DecisionModel):
                 'pbc': DRIVER_LOCAL_PBC,
             },
             "country": {
+                'attitude_own_land': DRIVER_COUNTRY_ATTITUDE_OWN_LAND,
+                'attitude_social_local': DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL,
+                'attitude_social_country': DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY,
+                'attitude_social_cluster': DRIVER_COUNTRY_ATTITUDE_SOCIAL_CLUSTER,
+                'social_norm_local': DRIVER_COUNTRY_SOCIAL_NORM_LOCAL,
+                'social_norm_country': DRIVER_COUNTRY_SOCIAL_NORM_COUNTRY,
+                'social_norm_cluster': DRIVER_COUNTRY_SOCIAL_NORM_CLUSTER,
+                'pbc': DRIVER_COUNTRY_PBC,
+            },
+            "cluster": {
                 'attitude_own_land': DRIVER_COUNTRY_ATTITUDE_OWN_LAND,
                 'attitude_social_local': DRIVER_COUNTRY_ATTITUDE_SOCIAL_LOCAL,
                 'attitude_social_country': DRIVER_COUNTRY_ATTITUDE_SOCIAL_COUNTRY,
@@ -1337,7 +1365,7 @@ class TPB(DecisionModel):
 
         # Compute own performance using unified scoring
         own_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
 
         # Find best performing bundle at country level
@@ -1349,7 +1377,7 @@ class TPB(DecisionModel):
             if bundle == self.practice_bundle:
                 continue
 
-            bundle_score = compute_performance_score(perf, self.farmer, country)
+            bundle_score = compute_performance_score(perf, self.farmer)
 
             # Track the best bundle (highest unified score)
             if bundle_score > best_score:
@@ -1390,7 +1418,7 @@ class TPB(DecisionModel):
 
         # Compute own performance using unified scoring
         own_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
 
         # Find best performing bundle at cluster level
@@ -1402,7 +1430,7 @@ class TPB(DecisionModel):
             if bundle == self.practice_bundle:
                 continue
 
-            bundle_score = compute_performance_score(perf, self.farmer, country)
+            bundle_score = compute_performance_score(perf, self.farmer)
 
             # Track the best bundle (highest unified score)
             if bundle_score > best_score:
@@ -1428,14 +1456,16 @@ class TPB(DecisionModel):
         bool
             True if neighbour's unified score exceeds self's score.
         """
-        country = self.farmer.cell.country
 
         my_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
         their_score = compute_performance_score(
-            neighbour.behaviour.performance_tracker, self.farmer, country
+            neighbour.behaviour.performance_tracker, self.farmer
         )
+
+        #if self.farmer.cell.output.cell.item() == 8:
+        #    breakpoint()
 
         return their_score > my_score
 
@@ -1455,13 +1485,12 @@ class TPB(DecisionModel):
         float
             Positive score gap (0 if neighbour has lower or equal score).
         """
-        country = self.farmer.cell.country
 
         my_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
         their_score = compute_performance_score(
-            neighbour.behaviour.performance_tracker, self.farmer, country
+            neighbour.behaviour.performance_tracker, self.farmer
         )
 
         # Return positive gap only (0 if neighbor is not better)
@@ -1615,7 +1644,7 @@ class TPB(DecisionModel):
 
         # My unified performance score
         my_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
 
         # Accumulate weighted score differences
@@ -1637,11 +1666,14 @@ class TPB(DecisionModel):
 
             # Compute neighbour's unified performance score
             neighbour_score = compute_performance_score(
-                n_tracker, self.farmer, country
+                n_tracker, self.farmer
             )
 
             # Score difference: positive if neighbour is better
             score_diff = neighbour_score - my_score
+
+            # if self.farmer.cell.output.cell.item() == 8:
+            #     breakpoint()
 
             # Weight = similarity × confidence
             weight = similarity * confidence
@@ -1701,9 +1733,9 @@ class TPB(DecisionModel):
 
         # Compute performance scores using unified scoring
         my_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
-        bundle_score = compute_performance_score(perf, self.farmer, country)
+        bundle_score = compute_performance_score(perf, self.farmer)
 
         # Score difference as attitude input
         # Positive if bundle is better (higher score), negative if worse
@@ -1759,9 +1791,9 @@ class TPB(DecisionModel):
 
         # Compute performance scores using unified scoring
         my_score = compute_performance_score(
-            self.performance_tracker, self.farmer, country
+            self.performance_tracker, self.farmer
         )
-        bundle_score = compute_performance_score(perf, self.farmer, country)
+        bundle_score = compute_performance_score(perf, self.farmer)
 
         # Score difference as attitude input
         # Positive if bundle is better (higher score), negative if worse
@@ -1902,44 +1934,6 @@ class TPB(DecisionModel):
         threshold = getattr(self.farmer, "threshold_social_norm_cluster", 0.1)
         return sigmoid(adoption_rate - threshold)
 
-    # =========================================================================
-    # COST CALCULATIONS
-    # =========================================================================
-
-    def get_bundle_direct_cost(self, bundle):
-        """Compute annual direct cost of a practice bundle.
-
-        Parameters
-        ----------
-        bundle : Bundle
-            Practice bundle.
-
-        Returns
-        -------
-        float
-            Annual direct cost (scaled by farm size).
-        """
-        return bundle.direct_cost_per_ha(self.farmer.practice_costs) * self.farmer.net_farm_size
-
-    def total_transition_cost(self, old_bundle, new_bundle):
-        """Compute one-time transition cost for changing practices.
-
-        Parameters
-        ----------
-        old_bundle : Bundle
-            Current practice bundle.
-        new_bundle : Bundle
-            Target practice bundle.
-
-        Returns
-        -------
-        float
-            Total transition cost (scaled by net farm size).
-        """
-        return (
-            old_bundle.transition_cost_per_ha(new_bundle, self.farmer.practice_costs)
-            * self.farmer.net_farm_size
-        )
 
     # =========================================================================
     # AFFORDABILITY ADJUSTMENTMENT BASED ON CAPITAL
@@ -1950,6 +1944,8 @@ class TPB(DecisionModel):
 
         If farmer can't afford full target bundle, add changes cheapest-first
         to maximize what can be adopted within capital constraints.
+
+        See farmer.get_practice_transition_cost() for per-practice cost logic.
 
         Parameters
         ----------
@@ -1962,7 +1958,10 @@ class TPB(DecisionModel):
             Affordable bundle (may equal current if nothing affordable).
         """
         current = self.practice_bundle
-        total_cost = self.total_transition_cost(current, target_bundle)
+        total_cost = self.farmer.get_bundle_transition_costs(
+            self.practice_bundle,
+            target_bundle,
+        )
 
         # -----------------------------------------------------------------
         # Check if full target is affordable
@@ -1973,16 +1972,16 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Build affordable subset: add changes cheapest-first
         # -----------------------------------------------------------------
-        changes = [
-            (
-                field,
-                getattr(target_bundle, field),
-                getattr(self.farmer.practice_costs, field).transition
-                * self.farmer.net_farm_size,
-            )
-            for field in PRACTICE_FIELDS
-            if getattr(current, field) != getattr(target_bundle, field)
-        ]
+        changes = []
+        for field in PRACTICE_FIELDS:
+            old_val = getattr(current, field)
+            new_val = getattr(target_bundle, field)
+
+            if old_val == new_val:
+                continue
+
+            cost = self.farmer.get_practice_transition_cost(field, old_val, new_val)
+            changes.append((field, new_val, cost))
 
         # Sort by cost (cheapest first)
         changes.sort(key=lambda x: x[2])
@@ -2017,6 +2016,13 @@ class TPB(DecisionModel):
         AFT differences in risk aversion are captured via pbc_base, not as a
         separate multiplicative factor (avoids double-counting).
 
+        References
+        ----------
+        Li, X., Dai, J., Zhu, X., Li, J., He, J., Huang, Y., ... & Shen, Q. (2023).
+        Mechanism of attitude, subjective norms, and perceived behavioral control
+        influence the green development behavior of construction enterprises.
+        Humanities and Social Sciences Communications, 10(1), 266.
+
         Parameters
         ----------
         new_bundle : tuple
@@ -2031,16 +2037,23 @@ class TPB(DecisionModel):
         # Calculate cost impact of transitioning
         # -----------------------------------------------------------------
 
-        # One-time transition cost
-        transition_cost = self.total_transition_cost(self.practice_bundle, new_bundle)
+        # One-time transition costs
+        transition_costs = self.farmer.get_bundle_transition_costs(
+            current_bundle=self.practice_bundle,
+            target_bundle=new_bundle,
+        )
 
-        # Change in annual direct costs
-        current_direct = self.get_bundle_direct_cost(self.practice_bundle)
-        new_direct = self.get_bundle_direct_cost(new_bundle)
-        direct_cost_increase = max(0, new_direct - current_direct)
+        # Change in annual direct costs (new bundle vs current bundle)
+        # Positive = new bundle costs more, Negative = new bundle saves money
+        delta_direct_costs = (
+            self.farmer.get_bundle_direct_costs(bundle=new_bundle)
+            - self.farmer.get_bundle_direct_costs(bundle=self.practice_bundle)
+        )
 
-        # Total cost impact
-        cost_impact = transition_cost + direct_cost_increase
+        # Total cost impact over planning horizon
+        # Positive = net costs increase, Negative = net savings
+        planning_horizon = self.farmer.behaviour.get_aft_param("min_observation_years")
+        cost_impact = transition_costs + delta_direct_costs * planning_horizon
 
         # -----------------------------------------------------------------
         # Calculate disposable capital (above minimum threshold)
@@ -2048,9 +2061,14 @@ class TPB(DecisionModel):
         disposable = max(self.farmer.capital - self.farmer.min_capital, 1e-6)
 
         # -----------------------------------------------------------------
-        # PBC decreases as cost approaches disposable capital
+        # PBC: cost_factor in [0, 1]
+        # - High costs (cost_impact >> 0): cost_factor → 0, PBC → 0
+        # - No cost change: cost_factor = 1, PBC = pbc_base
+        # - Savings (cost_impact < 0): cost_factor capped at 1, PBC = pbc_base
         # -----------------------------------------------------------------
         cost_factor = 1.0 / (1.0 + cost_impact / disposable)
+        cost_factor = max(0.0, min(1.0, cost_factor))  # Cap to [0, 1]
+        # breakpoint()
 
         return self.farmer.pbc_base * cost_factor
 

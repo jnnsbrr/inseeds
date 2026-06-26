@@ -189,10 +189,10 @@ class TestPracticeAffordability:
 
     def test_direct_costs_affect_affordability(self):
         """Direct costs should affect practice affordability."""
-        # Verified through get_current_direct_costs usage
+        # Verified through get_bundle_direct_costs usage
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert hasattr(ConservationAgricultureFarmer, "get_current_direct_costs")
+        assert hasattr(ConservationAgricultureFarmer, "get_bundle_direct_costs")
 
 
 class TestBundleTracking:
@@ -309,14 +309,6 @@ class TestTPBPBCCalculation:
     def test_affordable_bundle_method_exists(self):
         """affordable_bundle method should exist."""
         assert hasattr(TPB, "affordable_bundle")
-
-    def test_get_bundle_direct_cost_method_exists(self):
-        """get_bundle_direct_cost method should exist."""
-        assert hasattr(TPB, "get_bundle_direct_cost")
-
-    def test_total_transition_cost_method_exists(self):
-        """total_transition_cost method should exist."""
-        assert hasattr(TPB, "total_transition_cost")
 
 
 class TestTPBBundleProposal:

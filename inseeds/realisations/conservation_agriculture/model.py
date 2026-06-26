@@ -10,6 +10,7 @@ from inseeds.components import base
 from inseeds.components import farming
 from inseeds.components.farming import ConservationAgricultureFarmer
 from inseeds.components.farming.ca_country import CACountry
+from inseeds.components.farming.ca_world import CAWorld
 from inseeds.components.farming.farmer import AFT
 from inseeds.components import lpjml
 from inseeds.components.exogenous import load_all as load_exogenous
@@ -160,8 +161,8 @@ class Country(CACountry, lpjml.Country, base.Country):
     )
 
 
-class World(lpjml.World, farming.World):
-    """World entity type."""
+class World(lpjml.World, CAWorld):
+    """World entity type with global reference value computation."""
 
     pass
 
@@ -211,6 +212,10 @@ class Model(lpjml.Model):
         # Initialize cells and farmers
         self.init_cells(cell_class=Cell)
         self.init_farmers(farmer_class=Farmer)
+
+        # Compute static reference scales for performance scoring
+        # Must be done AFTER farmers exist but BEFORE simulation starts
+        self.world.compute_reference_scales()
 
         # Cut off historical data (from_earth) to only the most recent year
         self.cutoff_historical_data()

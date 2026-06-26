@@ -93,97 +93,109 @@ _BUNDLE_METADATA: dict[str, tuple[int, str]] = {
 # UNIFIED PERFORMANCE SCORING
 # =============================================================================
 
+# TODO: Consider implementing discounted future value approach for trends:
+#   PV = trend × [1 - (1+r)^(-n)] / r
+# where r is discount rate (~10-20%) and n is planning horizon.
+# This would account for uncertainty about distant future gains.
+# Current simple approach (trend × planning_horizon) is adequate for ABM
+# and more interpretable. Discounting would reduce trend impact by ~25-40%.
+
 def compute_metric_score(
     level: float,
     trend: float,
-    ref_level: float,
-    ref_trend: float,
+    scale: float,
+    planning_horizon: float,
     trend_weight: float,
 ) -> float:
-    """Compute normalized score for a single metric (yield, soilc, or moisture).
+    """Compute performance score as projected endpoint normalized by fixed scale.
 
-    Both level and trend are normalized to country references using the same
-    approach: ratio to reference. This provides symmetric, intuitive scaling
-    where 1.0 = "at reference", >1.0 = "above reference", <1.0 = "below".
+    Uses the "projected endpoint" approach: where will this metric be in
+    `planning_horizon` years if current trend continues? This captures both
+    current level AND trajectory in a single, decision-relevant value.
 
-    Scientific basis:
-    - Level ratio: Yield gap analysis (van Ittersum et al. 2013)
-    - Trend normalization: Analogous to z-score standardization, using std as
-      the reference scale for "what counts as meaningful change"
+    The score is normalized by a FIXED world mean (from historic data) to make
+    different metrics (yield ~50, soilC ~2500, moisture ~250) comparable.
 
     Parameters
     ----------
     level : float
-        Absolute metric value (e.g., yield in gC/m², soilc in gC/m²).
+        Current absolute metric value (e.g., yield in gC/m², soilc in gC/m²).
     trend : float
         Annual rate of change (same units as level, per year).
-    ref_level : float
-        Country mean level for normalization. Must be > 0.
-    ref_trend : float
-        Country reference trend (std of trends) for normalization.
-        Represents "typical variation" - a natural scale for trends.
+    scale : float
+        Fixed scaling factor (world mean from historic data). Must be > 0.
+        This is a CONSTANT for the entire simulation.
+    planning_horizon : float
+        Years over which to project trend impact (typically min_observation_years).
+        Represents the farmer's decision-making horizon.
     trend_weight : float
         Weight for trend component (0-1). Level weight = 1 - trend_weight.
 
     Returns
     -------
     float
-        Normalized score. Level component centered at 1.0, trend component
-        centered at 0.0 (since mean trend is typically near zero).
-        Total score of ~1.0 means "at reference level with average trend".
+        Performance score as ratio to historic world mean.
+        - Score = 1.0 means projected endpoint equals historic world mean
+        - Score > 1.0 means above average (better)
+        - Score < 1.0 means below average (worse)
 
-    Notes
-    -----
-    - Level: ratio to reference (level/ref_level), centered at 1.0
-    - Trend: ratio to reference (trend/ref_trend), centered at ~0.0
-    - Both use the same normalization principle (ratio to country reference)
-    - The attitude_sensitivity parameter scales the final score difference
-      before the attitude sigmoid
+    Formula
+    -------
+    projected_endpoint = level + trend × planning_horizon
+    score = projected_endpoint / scale
+
+    This can also be decomposed as:
+    level_contrib = level / scale
+    trend_contrib = (trend × planning_horizon) / scale
+    score = level_weight × level_contrib + trend_weight × trend_contrib
+
+    Examples
+    --------
+    - Yield: level=60, trend=2, scale=50, horizon=5
+      → projected = 60 + 2×5 = 70 → score = 70/50 = 1.4 (40% above average)
+
+    - SoilC: level=2000, trend=50, scale=2500, horizon=5
+      → projected = 2000 + 50×5 = 2250 → score = 2250/2500 = 0.9 (10% below avg)
     """
-    # Level: ratio to country reference, centered at 1.0
-    norm_level = level / ref_level if ref_level > 0 else 1.0
+    # Projected endpoint: where metric will be in planning_horizon years
+    projected_trend = trend * planning_horizon
 
-    # Trend: ratio to reference trend (std of trends)
-    # This automatically handles different metric scales:
-    # - Yield trends might have std ~2 gC/m²/yr
-    # - Soil C trends might have std ~5 gC/m²/yr
-    # - Both get normalized to comparable scales
-    norm_trend = trend / ref_trend if ref_trend > 0 else 0.0
+    # Normalize by fixed scale (world mean from historic data)
+    level_contrib = level / scale
+    trend_contrib = projected_trend / scale
 
-    # Combine level and trend with configured weighting
-    # Level component centered at 1.0, trend component centered at ~0
+    # Combine with configured weighting
     level_weight = 1.0 - trend_weight
-    return level_weight * norm_level + trend_weight * norm_trend
+    return level_weight * level_contrib + trend_weight * trend_contrib
 
 
 def compute_performance_score(
     tracker_or_region: Any,
     farmer: Any,
-    country: Any,
 ) -> float:
-    """Compute unified performance score for comparing practices or farmers.
+    """Compute performance score using projected endpoint scaled by world means.
 
     This function provides a single, consistent scoring mechanism used across
     all comparison points: neighbor comparison, bundle selection, and attitude
-    calculation. Both levels and trends are normalized to country references
-    using the same ratio approach.
+    calculation. Uses FIXED world means from historic data as scaling factors.
 
     Parameters
     ----------
     tracker_or_region : ManagementPerformanceTracker or RegionManagementPerformance
-        Performance data source. Can be an individual farmer's tracker or
-        aggregated regional statistics.
+        Performance data source to evaluate. Can be an individual farmer's
+        tracker or aggregated regional statistics.
     farmer : Farmer
         Farmer whose weights (weight_yield, weight_soil, etc.) and trend
-        weights (trend_weight_yield, etc.) are used for scoring.
-    country : CACountry
-        Country providing reference values for normalization.
+        weights (trend_weight_yield, etc.) are used for scoring. Also provides
+        access to world.statistic for fixed reference scales.
 
     Returns
     -------
     float
-        Weighted performance score. Higher is better.
-        Level component centered at ~1.0, trend component centered at ~0.
+        Dimensionless weighted performance score.
+        - Score of ~1.0 means projected endpoint equals historic world mean
+        - Score > 1.0 means above historic world mean (better)
+        - Score < 1.0 means below historic world mean (worse)
 
     Notes
     -----
@@ -191,49 +203,54 @@ def compute_performance_score(
     1. Per-metric level/trend weighting (based on metric dynamics)
     2. Per-farmer importance weighting (based on AFT psychology)
 
-    Both levels and trends use the same normalization principle:
-    - Level: ratio to country mean (1.0 = average)
-    - Trend: ratio to country std of trends (0.0 = average, 1.0 = 1 std above)
+    Uses FIXED WORLD MEANS from historic data as scaling factors:
+    - Makes different metrics (yield ~50, soilC ~2500) comparable
+    - Preserves absolute performance (higher level = higher score)
+    - No dynamic normalization that could distort comparisons
+    - A high-performing farmer at biophysical limits scores highly
 
-    The attitude_sensitivity parameter (in config) scales the final score
-    difference before the attitude sigmoid.
+    Formula: score = (level + trend × horizon) / historic_world_mean
 
     See Also
     --------
-    compute_metric_score : Per-metric scoring with normalization.
+    compute_metric_score : Per-metric projected endpoint computation.
+    CAWorld.compute_reference_scales : Where the fixed scales are computed.
     """
-    # Get reference values for LEVELS (country means)
-    ref_yield_level = country.reference_yield_level
-    ref_soilc_level = country.reference_soilc_level
-    ref_moisture_level = country.reference_moisture_level
+    # Get metrics from tracker being evaluated
+    level_yield = tracker_or_region.mean_yield
+    level_soilc = tracker_or_region.mean_soilc
+    level_moisture = tracker_or_region.mean_moisture
+    trend_yield = tracker_or_region.yield_trend
+    trend_soilc = tracker_or_region.soilc_trend
+    trend_moisture = tracker_or_region.moisture_trend
 
-    # Get reference values for TRENDS (country std of trends)
-    ref_yield_trend = country.reference_yield_trend
-    ref_soilc_trend = country.reference_soilc_trend
-    ref_moisture_trend = country.reference_moisture_trend
+    # Get FIXED reference scales from world (computed once from historic data)
+    scales = farmer.world.statistic.get("reference_scales")
+    scale_yield = scales["yield"]
+    scale_soilc = scales["soilc"]
+    scale_moisture = scales["moisture"]
 
-    # Get metrics from tracker (works for both individual and region)
-    mean_yield = tracker_or_region.mean_yield
-    mean_soilc = tracker_or_region.mean_soilc
-    mean_moisture = tracker_or_region.mean_moisture
-    yield_trend = tracker_or_region.yield_trend
-    soilc_trend = tracker_or_region.soilc_trend
-    moisture_trend = tracker_or_region.moisture_trend
+    # Planning horizon: farmer's decision-making window (min_observation_years)
+    # Trends are projected over this period to make them comparable to levels
+    planning_horizon = farmer.behaviour.get_aft_param("min_observation_years")
 
-    # Compute per-metric scores with symmetric level/trend normalization
+    # Compute per-metric scores as projected endpoint / scale
     score_yield = compute_metric_score(
-        mean_yield, yield_trend,
-        ref_yield_level, ref_yield_trend,
+        level_yield, trend_yield,
+        scale_yield,
+        planning_horizon,
         farmer.trend_weight_yield
     )
     score_soilc = compute_metric_score(
-        mean_soilc, soilc_trend,
-        ref_soilc_level, ref_soilc_trend,
+        level_soilc, trend_soilc,
+        scale_soilc,
+        planning_horizon,
         farmer.trend_weight_soil
     )
     score_moisture = compute_metric_score(
-        mean_moisture, moisture_trend,
-        ref_moisture_level, ref_moisture_trend,
+        level_moisture, trend_moisture,
+        scale_moisture,
+        planning_horizon,
         farmer.trend_weight_moisture
     )
 
@@ -274,43 +291,62 @@ def _scale_cost_value(value: Any, capital_ratio: float) -> float:
     return float(value) if value else 0.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PracticeCost:
     """Cost structure for a single agricultural practice.
 
-    Each practice (tillage, cover crop, residue retention) has two types of costs:
+    Each practice (tillage, cover crop, residue retention) has:
+    - A one-time transition cost (equipment, training)
+    - Multiple annual cost components (fuel, labor, seeds, herbicide, etc.)
+
+    The generic cost_components dict allows adding any cost type in config
+    without code changes. The `direct` property sums all components.
 
     Attributes
     ----------
-    direct : float
-        Annual operating cost (USD/ha/year). Paid every year while using the practice.
-        Example: Seeds, fuel, labor for cover crops.
-
     transition : float
         One-time switching cost (USD/ha). Paid once when adopting the practice.
         Example: New equipment, training, initial soil preparation.
 
+    cost_components : dict[str, float]
+        Named annual cost components (USD/ha/year). Summed for total direct cost.
+        Example (conventional tillage): {"fuel": 45.0, "labor": 25.0, "herbicide": -35.0}
+        Positive = higher cost vs no-till; negative = cost reduction vs no-till.
+
     Example
     -------
-    >>> cover_crop_cost = PracticeCost(direct=50.0, transition=200.0)
-    >>> # Annual cost: $50/ha, one-time adoption cost: $200/ha
+    >>> tillage_cost = PracticeCost(
+    ...     transition=66.0,
+    ...     cost_components={"fuel": 45.0, "labor": 25.0, "herbicide": -35.0}
+    ... )
+    >>> tillage_cost.direct  # Net cost of conventional tillage vs no-till
+    35.0
     """
 
-    direct: float
     transition: float
+    cost_components: dict[str, float]
+
+    @property
+    def direct(self) -> float:
+        """Total annual direct cost = sum of all cost components."""
+        return sum(self.cost_components.values())
 
     @classmethod
-    def from_config(cls, data: Any, capital_ratio: float = 1.0) -> PracticeCost:
+    def from_config(cls, data: Any, capital_ratio: float = 1.0) -> "PracticeCost":
         """Create from configuration dictionary, optionally scaled by capital.
+
+        Supports two config formats:
+        1. New format with 'costs' dict containing named components
+        2. Legacy format with single 'direct' value (backward compatible)
 
         Parameters
         ----------
         data : dict
-            Configuration with 'direct' and 'transition' keys.
-            Values can be scalars or [min, max] ranges.
+            Configuration with 'transition' and either 'costs' dict or 'direct'.
+            Values can be scalars or [min, max] ranges for capital scaling.
         capital_ratio : float
             Ratio of farmer's capital to reference (default 1.0 = reference level).
-            Used to interpolate within ranges.
+            Used to interpolate within [min, max] ranges.
 
         Returns
         -------
@@ -321,10 +357,25 @@ class PracticeCost:
             data = data.to_dict()
         elif not isinstance(data, dict):
             data = dict(data)
-        return cls(
-            direct=_scale_cost_value(data.get("direct", 0), capital_ratio),
-            transition=_scale_cost_value(data.get("transition", 0), capital_ratio),
-        )
+
+        transition = _scale_cost_value(data.get("transition", 0), capital_ratio)
+
+        # New format: 'costs' dict with named components
+        if "costs" in data:
+            costs_raw = data["costs"]
+            if hasattr(costs_raw, "to_dict"):
+                costs_raw = costs_raw.to_dict()
+            elif not isinstance(costs_raw, dict):
+                costs_raw = dict(costs_raw)
+
+            cost_components = {
+                name: _scale_cost_value(value, capital_ratio)
+                for name, value in costs_raw.items()
+            }
+        else:
+            cost_components = {}
+
+        return cls(transition=transition, cost_components=cost_components)
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +388,7 @@ class ManagementCosts:
     Attributes
     ----------
     tillage : PracticeCost
-        Costs for no-till practice (note: tillage=0 means no-till is active)
+        Costs for conventional tillage (tillage=1); negated when no-till (tillage=0)
     cover_crop : PracticeCost
         Costs for planting cover crops between main crop seasons
     residue_on_field : PracticeCost
@@ -577,35 +628,6 @@ class ManagementBundle(Enum):
         matches = sum(a == b for a, b in zip(self.value, bundle.value))
         return matches / len(PRACTICE_FIELDS)
 
-    # TODO: move to ca_behaviour.py
-    def direct_cost_per_ha(self, costs: ManagementCosts) -> float:
-        """Annual direct cost per hectare for active practices in this bundle."""
-        return sum(
-            getattr(costs, field).direct
-            for field, active in zip(PRACTICE_FIELDS, self.value)
-            if active == 1
-        )
-
-    def transition_cost_per_ha(
-        self, bundle: ManagementBundle, costs: ManagementCosts
-    ) -> float:
-        """One-time transition cost per hectare for practices that change.
-
-        Costs apply in BOTH directions:
-        - Tillage: No-till→conventional requires tillage equipment;
-                   conventional→no-till requires no-till planter.
-                   Both have similar cost magnitudes.
-        - Cover crop: Adopting requires seeder; abandoning has minimal cost.
-        - Residue: No equipment either direction.
-
-        Using the same transition cost for both directions is a reasonable
-        approximation since equipment costs are comparable in magnitude.
-        """
-        total = 0.0
-        for field, old, new in zip(PRACTICE_FIELDS, self.value, bundle.value):
-            if old != new:
-                total += getattr(costs, field).transition
-        return total
 
 # =============================================================================
 # FARMER-LEVEL PERFORMANCE TRACKING
@@ -717,8 +739,9 @@ class ManagementPerformance:
 
     def __repr__(self) -> str:
         return (
-            f"ManagementPerformance(yield={self.trend_yield:+.2%}/yr, "
-            f"soilc={self.trend_soilc:+.2%}/yr, n={self.duration}yr)"
+            f"ManagementPerformance(yield_level={self.yield_level:+.2%}, yield_trend={self.trend_yield:+.2%}/yr, "
+            f"soilc_level={self.soilc_level:+.2%}, soilc_trend={self.trend_soilc:+.2%}/yr, n={self.duration}yr, "
+            f"moisture_level={self.moisture_level:+.2%}, moisture_trend={self.trend_moisture:+.2%}/yr)"
         )
 
 
@@ -1258,9 +1281,9 @@ class ManagementPerformanceTracker:
     t_start : int
         The year when tracking began (when current practice was adopted).
 
-    baseline_score : float
-        Performance score at time of last transition. Used for fallback
-        detection (if current score drops below baseline for several years,
+    baseline_trend : float
+        Weighted performance trend at time of last transition. Used for fallback
+        detection (if current trend drops below baseline for several years,
         farmer may revert to previous practice).
 
     n : int
@@ -1282,7 +1305,7 @@ class ManagementPerformanceTracker:
     """
 
     t_start: int
-    baseline_score: float = 0.0
+    baseline_trend: float = 0.0
     n: int = 0
     sum_t: float = 0.0
     sum_tt: float = 0.0
@@ -1307,12 +1330,12 @@ class ManagementPerformanceTracker:
         cls,
         farmer: Any,
         current_year: int,
-        baseline_score: float,
+        baseline_trend: float,
     ) -> ManagementPerformanceTracker:
         """Fresh state when switching to a new practice bundle."""
         return cls(
             t_start=current_year,
-            baseline_score=baseline_score,
+            baseline_trend=baseline_trend,
             n=1,
             sum_soilc=farmer.soilc,
             sum_moisture=farmer.root_moisture,
@@ -1474,17 +1497,17 @@ class ManagementPerformanceTracker:
     @property
     def yield_trend(self) -> float:
         """Annual yield trend (absolute change per year)."""
-        return self.trend["yield"]
+        return self._slope(self.sum_yield, self.sum_t_yield)
 
     @property
     def soilc_trend(self) -> float:
         """Annual soil carbon trend (absolute change per year)."""
-        return self.trend["soilc"]
+        return self._slope(self.sum_soilc, self.sum_t_soilc)
 
     @property
     def moisture_trend(self) -> float:
         """Annual moisture trend (absolute change per year)."""
-        return self.trend["moisture"]
+        return self._slope(self.sum_moisture, self.sum_t_moisture)
 
     def weighted_trend(self, farmer: Any) -> float:
         """Combine soil, moisture, and yield TRENDS into a single trend score.
@@ -1533,45 +1556,6 @@ class ManagementPerformanceTracker:
             + farmer.weight_moisture * self.mean_moisture
             + farmer.weight_yield * self.mean_yield
         )
-
-    def is_better_than(
-        self,
-        other: "ManagementPerformanceTracker",
-        farmer: Any,
-    ) -> bool:
-        """Check if this tracker shows better performance than another.
-
-        Combines TREND and LEVEL comparison to avoid favoring neighbors
-        who are trending up but have terrible absolute performance.
-
-        A tracker is considered better if:
-        1. Its trend score (slope) is higher (improving faster), AND
-        2. Its absolute performance (level) is at least as good
-
-        Parameters
-        ----------
-        other : ManagementPerformanceTracker
-            The tracker to compare against.
-        farmer : Farmer
-            Farmer providing the outcome weights.
-
-        Returns
-        -------
-        bool
-            True if this tracker is better than the other.
-        """
-        # Trend filter: only reject if I'm declining AND worse than other
-        # Positive/zero trends pass this filter (not declining)
-        my_trend = self.weighted_trend(farmer)
-        other_trend = other.weighted_trend(farmer)
-        if my_trend < other_trend and my_trend <= 0:
-            return False
-
-        # Level comparison - must have strictly better absolute level
-        my_level = self.weighted_level(farmer)
-        other_level = other.weighted_level(farmer)
-
-        return my_level > other_level
 
     def __repr__(self) -> str:
         trend = self.trend

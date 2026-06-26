@@ -179,8 +179,11 @@ class TestCAFarmerProfitCalculation:
         farmer = farmers[0]
         
         # Call costs calculation
-        if hasattr(farmer, "get_current_direct_costs"):
-            costs = farmer.get_current_direct_costs()
+        if hasattr(farmer, "get_bundle_direct_costs"):
+            costs = farmer.get_bundle_direct_costs(
+                farmer.behaviour.practice_bundle,
+                per_ha=True
+            )
             # Costs may be NaN if FAO data extraction fails for test data
             if not math.isnan(costs):
                 assert costs >= 0
@@ -806,7 +809,7 @@ class TestTPBAffordabilityChecks:
         
         if hasattr(farmer.behaviour, "get_bundle_direct_cost"):
             bundle = farmer.behaviour.practice_bundle  # Use internal tuple
-            cost = farmer.behaviour.get_bundle_direct_cost(bundle)
+            cost = farmer.get_bundle_direct_costs(bundle, per_ha=True)
             # Cost may be NaN if FAO data extraction fails
             if not math.isnan(cost):
                 assert isinstance(cost, (int, float))

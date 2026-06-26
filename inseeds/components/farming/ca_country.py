@@ -394,65 +394,6 @@ class CACountry(Country):
         return self._fao("_pft_prices")
 
     # -------------------------------------------------------------------------
-    # Country-Level Reference Values (for performance score normalization)
-    # -------------------------------------------------------------------------
-
-    # Default reference values for LEVELS (overwritten each year in update())
-    reference_yield_level: float = 1.0
-    reference_soilc_level: float = 1.0
-    reference_moisture_level: float = 1.0
-
-    # Default reference values for TRENDS (overwritten each year in update())
-    # These represent "meaningful" trends for normalization, computed as
-    # the standard deviation of trends across farmers (not mean, since mean
-    # trend is often near zero and would cause division issues)
-    reference_yield_trend: float = 1.0
-    reference_soilc_trend: float = 1.0
-    reference_moisture_trend: float = 1.0
-
-    def compute_reference_values(self):
-        """Compute country-mean reference values for performance normalization.
-
-        Called once per year in update() BEFORE farmers are updated.
-        This ensures all farmers see consistent reference values and avoids
-        repeated computation during performance comparisons.
-
-        Reference values for levels use country means.
-        Reference values for trends use standard deviation (spread of trends),
-        which provides a natural scale for "what counts as meaningful change".
-        """
-        yields, soilcs, moistures = [], [], []
-        yield_trends, soilc_trends, moisture_trends = [], [], []
-
-        for farmer in self.farmers:
-            if hasattr(farmer, "cropyield"):
-                yields.append(farmer.cropyield)
-            if hasattr(farmer, "soilc"):
-                soilcs.append(farmer.soilc)
-            if hasattr(farmer, "root_moisture"):
-                moistures.append(farmer.root_moisture)
-
-            # Collect trends from trackers
-            tracker = farmer.behaviour.performance_tracker
-            if tracker is not None:
-                yield_trends.append(tracker.yield_trend)
-                soilc_trends.append(tracker.soilc_trend)
-                moisture_trends.append(tracker.moisture_trend)
-
-        # Level references: country mean (with fallback to 1.0)
-        self.reference_yield_level = float(np.mean(yields)) if yields else 1.0
-        self.reference_soilc_level = float(np.mean(soilcs)) if soilcs else 1.0
-        self.reference_moisture_level = float(np.mean(moistures)) if moistures else 1.0
-
-        # Trend references: standard deviation of trends (what counts as meaningful)
-        # Use std rather than mean because mean trend can be ~0 which breaks normalization
-        # The std represents "typical variation in trends" - a natural scale
-        # Minimum of 0.1 to avoid extreme values when all trends are identical
-        self.reference_yield_trend = max(0.1, float(np.std(yield_trends))) if yield_trends else 1.0
-        self.reference_soilc_trend = max(0.1, float(np.std(soilc_trends))) if soilc_trends else 1.0
-        self.reference_moisture_trend = max(0.1, float(np.std(moisture_trends))) if moisture_trends else 1.0
-
-    # -------------------------------------------------------------------------
     # Country-Level Statistics (for non-local spreading)
     # -------------------------------------------------------------------------
 
@@ -517,11 +458,11 @@ class CACountry(Country):
 
         Computes country-level statistics BEFORE updating farmers to ensure
         all farmers see the same country-level data for this timestep.
-        """
-        # Compute reference values for performance normalization
-        # Must run BEFORE farmers update so they see consistent references
-        self.compute_reference_values()
 
+        Note: Global reference values for performance scoring are computed
+        at the world level (CAWorld.compute_reference_values) before
+        country updates begin.
+        """
         # Compute country-level statistics for non-local spreading
         # Must run BEFORE farmers update so they see current country stats
         self.compute_management_performance(t)
