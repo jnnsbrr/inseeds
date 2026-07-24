@@ -172,16 +172,16 @@ BLOCKER_TARGET_SAME = 4             # Target bundle same as current (already opt
 BLOCKER_TARGET_UNAFFORDABLE = 5     # Target reduced to current due to cost
 BLOCKER_TPB_LOW_ATTITUDE_OWN_LAND = 6         # TPB low - own land attitude is limiting
 BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_LOCAL = 7     # TPB low - LOCAL social learning is limiting
-BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY = 14  # TPB low - COUNTRY social learning is limiting
-BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER = 16  # TPB low - CLUSTER social learning is limiting
 BLOCKER_TPB_LOW_SOCIAL_NORM_LOCAL = 8         # TPB low - LOCAL social norm is limiting
-BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY = 15      # TPB low - COUNTRY social norm is limiting
-BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER = 17      # TPB low - CLUSTER social norm is limiting
 BLOCKER_TPB_LOW_PBC = 9             # TPB below threshold - PBC (cost affordability) is limiting
 BLOCKER_TRANSITION_UNAFFORDABLE = 10 # Can't afford transition cost
 BLOCKER_CAPITAL_SURVIVAL = 11       # Capital below survival threshold
 BLOCKER_CONTROL_RUN = 12            # Control run - no CA dynamics
-BLOCKER_AFFORDABILITY_FORCED = 18   # Practices deselected due to unaffordable direct costs
+BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_COUNTRY = 13  # TPB low - COUNTRY social learning is limiting
+BLOCKER_TPB_LOW_SOCIAL_NORM_COUNTRY = 14      # TPB low - COUNTRY social norm is limiting
+BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER = 15  # TPB low - CLUSTER social learning is limiting
+BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER = 16      # TPB low - CLUSTER social norm is limiting
+BLOCKER_AFFORDABILITY_FORCED = 17   # Practices deselected due to unaffordable direct costs
 
 BLOCKER_NAMES = {
     BLOCKER_NONE: "none",
@@ -381,11 +381,8 @@ class DecisionModel(ABC):
             current_year,
         )
 
-        # Initialize baseline trend for fallback comparison
-        if self.performance_tracker.n > 1:
-            self.performance_tracker.baseline_trend = (
-                self.performance_tracker.weighted_trend(self.farmer)
-            )
+        # baseline_score will be set on first update (avoids init-order issues
+        # with reference_scales not being computed yet)
 
     # -------------------------------------------------------------------------
     # Properties for external access
@@ -497,6 +494,7 @@ class DecisionModel(ABC):
             self.performance_memory.record_performance(
                 self.practice_bundle,
                 self.performance_tracker.trend,
+                self.performance_tracker.level,
                 n_obs,
                 current_year,
             )
@@ -511,15 +509,15 @@ class DecisionModel(ABC):
         # Capture baseline score before resetting (for fallback comparison)
         # This is the performance level we expect to maintain or exceed
         baseline = (
-            self.performance_tracker.weighted_trend(self.farmer)
-            if n_obs > 1 else 0.0
+            compute_performance_score(self.performance_tracker, self.farmer)
+            if n_obs > 1 else 1.0  # Neutral score
         )
 
         # Reset regression accumulators for new bundle
         self.performance_tracker = ManagementPerformanceTracker.reset_for_transition(
             farmer=self.farmer,
             current_year=current_year,
-            baseline_trend=baseline
+            baseline_score=baseline
         )
 
         # Transition to new bundle
@@ -582,7 +580,7 @@ class TPB(DecisionModel):
         # Observation years counter: randomize initial timing to desynchronize farmers
         # (avoids artificial waves of simultaneous evaluation)
         min_obs = self.get_aft_param("min_observation_years")
-        self._observation_years = np.random.randint(0, min_obs)
+        self._observation_years = np.random.randint(1, min_obs)
 
     # -------------------------------------------------------------------------
     # Properties for external access to TPB components
@@ -670,21 +668,38 @@ class TPB(DecisionModel):
     def reevaluate_residue_status(self):
         """Re-evaluate residue component of bundle based on actual litter cover.
 
-        Farmers may organically cross the CA residue threshold (30% soil cover)
-        through their management practices. This method "certifies" or
-        "de-certifies" their CA residue status based on actual outcomes.
+        Only runs if config.practice_dimensions.residue.reevaluate_residue_status
+        is True (default: False).
+
+        When enabled, farmers who organically cross the CA residue threshold
+        (30% soil cover) get their bundle upgraded to residue=1.
 
         - If litter_cover >= threshold AND bundle residue = 0 → upgrade to 1
-        - If litter_cover < threshold AND bundle residue = 1 → downgrade to 0
 
-        This ensures the bundle reflects actual field conditions, not just
-        intended practices.
+        Note: We do NOT downgrade farmers who drop below threshold. If a farmer
+        intends to retain residue (residue=1) but has low litter cover due to
+        poor yields, setting residue=0 would tell LPJmL to actively REMOVE
+        residue, which contradicts their intent and worsens the situation.
+        Stopping retention should be an explicit farmer decision (via TPB),
+        not an automatic consequence of low yields.
+
+        When disabled (default), the bundle reflects the farmer's explicit
+        decision only. CA certification can be derived in post-processing
+        by combining bundle + litter_cover data.
         """
-        ca_threshold = self.farmer.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
+        # Check if reevaluation by litter cover is enabled (default: False)
+        # When disabled, bundle reflects farmer's explicit decision only.
+        residue_config = self.farmer.model.config.coupled_config.practice_dimensions.residue
+        if not residue_config.residue_status_by_cover:
+            return
+
+        # Evaluate residue status by actual litter cover
+        ca_threshold = residue_config.ca_cover_threshold
         current_residue = self.practice_bundle.residue_on_field
         litter_cover = self.farmer.litter_cover
 
-        # Check if status should change
+        # Upgrade to CA status if threshold is met and not already retaining
+        # Note: No downgrade - stopping retention should be an explicit decision
         if litter_cover >= ca_threshold and current_residue == 0:
             self.practice_bundle = self.practice_bundle.change_practices(
                 residue_on_field=1
@@ -762,12 +777,24 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Step 1: Add current year's observation to regression
         # -----------------------------------------------------------------
+        # Every metric is fed as a self-referenced fractional rate
+        # (value / own_baseline - 1), so all five are dimensionless and centred
+        # at zero - the same footing as profit.
         self.performance_tracker.add_observation(
-            self.farmer.soilc,
-            self.farmer.root_moisture,
-            self.farmer.cropyield,
+            self.farmer.soilc_rate,
+            self.farmer.moisture_rate,
+            self.farmer.yield_rate,
             self.farmer.model.lpjml.sim_year,
+            profit=self.farmer.profit,
+            leaching=self.farmer.leaching_rate,
         )
+
+        # Initialize baseline_score on first update (deferred from init to avoid
+        # chicken-and-egg with reference_scales)
+        if self.performance_tracker.baseline_score is None and self.performance_tracker.n > 1:
+            self.performance_tracker.baseline_score = compute_performance_score(
+                self.performance_tracker, self.farmer
+            )
 
         # -----------------------------------------------------------------
         # Step 2: Update performance memory with current trends
@@ -776,6 +803,7 @@ class TPB(DecisionModel):
         self.performance_memory.update_current(
             self.practice_bundle,
             self.performance_tracker.trend,
+            self.performance_tracker.level,
             self.performance_tracker.n,
             self.farmer.model.lpjml.sim_year,
         )
@@ -804,7 +832,19 @@ class TPB(DecisionModel):
             return
 
         # -----------------------------------------------------------------
-        # Step 5: Check fallback condition
+        # Step 5: Check affordability deselection
+        # -----------------------------------------------------------------
+        # If current practices cost more than available capital, propose
+        # a bundle with costly practices deselected (survival mechanism)
+
+        if self.check_affordability_deselection():
+            # Deselection sets proposed_bundle and _tpb internally
+            self.transition_blocker = BLOCKER_AFFORDABILITY_FORCED
+            self.target_pathway = "affordability"
+            return
+
+        # -----------------------------------------------------------------
+        # Step 6: Check fallback condition
         # -----------------------------------------------------------------
         # If performance has declined for FALLBACK_YEARS consecutive years,
         # propose reverting to the previous bundle (adaptive management)
@@ -817,7 +857,7 @@ class TPB(DecisionModel):
             return
 
         # -----------------------------------------------------------------
-        # Step 6: Find target bundle (neighbour imitation or exploration)
+        # Step 7: Find target bundle (neighbour imitation or exploration)
         # -----------------------------------------------------------------
 
         # First, try to imitate best-performing neighbour (local)
@@ -853,7 +893,7 @@ class TPB(DecisionModel):
             return
 
         # -----------------------------------------------------------------
-        # Step 7: Adjust for affordability
+        # Step 8: Adjust for affordability
         # -----------------------------------------------------------------
         # If farmer can't afford full target bundle, find affordable subset
 
@@ -867,10 +907,76 @@ class TPB(DecisionModel):
             return
 
         # -----------------------------------------------------------------
-        # Step 8: Compute TPB scores for proposed bundle
+        # Step 9: Compute TPB scores for proposed bundle
         # -----------------------------------------------------------------
         self.proposed_bundle = affordable_bundle
         self.compute_tpb_for_bundle(affordable_bundle)
+
+    # =========================================================================
+    # AFFORDABILITY DESELECTION (Survival Mechanism)
+    # =========================================================================
+
+    def check_affordability_deselection(self):
+        """Check if practices must be deselected due to unaffordable costs.
+
+        When capital is too low to sustain current practices, propose a bundle
+        with practices deselected in order of cost (most expensive first) until
+        direct costs are within the affordable range.
+
+        Like fallback, this is an emergency response that bypasses TPB (sets
+        _tpb = 1.0) because the farmer has no choice but to abandon costly
+        practices to survive. However, the transition still goes through the
+        normal pathway for proper recording.
+
+        Returns
+        -------
+        bool
+            True if deselection is needed (sets proposed_bundle internally).
+        """
+        farmer = self.farmer
+        available_capital = farmer.capital - farmer.min_capital
+
+        # Calculate current annual direct costs
+        bundle = self.practice_bundle
+        current_direct_costs = farmer.get_bundle_direct_costs(bundle=bundle)
+
+        # No action needed if costs are within budget
+        if current_direct_costs <= available_capital:
+            return False
+
+        # Deselection order (most expensive first)
+        deselect_order = ["cover_crop", "residue_on_field", "tillage"]
+
+        # Find affordable bundle by deselecting practices
+        for practice_name in deselect_order:
+            if getattr(bundle, practice_name) == 0:
+                continue
+
+            # Try deselecting this practice
+            new_bundle = bundle.change_practices(**{practice_name: 0})
+            new_costs = farmer.get_bundle_direct_costs(bundle=new_bundle)
+
+            # Only deselect if it actually reduces costs (or provides savings)
+            if new_costs < current_direct_costs:
+                bundle = new_bundle
+                current_direct_costs = new_costs
+
+                # Check if costs are now within budget
+                if current_direct_costs <= available_capital:
+                    break
+
+        # No change needed if bundle didn't change
+        if bundle == self.practice_bundle:
+            return False
+
+        # Propose the deselected bundle
+        self.proposed_bundle = bundle
+
+        # Bypass TPB: this is an emergency survival response, not a planned
+        # behavior change. Set intention directly to 1.0.
+        self._tpb = 1.0
+
+        return True
 
     # =========================================================================
     # FALLBACK MECHANISM (Adaptive Management)
@@ -895,13 +1001,16 @@ class TPB(DecisionModel):
         # -----------------------------------------------------------------
         # Compare current performance to baseline at transition time
         # -----------------------------------------------------------------
-        # baseline_trend captures the weighted trend at the time of transition.
-        # If current trend is worse than baseline, we're declining.
-        baseline = self.performance_tracker.baseline_trend
-        current_trend = self.performance_tracker.weighted_trend(self.farmer)
+        # baseline_score captures the performance score at time of transition.
+        # If current score is worse than baseline, we're declining.
+        baseline = self.performance_tracker.baseline_score
+        if baseline is None:
+            return False  # Can't compare without baseline
+
+        current_score = compute_performance_score(self.performance_tracker, self.farmer)
 
         # Track consecutive years of decline
-        if current_trend < baseline:
+        if current_score < baseline:
             self.decline_years += 1
         else:
             self.decline_years = 0  # Reset if performance improves
@@ -953,25 +1062,15 @@ class TPB(DecisionModel):
         base_prob = self.get_aft_param("exploration_base_prob")
 
         # Poor performers explore more (searching for better options)
-        # With relative trends: negative = declining, positive = improving
-        # Threshold is in relative terms (e.g., 0 = any decline, -0.02 = >2% decline)
-        current_trend = self.performance_tracker.weighted_trend(self.farmer)
-        poor_performance_threshold = self.get_aft_param("poor_performance_threshold")
-        poor_performance_multiplier = self.get_aft_param("poor_performance_multiplier")
-        if current_trend < poor_performance_threshold:
-            base_prob *= poor_performance_multiplier
+        # Score < baseline_score means declining from when we started this practice
+        baseline = self.performance_tracker.baseline_score
+        if baseline is not None:
+            current_score = compute_performance_score(self.performance_tracker, self.farmer)
+            if current_score < baseline:
+                base_prob *= self.get_aft_param("poor_performance_multiplier")
 
-        # Experience affects willingness to explore (smooth ramp based on confidence_years)
-        # Early: 0.5x exploration (cautious), Experienced: 1.5x exploration (confident)
-        n_obs = self.performance_tracker.n
-        confidence_years = self.get_aft_param("confidence_years")
-        experience_factor = min(1.0, n_obs / confidence_years)
-        exploration_modifier = 0.5 + experience_factor  # Ramps from 0.5 to 1.5
-        base_prob *= exploration_modifier
-
-        # Cap exploration probability (configurable)
-        max_exploration_prob = self.get_aft_param("max_exploration_prob")
-        explore_prob = min(base_prob, max_exploration_prob)
+        # Cap exploration probability
+        explore_prob = min(base_prob, self.get_aft_param("max_exploration_prob"))
 
         # -----------------------------------------------------------------
         # Random draw: explore or not?
@@ -980,23 +1079,44 @@ class TPB(DecisionModel):
             return None  # No exploration this year
 
         # -----------------------------------------------------------------
-        # Select valid bundle to explore
+        # Select valid bundle to explore (biased toward incremental changes)
         # -----------------------------------------------------------------
         exploration = self.farmer.model.config.coupled_config.exploration
         max_failures = getattr(exploration, "max_failures", 2)
 
-        # Generate all possible bundles
-        valid = [
-            b for b in ManagementBundle.all_bundles()
-            if b != self.practice_bundle
-            and self.performance_memory[b].failure_count < max_failures
-        ]
+        # Generate all possible bundles with their "distance" from current
+        current = self.practice_bundle
+        valid = []
+        for b in ManagementBundle.all_bundles():
+            if b == current:
+                continue
+            if self.performance_memory[b].failure_count >= max_failures:
+                continue
+            # Distance = number of practice changes (0-3)
+            dist = (
+                int(b.tillage != current.tillage)
+                + int(b.cover_crop != current.cover_crop)
+                + int(b.residue_on_field != current.residue_on_field)
+            )
+            valid.append((b, dist))
 
         if not valid:
             return None
 
-        # Random selection from valid bundles
-        return valid[np.random.randint(len(valid))]
+        # Weight by inverse distance: 1-change bundles are 3x more likely than 3-change
+        # weights: dist=1 -> 3, dist=2 -> 2, dist=3 -> 1
+        # Additionally penalize bundles already tried (in memory) - favor novel options
+        weights = []
+        for b, dist in valid:
+            w = 4 - dist  # base weight from distance
+            if self.performance_memory[b].duration > 0:
+                w *= 0.25  # already tried -> 4x less likely
+            weights.append(w)
+        weights = np.array(weights, dtype=float)
+        weights /= weights.sum()
+
+        idx = np.random.choice(len(valid), p=weights)
+        return valid[idx][0]
 
     # =========================================================================
     # TRANSITION DECISION
@@ -1281,24 +1401,16 @@ class TPB(DecisionModel):
             self.farmer.cover_crop = 0
 
         # -----------------------------------------------------------------
-        # Residue retention: 0 = baseline, 1 = retain to reach CA threshold
+        # Residue retention: 0 = baseline, 1 = retain all residue
         # -----------------------------------------------------------------
-        # CA threshold from config (default 30% soil cover per FAO definition)
-        # If already at/above threshold, maintain current level
-        # If below, increase retention to reach threshold (if affordable)
-        ca_threshold = self.farmer.model.config.coupled_config.practice_dimensions.residue.ca_cover_threshold  # noqa: E501
-
+        # When farmer decides to retain (bundle.residue_on_field == 1), they
+        # leave all residue on field (residue_on_field = 1.0 for LPJmL).
+        # Whether this meets CA threshold (30% cover) is determined separately.
         if bundle.residue_on_field == 1:
-            # Want CA residue retention
-            if self.farmer.litter_cover < ca_threshold:
-                # Below threshold - need to increase retention if affordable
-                opp_cost = self.farmer.compute_residue_opportunity_cost()
-                can_afford = opp_cost <= 0 or self.farmer.capital >= opp_cost
-                if can_afford:
-                    self.farmer.residue_on_field = 1.0
-            # If already at threshold, keep current residue_on_field unchanged
+            # Farmer decided to retain residue - leave everything on field
+            self.farmer.residue_on_field = 1.0
         else:
-            # Not pursuing CA residue retention - use baseline
+            # Not retaining - use baseline residue behavior
             self.farmer.residue_on_field = self.farmer.residue_baseline
 
         # -----------------------------------------------------------------
@@ -1464,9 +1576,9 @@ class TPB(DecisionModel):
             neighbour.behaviour.performance_tracker, self.farmer
         )
 
-        #if self.farmer.cell.output.cell.item() == 8:
-        #    breakpoint()
-
+        # if self.farmer.cell.output.cell.item() == 8:
+        #     breakpoint()
+        # self.farmer.world.statistic.get("reference_scales")
         return their_score > my_score
 
     def performance_gap(self, neighbour):
@@ -1579,30 +1691,36 @@ class TPB(DecisionModel):
     # =========================================================================
 
     def compute_attitude_own_land(self):
-        """Compute attitude from own land performance trends.
+        """Compute attitude from own land performance vs baseline.
 
-        "Am I doing poorly with my current practices?"
-        Based on performance_tracker.trend (regression over all observations).
+        "Am I doing worse than when I started this practice?"
+        Compares current performance score to baseline_score (captured at transition).
         Declining performance → high attitude → more willing to transition
         Improving performance → low attitude → less willing to transition
 
-        Structure matches old tillage_farmer.py:
-        - Weighted sum of individual trend components
-        - Negate (so decline → positive)
-        - Final sigmoid
+        Uses compute_performance_score for consistency with social learning.
 
         Returns
         -------
         float
             Attitude score in [0, 1].
         """
-        trend = self.performance_tracker.trend
-        raw_own = (
-            self.farmer.weight_yield * (-trend["yield"])
-            + self.farmer.weight_soil * (-trend["soilc"])
-            + self.farmer.weight_moisture * (-trend["moisture"])
-        )
-        return sigmoid(raw_own)
+        # Baseline not yet set (first update not happened) → neutral
+        baseline = self.performance_tracker.baseline_score
+
+        # Get sensitivity from config
+        tpb_config = self.farmer.model.config.coupled_config.tpb
+        sensitivity = tpb_config.attitude_sensitivity
+
+        # Compare current score to baseline (score at time of transition)
+        current_score = compute_performance_score(self.performance_tracker, self.farmer)
+
+        # score_diff: positive = improving, negative = declining
+        score_diff = current_score - baseline
+
+        # For attitude: declining → high attitude (want to change)
+        # So we negate: -score_diff → declining becomes positive → high sigmoid
+        return sigmoid(-score_diff * sensitivity)
 
     # =========================================================================
     # TPB COMPONENT: ATTITUDE (Social Learning)
@@ -1640,7 +1758,6 @@ class TPB(DecisionModel):
 
         # Get parameters from config
         confidence_years = self.get_aft_param("confidence_years")
-        country = self.farmer.cell.country
 
         # My unified performance score
         my_score = compute_performance_score(
@@ -1672,7 +1789,7 @@ class TPB(DecisionModel):
             # Score difference: positive if neighbour is better
             score_diff = neighbour_score - my_score
 
-            # if self.farmer.cell.output.cell.item() == 8:
+            # if neighbour.cell.output.cell.item() == 8:
             #     breakpoint()
 
             # Weight = similarity × confidence
@@ -1692,7 +1809,7 @@ class TPB(DecisionModel):
         # This single parameter controls how strongly score differences translate
         # to attitudes (both level and trend are already normalized to country refs)
         tpb_config = self.farmer.model.config.coupled_config.tpb
-        sensitivity = getattr(tpb_config, "attitude_sensitivity", 4.0)
+        sensitivity = tpb_config.attitude_sensitivity
 
         # Sigmoid maps to (0, 1) attitude score
         return sigmoid(avg_score_diff * sensitivity)
@@ -2001,17 +2118,135 @@ class TPB(DecisionModel):
     # TPB COMPONENT: PERCEIVED BEHAVIORAL CONTROL (PBC)
     # =========================================================================
 
+    def anticipated_delta_yield(self, current_bundle, target_bundle):
+        """Estimate yield change from switching bundles based on peer experience.
+
+        Searches for farmers who have experience with BOTH bundles and computes
+        the average yield difference. Searches in order: cluster → country → local,
+        using the first level with sufficient data.
+
+        Parameters
+        ----------
+        current_bundle : ManagementBundle
+            The bundle currently being used.
+        target_bundle : ManagementBundle
+            The bundle being considered.
+
+        Returns
+        -------
+        float
+            Estimated yield change (same units as farmer.cropyield), positive if
+            target yields more. Returns 0.0 if no farmers have experience with
+            both bundles.
+
+        Notes
+        -----
+        Remembered yields are stored as self-referenced fractional rates
+        (yield / own_baseline - 1). The peer-averaged rate difference is
+        converted back to absolute units using the EVALUATING farmer's own
+        baseline yield, so downstream revenue anticipation stays in absolute
+        yield units.
+        """
+        if current_bundle == target_bundle:
+            return 0.0
+
+        # Get enabled spreading levels
+        enable_local, enable_country, enable_cluster = self._get_enabled_spreading_levels()
+
+        # Search cluster first (most data), then country, then local
+        farmer_lists = []
+
+        if enable_cluster:
+            # Get farmers in same agroecological cluster
+            cluster_farmers = self._get_cluster_farmers()
+            if cluster_farmers:
+                farmer_lists.append(cluster_farmers)
+
+        if enable_country:
+            # Get farmers in same country
+            country_farmers = list(self.farmer.cell.country.farmers)
+            if country_farmers:
+                farmer_lists.append(country_farmers)
+
+        if enable_local:
+            # Get local neighbors
+            local_farmers = list(self.farmer.neighbourhood)
+            if local_farmers:
+                farmer_lists.append(local_farmers)
+
+        # Search each level until we find sufficient data
+        for farmers in farmer_lists:
+            delta_yields = []
+            for f in farmers:
+                if f is self.farmer:
+                    continue
+                if not hasattr(f, 'behaviour') or not hasattr(f.behaviour, 'performance_memory'):
+                    continue
+
+                mem = f.behaviour.performance_memory
+                current_exp = mem[current_bundle]
+                target_exp = mem[target_bundle]
+
+                # Both must have experience (duration > 0)
+                if current_exp.duration > 0 and target_exp.duration > 0:
+                    # Difference of fractional rates (dimensionless)
+                    delta = target_exp.level_yield - current_exp.level_yield
+                    delta_yields.append(delta)
+
+            # If we found at least 3 farmers with dual experience, use this level
+            if len(delta_yields) >= 3:
+                mean_delta_rate = float(sum(delta_yields) / len(delta_yields))
+                # Convert relative rate difference to absolute yield units using
+                # the evaluating farmer's own baseline yield.
+                return mean_delta_rate * self.farmer.baseline_yield
+
+        # No sufficient data at any level
+        return 0.0
+
+    def _get_cluster_farmers(self):
+        """Get all farmers in the same agroecological cluster."""
+        country = self.farmer.cell.country
+        cluster_id = getattr(country, 'cluster_id', -1)
+        if cluster_id < 0:
+            return []
+
+        # Get all countries in this cluster
+        world = country._world
+        cluster_countries = getattr(world, '_cluster_countries', {}).get(cluster_id, [])
+
+        farmers = []
+        for c in cluster_countries:
+            farmers.extend(list(c.farmers))
+        return farmers
+
     def pbc_for_bundle(self, new_bundle):
         """Compute Perceived Behavioral Control for a bundle.
 
-        PBC reflects "can I actually do this?" - lower when costs are
-        high relative to available capital.
+        PBC reflects "can I actually do this?" - lower when net financial
+        impact is high relative to annual income (baseline revenue).
 
-        Formula: PBC = pbc_base × cost_factor
+        Formula: PBC = pbc_base × sigmoid(ratio × pbc_sensitivity)
 
         Where:
         - pbc_base: AFT-specific baseline (pioneers higher, traditionalists lower)
-        - cost_factor: decreases as transition cost approaches disposable capital
+        - ratio = -net_financial_impact / (baseline_revenue × planning_horizon)
+          (positive when profitable, negative when costly)
+        - pbc_sensitivity: config parameter controlling response steepness
+
+        Using revenue over the planning horizon as reference ensures consistency:
+        net_financial_impact includes planning_horizon, so we compare to income
+        over the same period. Farmers assess "can I afford this over 5 years?"
+        by comparing total costs/gains to expected income over those 5 years.
+
+        Sigmoid maps the financial ratio to [0, 1]:
+        - ratio = 0 (neutral): PBC = pbc_base × 0.5
+        - ratio >> 0 (profitable): PBC → pbc_base
+        - ratio << 0 (costly): PBC → 0
+
+        Net financial impact considers:
+        - One-time transition costs
+        - Change in annual direct costs over planning horizon
+        - Anticipated change in revenue (from yield differences)
 
         AFT differences in risk aversion are captured via pbc_base, not as a
         separate multiplicative factor (avoids double-counting).
@@ -2050,27 +2285,67 @@ class TPB(DecisionModel):
             - self.farmer.get_bundle_direct_costs(bundle=self.practice_bundle)
         )
 
-        # Total cost impact over planning horizon
-        # Positive = net costs increase, Negative = net savings
+        # -----------------------------------------------------------------
+        # Calculate anticipated revenue change from yield difference
+        # -----------------------------------------------------------------
+        # Peer experience gives the anticipated absolute yield change (in
+        # cropyield units, gC/m2). Convert it to a whole-farm USD revenue change
+        # on the SAME footing as baseline_revenue and the cost terms below:
+        # express it as a fraction of the farmer's own baseline yield, then
+        # apply that fraction to baseline revenue. This implicitly carries the
+        # farmer's real crop/price mix and area (already embedded in
+        # baseline_revenue), avoiding a separate gC->tonnes and area conversion
+        # and a plain price average.
+        delta_yield = self.anticipated_delta_yield(self.practice_bundle, new_bundle)
+        if self.farmer.baseline_yield > 0:
+            delta_revenue = (
+                delta_yield / self.farmer.baseline_yield
+            ) * self.farmer.baseline_revenue  # $/farm/yr
+        else:
+            delta_revenue = 0.0
+        # -----------------------------------------------------------------
+        # Total financial impact over planning horizon
+        # -----------------------------------------------------------------
+        # Positive = net outflow (costs exceed revenue gain)
+        # Negative = net inflow (revenue gain exceeds costs)
         planning_horizon = self.farmer.behaviour.get_aft_param("min_observation_years")
-        cost_impact = transition_costs + delta_direct_costs * planning_horizon
+        net_financial_impact = (
+            transition_costs
+            + delta_direct_costs * planning_horizon
+            - delta_revenue * planning_horizon  # Revenue is subtracted (inflow)
+        )
 
         # -----------------------------------------------------------------
-        # Calculate disposable capital (above minimum threshold)
+        # PBC: smooth, bounded affordability factor from financial impact
         # -----------------------------------------------------------------
-        disposable = max(self.farmer.capital - self.farmer.min_capital, 1e-6)
+        # Scale financial impact by revenue over the planning horizon for a
+        # dimensionless ratio (net_financial_impact already includes the
+        # horizon). Farmers assess affordability by comparing total costs/gains
+        # to expected income over that period.
+        #
+        #   ratio = net_financial_impact / revenue_over_horizon
+        #   ratio > 0 → costly switch,  ratio < 0 → profitable switch
+        #
+        # The affordability factor uses the tanh sigmoid, anchored so a
+        # cost-neutral switch (ratio = 0) gives factor = 1 (PBC = pbc_base):
+        #
+        #   financial_factor = 2 · sigmoid(-ratio) = 1 - tanh(ratio)  ∈ (0, 2)
+        #
+        # This matches the previous 1/(1+ratio) response to first order in the
+        # normal operating range, but is bounded and monotone everywhere: it has
+        # no pole and no sign flip when the anticipated gain is very large (the
+        # old form went negative and collapsed PBC to 0 for gains > ~100%).
+        # - costly (ratio ≫ 0):     factor → 0,  PBC → 0
+        # - neutral (ratio = 0):    factor = 1,  PBC = pbc_base
+        # - profitable (ratio < 0): factor > 1,  PBC → pbc_base·2, capped at 1.0
+        # -----------------------------------------------------------------
+        # Guard against division by zero when baseline_revenue is 0 (e.g., no crops)
+        revenue_over_horizon = max(self.farmer.baseline_revenue * planning_horizon, 1.0)
+        ratio = net_financial_impact / revenue_over_horizon
+        financial_factor = 2.0 * sigmoid(-ratio)
 
-        # -----------------------------------------------------------------
-        # PBC: cost_factor in [0, 1]
-        # - High costs (cost_impact >> 0): cost_factor → 0, PBC → 0
-        # - No cost change: cost_factor = 1, PBC = pbc_base
-        # - Savings (cost_impact < 0): cost_factor capped at 1, PBC = pbc_base
-        # -----------------------------------------------------------------
-        cost_factor = 1.0 / (1.0 + cost_impact / disposable)
-        cost_factor = max(0.0, min(1.0, cost_factor))  # Cap to [0, 1]
-        # breakpoint()
+        return max(0.0, min(1.0, self.farmer.pbc_base * financial_factor))  # Cap to [0, 1]
 
-        return self.farmer.pbc_base * cost_factor
 
     # =========================================================================
     # COMPUTE FULL TPB SCORE

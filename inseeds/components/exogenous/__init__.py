@@ -23,6 +23,7 @@ SOURCES = [
     ("faostat", "FaoProducerPrices", "prices", {"years_before": 10}),
     ("faostat", "FaoCapitalStock", "capital", {"years_before": 10}),
     ("faostat", "FaoGrossProductionValue", "gpv", {"years_before": 15}),
+    ("faostat", "FaoGDPPerCapita", "gdp", {"years_before": 10}),
     ("madrat", "ResidueSource", "residue", {}),
 ]
 

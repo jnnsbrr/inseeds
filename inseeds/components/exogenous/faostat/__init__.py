@@ -13,6 +13,7 @@ from .base import FaoDataset, FallbackResult, get_value_with_fallback
 from .producer_prices import FaoProducerPrices
 from .capital_stock import FaoCapitalStock
 from .gross_production_value import FaoGrossProductionValue
+from .gdp_per_capita import FaoGDPPerCapita, get_gdp_cost_ratio
 from .crop_capital_share import (
     get_ag_share_of_aff,
     get_crop_share_from_qv,
@@ -26,8 +27,10 @@ __all__ = [
     "FaoProducerPrices",
     "FaoCapitalStock",
     "FaoGrossProductionValue",
+    "FaoGDPPerCapita",
     "FallbackResult",
     "get_value_with_fallback",
+    "get_gdp_cost_ratio",
     "get_ag_share_of_aff",
     "get_crop_share_from_qv",
     "compute_crop_capital_share",

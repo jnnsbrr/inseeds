@@ -25,6 +25,7 @@ from inseeds.components.farming.ca_agroecology import (
 
 # Custom unit for millions of dollars
 MEGADOLLARS = Unit("megadollars", symbol="M$")
+CONCENTRATION = Unit("mgN/l", symbol="mgN/l")
 
 # Mapping from bundle ID (0-7) to display name
 BUNDLE_ID_TO_NAME = {
@@ -76,8 +77,7 @@ class Farmer(ConservationAgricultureFarmer):
         ),
         residue_on_field=Variable(
             "residue on field",
-            "residue on field of agent land",
-            unit=DAU.gC_per_m2,
+            "residue on field fraction (0-1)",
         ),
         capital=Variable(
             "farm capital",
@@ -90,6 +90,17 @@ class Farmer(ConservationAgricultureFarmer):
             "farm size in hectares (sum of cftfrac * area)",
             unit=DAU.ha,
         ),
+        profit=Variable(
+            "profit",
+            "profit of agent land",
+            unit=MEGADOLLARS,
+        ),
+        leaching=Variable(
+            "leaching",
+            "leaching of agent land (mgN/l)",
+            unit=CONCENTRATION,
+        ),
+
         # TPB decision model outputs (accessed via behaviour.X)
         **{
             "behaviour.practice_bundle_id": Variable(
@@ -209,10 +220,12 @@ class Model(lpjml.Model):
             k_range=self.config.coupled_config.agroecological_clustering.k_range,
         )
 
-        # Initialize cells and farmers
+        # Initialize cells
         self.init_cells(cell_class=Cell)
-        self.init_farmers(farmer_class=Farmer)
 
+
+        # Initialize farmers (needs reference_scales for baseline_trend computation)
+        self.init_farmers(farmer_class=Farmer)
         # Compute static reference scales for performance scoring
         # Must be done AFTER farmers exist but BEFORE simulation starts
         self.world.compute_reference_scales()

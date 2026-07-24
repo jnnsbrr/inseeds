@@ -91,7 +91,6 @@ from inseeds.components.farming.ca_behaviour import (
     DRIVER_AFFORDABILITY_FORCED,
 )
 from inseeds.components.farming.ca_management import (
-    DESELECT_ORDER,
     ManagementCosts,
     PRACTICE_FIELDS,
 )
@@ -228,15 +227,16 @@ class ConservationAgricultureFarmer(Farmer):
         # -----------------------------------------------------------------
         # Load practice costs
         # -----------------------------------------------------------------
-        # Costs are scaled by farmer's capital relative to reference country.
-        # This accounts for global variation in equipment and input costs.
+        # Costs are scaled by country GDP per capita (FAOSTAT MK domain).
+        # Countries below 10th percentile get minimum costs, above 90th get
+        # maximum costs. This accounts for global variation in equipment and
+        # input costs based on national income levels.
         # Costs include:
         # - direct: annual operating cost per ha (scaled)
         # - transition: one-time cost when adopting practice (scaled)
         self.practice_costs = ManagementCosts.from_config(
             self.model.config.coupled_config.practice_costs,
-            capital_per_ha=self.initial_capital_per_ha,
-            model=self.model,
+            gdp_cost_ratio=self.cell.country.gdp_cost_ratio,
         )
 
         # -----------------------------------------------------------------
@@ -248,6 +248,10 @@ class ConservationAgricultureFarmer(Farmer):
         # Used for both capital dynamics and residue opportunity cost
         self._current_revenue = None
 
+        # Cache for current profit (delta_revenue - delta_costs)
+        # Updated each year in update_capital, used for performance tracking
+        self._current_profit = 0.0
+
         # -----------------------------------------------------------------
         # Compute baseline revenue from historic data
         # -----------------------------------------------------------------
@@ -255,6 +259,16 @@ class ConservationAgricultureFarmer(Farmer):
         # (pre-coupling years, e.g., 2015-2025). This represents what
         # the FAO capital dynamics already account for.
         self.baseline_revenue = self._compute_baseline_revenue()
+
+        # -----------------------------------------------------------------
+        # Compute environmental baselines from historic data
+        # -----------------------------------------------------------------
+        # Historic mean of each environmental metric (yield, soil carbon,
+        # moisture, leaching). Performance scoring expresses every metric as a
+        # fractional deviation from these self-referencing baselines
+        # (value / baseline - 1), so all five metrics are dimensionless and
+        # centred at zero - the same self-referenced logic as profit.
+        self._compute_baseline_metrics()
 
         # Store baseline residue opportunity cost (frozen at simulation start)
         # Used for cost difference calculations to avoid dynamic cost changes
@@ -288,7 +302,6 @@ class ConservationAgricultureFarmer(Farmer):
     # =========================================================================
     # CAPITAL BOUNDS PROPERTY
     # =========================================================================
-
     @property
     def min_capital(self):
         """Minimum sustainable capital threshold.
@@ -322,9 +335,114 @@ class ConservationAgricultureFarmer(Farmer):
         return fraction * initial_capital
 
     @property
+    def profit(self) -> float:
+        """Current annual profit (delta_revenue - delta_costs).
+
+        This is the economic performance metric: how much better/worse the farmer
+        is doing compared to baseline. Computed in update_capital().
+
+        Returns
+        -------
+        float
+            Profit in currency units. Positive = above baseline, negative = below.
+        """
+        return self._current_profit
+
+    @property
+    def profit(self) -> float:
+        """Current profit as a fraction of baseline revenue.
+
+        This is the economic metric for performance scoring:
+            profit = delta_profit / baseline_revenue
+
+        Where delta_profit = (revenue - baseline_revenue) - delta_costs
+
+        This gives a percentage improvement/decline relative to baseline:
+        - profit = 0.0: exactly at baseline (no change)
+        - profit = +0.1: earning 10% more than baseline
+        - profit = -0.1: earning 10% less than baseline
+
+        Being a rate relative to the farmer's OWN baseline revenue makes it
+        self-normalizing: independent of farm size, crop mix, price level and
+        climate by construction. This isolates the effect of management changes
+        from confounding ambient conditions, which is why the economic metric
+        stays self-referenced rather than being country-centered like the
+        environmental metrics (soil carbon, moisture, yield, leaching).
+
+        Direct costs enter through delta_costs (recurring annual costs only,
+        NOT one-time transition costs, which are handled by PBC/affordability).
+
+        Returns
+        -------
+        float
+            Profit rate as a fraction (e.g., 0.05 = 5% improvement).
+        """
+        delta_profit = self._current_profit
+
+        if self.baseline_revenue > 0:
+            return delta_profit / self.baseline_revenue
+        else:
+            return 0.0
+
+    @property
+    def yield_rate(self) -> float:
+        """Crop yield as a fractional deviation from the farmer's own baseline.
+
+        yield_rate = cropyield / baseline_yield - 1. Self-referencing, so it is
+        dimensionless and centred at zero, comparable across farmers regardless
+        of absolute productivity. See profit for the same logic applied to
+        economics.
+        """
+        return self.cropyield / self.baseline_yield - 1.0 if self.baseline_yield > 0 else 0.0
+
+    @property
+    def soilc_rate(self) -> float:
+        """Top-layer soil carbon as a fractional deviation from own baseline."""
+        return self.soilc / self.baseline_soilc - 1.0 if self.baseline_soilc > 0 else 0.0
+
+    @property
+    def moisture_rate(self) -> float:
+        """Root-zone moisture as a fractional deviation from own baseline."""
+        return (
+            self.root_moisture / self.baseline_moisture - 1.0
+            if self.baseline_moisture > 0 else 0.0
+        )
+
+    @property
+    def leaching_rate(self) -> float:
+        """N leaching as a fractional deviation from own baseline.
+
+        Uses the runoff-normalised `leaching` property (matches the baseline).
+        Higher leaching is worse, but the rate is still value/baseline - 1; the
+        inversion (lower is better) is applied in the scoring step.
+        """
+        return self.leaching / self.baseline_leaching - 1.0 if self.baseline_leaching > 0 else 0.0
+
+    @property
     def farm_size(self):
         """Farm size in hectares (gross cropped area, for output reporting)."""
         return self.gross_farm_size
+
+    @property
+    def leaching(self) -> float:
+        """Current N leaching rate (gN/m2/yr) from LPJmL.
+
+        This is an environmental metric: lower leaching indicates better
+        nutrient management and water quality. Used for performance tracking.
+
+        Returns
+        -------
+        float
+            Nitrogen leaching in gN/m2/yr.
+        """
+
+        runoff = self.cell_runoff
+        leaching_val = self.cell_leaching
+
+        # Calculate leaching rate (normalized by runoff)
+        leaching = leaching_val *1e3 / runoff if runoff > 0 else 0
+
+        return leaching
 
     # =========================================================================
     # RESIDUE ECONOMICS
@@ -524,19 +642,19 @@ class ConservationAgricultureFarmer(Farmer):
     def get_residue_cost_for_bundle(self, residue_on_field: int) -> float:
         """Get residue cost/income based on retention state.
 
-        The residue model captures opportunity costs and income dynamics:
+        The residue model captures opportunity costs, income dynamics, AND subsidies:
 
         **Retention (residue=1):**
         - Farmer committed to leaving residue on field
-        - Cost = baseline (frozen) — the income they committed to give up
+        - Cost = baseline_opportunity_cost + subsidy (subsidy is negative = payment)
         - Higher yields: extra residue is "free" to leave (no extra cost)
         - Lower yields: still pays baseline cost, just leaves less physically
+        - Subsidy reduces the net cost of retention
 
         **Selling (residue=0):**
         - Farmer sells residue at market price
         - Cost = baseline - current (can be negative = income)
-        - Higher yields: sells more → negative cost (extra income)
-        - Lower yields: sells less → positive cost (lost income vs baseline)
+        - No subsidy when selling (only paid for retention)
 
         Parameters
         ----------
@@ -549,11 +667,13 @@ class ConservationAgricultureFarmer(Farmer):
             Residue cost (positive) or income (negative).
         """
         if residue_on_field == 1:
-            # Retention: fixed opportunity cost (committed to giving up baseline income)
-            # No need to compute current cost - we use frozen baseline
-            return self.baseline_residue_cost
+            # Retention: opportunity cost + subsidy (subsidy is negative = reduces cost)
+            # Subsidy is per-ha, so scale by farm size
+            subsidy_per_ha = self.practice_costs.residue_on_field.direct  # Negative value
+            subsidy_total = subsidy_per_ha * self.net_farm_size
+            return self.baseline_residue_cost + subsidy_total
         else:
-            # Selling: income/loss relative to baseline
+            # Selling: income/loss relative to baseline (no subsidy)
             # Good year (current > baseline): negative cost = extra income
             # Bad year (current < baseline): positive cost = lost income
             current = self.compute_residue_opportunity_cost()
@@ -640,14 +760,19 @@ class ConservationAgricultureFarmer(Farmer):
         # Scale per-ha costs to total farm cost
         diff_total = diff_per_ha * self.net_farm_size
 
-        # Residue: use frozen baseline cost for practice changes
+        # Residue: use frozen baseline cost + subsidy for practice changes
         # (yield-driven income changes are in delta_revenue)
         # Cost is ALREADY total (from revenue × fraction), don't scale again
+        # Subsidy is per-ha and negative (payment to farmer)
         if from_bundle.residue_on_field != to_bundle.residue_on_field:
+            subsidy_per_ha = self.practice_costs.residue_on_field.direct  # Negative
+            subsidy_total = subsidy_per_ha * self.net_farm_size
             if to_bundle.residue_on_field == 1:  # Started retaining
-                diff_total += self.baseline_residue_cost
+                # Pay opportunity cost but receive subsidy
+                diff_total += self.baseline_residue_cost + subsidy_total
             else:  # Stopped retaining (selling residue)
-                diff_total -= self.baseline_residue_cost
+                # Regain opportunity cost income, lose subsidy
+                diff_total -= (self.baseline_residue_cost + subsidy_total)
 
         if per_ha:
             return diff_total / self.net_farm_size
@@ -815,8 +940,13 @@ class ConservationAgricultureFarmer(Farmer):
             self.behaviour.practice_bundle,
         )
         # -----------------------------------------------------------------
-        # Step 4: Update capital
+        # Step 4: Compute profit and update capital
         # -----------------------------------------------------------------
+        # Profit = Δrevenue - Δcosts (annual economic gain/loss vs baseline)
+        # This is the metric used for economic performance scoring.
+        # Positive profit = farmer is doing better than baseline economically.
+        self._current_profit = delta_revenue - delta_costs
+
         # K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
         #
         # Interpretation:
@@ -828,9 +958,7 @@ class ConservationAgricultureFarmer(Farmer):
         # If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
         # If yields improve or costs decrease: farmer does better than baseline
         # If yields decline or costs increase: farmer does worse than baseline
-        # if delta_costs != 0:
-        #     breakpoint()
-        self.capital = self.capital + baseline_capital_change + delta_revenue - delta_costs
+        self.capital = self.capital + baseline_capital_change + self._current_profit
 
         # Capital cannot go negative
         self.capital = max(0.0, self.capital)
@@ -884,12 +1012,12 @@ class ConservationAgricultureFarmer(Farmer):
         self._cell_area = self.cell.area.item()
 
     def _compute_baseline_revenue(self):
-        """Compute baseline revenue from historic (pre-coupling) yield data.
+        """Compute baseline revenue as MEAN over entire historic period.
 
-        The baseline revenue is the average revenue over the historic period
-        (typically 2015-2025, before coupled simulation starts). This baseline
-        represents what FAO capital dynamics already account for - the typical
-        yields and revenues at the sector level.
+        Using the mean (not first year) ensures:
+        - Robust baseline not skewed by outlier years
+        - Capital trends reflect deviation from typical performance
+        - No systematic bias if first year was unusually good/bad
 
         During simulation, we track DEVIATIONS from this baseline:
         - Higher yields → positive Δrevenue → capital grows faster
@@ -898,32 +1026,98 @@ class ConservationAgricultureFarmer(Farmer):
         Returns
         -------
         float
-            Average revenue over historic period (USD).
+            Mean revenue over historic period (USD).
         """
-        # Get historic yield data (all available time steps)
-        harvestc_da = self.get_from_earth("pft_harvestc", drop_band=NON_CROPS)
-        cftfrac_da = self.get_from_earth("cftfrac", drop_band=NON_CROPS)
+        from_earth = self.cell.from_earth
+        has_history = hasattr(from_earth, "time") and len(from_earth.time) > 1
 
-        # Get underlying numpy arrays (faster than xarray operations)
-        harvestc = harvestc_da.values
-        cftfrac = cftfrac_da.values
+        if has_history:
+            n_years = len(from_earth.time)
+            revenues = []
+            for i in range(n_years):
+                revenues.append(self._compute_revenue_for_year(i))
+            return float(np.mean(revenues))
+        else:
+            # Single year: use that year's revenue
+            return self._compute_revenue_for_year(-1)
 
-        # Compute production for all time steps at once (vectorized)
-        # Shape: (time, band) or (band,) if single time step
+    def _compute_baseline_metrics(self) -> None:
+        """Compute historic-mean baselines for the environmental metrics.
+
+        Sets ``baseline_yield``, ``baseline_soilc``, ``baseline_moisture`` and
+        ``baseline_leaching`` as the mean over the historic period, mirroring
+        ``_compute_baseline_revenue``. These are the self-referencing anchors
+        for fractional-rate scoring (``value / baseline - 1``).
+
+        Metric definitions match the runtime properties so historic and
+        coupled-run values live on the same scale:
+        - yield: cft-fraction-weighted ``pft_harvestc``
+        - soilc: top-layer ``soilc_agr_layer``
+        - moisture: ``rootmoist_agr``
+        - leaching: ``leaching`` normalised by runoff (× 1e3 / runoff)
+        """
+        from_earth = self.cell.from_earth
+        has_history = hasattr(from_earth, "time") and len(from_earth.time) > 1
+
+        if not has_history:
+            self.baseline_yield = self.cropyield
+            self.baseline_soilc = self.soilc
+            self.baseline_moisture = self.root_moisture
+            self.baseline_leaching = self.leaching
+            return
+
+        n_years = len(from_earth.time)
+        yields, soilcs, moistures, leachings = [], [], [], []
+        for i in range(n_years):
+            pft_harvestc = self.get_from_earth(
+                "pft_harvestc", as_scalar=False, drop_band=NON_CROPS, time_idx=i
+            )
+            cftfrac = self.get_from_earth(
+                "cftfrac", as_scalar=False, drop_band=NON_CROPS, time_idx=i
+            )
+            yields.append(pft_harvestc.weighted(cftfrac).sum("band").item())
+            soilcs.append(
+                self.get_from_earth("soilc_agr_layer", as_scalar=True, band=0, time_idx=i)
+            )
+            moistures.append(
+                self.get_from_earth("rootmoist_agr", as_scalar=True, time_idx=i)
+            )
+            runoff = self.get_from_earth("runoff", as_scalar=True, time_idx=i)
+            raw_leaching = self.get_from_earth("leaching", as_scalar=True, time_idx=i)
+            leachings.append(raw_leaching * 1e3 / runoff if runoff > 0 else 0.0)
+
+        self.baseline_yield = float(np.mean(yields))
+        self.baseline_soilc = float(np.mean(soilcs))
+        self.baseline_moisture = float(np.mean(moistures))
+        self.baseline_leaching = float(np.mean(leachings))
+
+    def _compute_revenue_for_year(self, time_idx: int) -> float:
+        """Compute revenue for a specific historic year.
+
+        Used by ManagementPerformanceTracker to compute historic profit values.
+
+        Parameters
+        ----------
+        time_idx : int
+            Time index into historic data (0 = first year, -1 = last year).
+
+        Returns
+        -------
+        float
+            Revenue for that year (USD).
+        """
+        harvestc = self.get_from_earth(
+            "pft_harvestc", as_scalar=False, drop_band=NON_CROPS, time_idx=time_idx
+        ).values
+        cftfrac = self.get_from_earth(
+            "cftfrac", as_scalar=False, drop_band=NON_CROPS, time_idx=time_idx
+        ).values
+
         production = harvestc * cftfrac * self._cell_area / (0.45 * 1e6)
 
-        # Average over time if multiple time steps (faster than xarray operations)
-        if production.ndim > 1 and "time" in harvestc_da.dims:
-            # Mean over time axis (axis=0 for time-first arrays)
-            time_axis = harvestc_da.dims.index("time")
-            mean_production = np.mean(production, axis=time_axis)
-        else:
-            mean_production = production
-
-        # Compute revenue from mean production using pre-computed price mappings
         total_revenue = 0.0
         for indices, price in self._revenue_groups:
-            total_revenue += mean_production[indices].sum() * price
+            total_revenue += production[indices].sum() * price
 
         return total_revenue
 
@@ -995,83 +1189,6 @@ class ConservationAgricultureFarmer(Farmer):
         return total_revenue
 
     # =========================================================================
-    # AFFORDABILITY CHECK
-    # =========================================================================
-
-    def check_practice_affordability(self):
-        """Deselect practices if annual direct costs exceed capital buffer.
-
-        When capital is too low to sustain current practices, farmer must
-        abandon costly practices to reduce expenses. Practices are deselected
-        in order of cost (most expensive first) until direct costs are
-        within the affordable range.
-
-        The affordability criterion is: direct_costs <= capital - min_capital
-        This ensures the farmer retains a survival buffer (min_capital).
-
-        Deselection order:
-        1. Cover crop (typically highest cost)
-        2. Residue retention
-        3. Tillage change (conventional→no-till gives savings)
-
-        Special cases:
-        - Residue: When deselected, farmer sells residue and gets immediate income
-          equal to the opportunity cost they were paying to retain.
-        - Tillage: When switching from conventional (1) to no-till (0), farmer
-          gains SAVINGS (negative cost), not just removal of cost. This is handled
-          correctly by recalculating costs after each change.
-        """
-        # Available capital for costs (above survival threshold)
-        available_capital = self.capital - self.min_capital
-
-        # Calculate current annual direct costs
-        bundle = self.behaviour.practice_bundle
-        current_direct_costs = self.get_bundle_direct_costs(bundle=bundle)
-
-        # No action needed if costs are within budget
-        if current_direct_costs <= available_capital:
-            return
-
-        # -----------------------------------------------------------------
-        # Deselect practices until costs are affordable
-        # Recalculate costs after each change to handle bidirectional tillage
-        # -----------------------------------------------------------------
-        for practice_name in DESELECT_ORDER:
-            if getattr(bundle, practice_name) == 0:
-                continue
-
-            # Try deselecting this practice
-            new_bundle = bundle.change_practices(**{practice_name: 0})
-            new_costs = self.get_bundle_direct_costs(bundle=new_bundle)
-
-            # Only deselect if it actually reduces costs (or provides savings)
-            if new_costs < current_direct_costs:
-                # Special case: deselecting residue retention means SELLING residue
-                # Farmer gets immediate cash from the sale (income = opportunity cost)
-                if practice_name == "residue_on_field":
-                    residue_value = self.compute_residue_opportunity_cost()
-                    self.capital += residue_value  # Get cash from selling
-                    # Update available capital since we just got income
-                    available_capital = self.capital - self.min_capital
-
-                bundle = new_bundle
-                current_direct_costs = new_costs
-
-                # Check if costs are now within budget
-                if current_direct_costs <= available_capital:
-                    break
-
-        # -----------------------------------------------------------------
-        # Apply changes if bundle changed
-        # -----------------------------------------------------------------
-        if bundle != self.behaviour.practice_bundle:
-            self.behaviour.apply_bundle(bundle)
-            self.behaviour.record_transition(bundle)
-            # Record that this was a forced transition due to affordability
-            self.behaviour.transition_blocker = BLOCKER_AFFORDABILITY_FORCED
-            self.behaviour.transition_driver = DRIVER_AFFORDABILITY_FORCED
-
-    # =========================================================================
     # MAIN UPDATE METHOD
     # =========================================================================
 
@@ -1082,9 +1199,10 @@ class ConservationAgricultureFarmer(Farmer):
         1. Call parent update (base farmer logic)
         2. Skip if control run (no CA dynamics)
         3. Update capital (depreciation, investment, profit)
-        4. Check affordability (deselect practices if needed)
-        5. Run TPB decision logic
+        4. Skip TPB if capital below survival threshold
+        5. Run TPB decision logic (includes affordability deselection)
         6. Apply practice transition if TPB threshold exceeded
+        7. Reset observation years after evaluation
 
         Sets behaviour.transition_blocker to indicate why transition didn't happen.
 
@@ -1119,12 +1237,7 @@ class ConservationAgricultureFarmer(Farmer):
         self.update_capital()
 
         # -----------------------------------------------------------------
-        # Step 4: Check affordability (may deselect practices if capital too low)
-        # -----------------------------------------------------------------
-        self.check_practice_affordability()
-
-        # -----------------------------------------------------------------
-        # Step 5: Skip TPB if capital-constrained (survival mode)
+        # Step 4: Skip TPB if capital-constrained (survival mode)
         # -----------------------------------------------------------------
         if self.capital < self.min_capital:
             self.behaviour.transition_blocker = BLOCKER_CAPITAL_SURVIVAL
@@ -1135,7 +1248,7 @@ class ConservationAgricultureFarmer(Farmer):
             return
 
         # -----------------------------------------------------------------
-        # Step 6: Run TPB decision logic
+        # Step 5: Run TPB decision logic
         # -----------------------------------------------------------------
         # This records observations every year and checks if observation
         # period is complete before running full TPB evaluation.
@@ -1143,7 +1256,7 @@ class ConservationAgricultureFarmer(Farmer):
         self.behaviour.update()
 
         # -----------------------------------------------------------------
-        # Step 7: Apply transition if TPB threshold exceeded
+        # Step 6: Apply transition if TPB threshold exceeded
         # -----------------------------------------------------------------
         if self.behaviour.should_transition():
             new_bundle = self.behaviour.proposed_bundle
@@ -1166,6 +1279,15 @@ class ConservationAgricultureFarmer(Farmer):
                         # Deduct transition cost
                         self.capital -= cost
 
+                        # Special case: affordability-driven residue deselection
+                        # gives cash from selling residue (income = opportunity cost)
+                        pathway = self.behaviour.target_pathway
+                        if (pathway == "affordability" and
+                            old_bundle.residue_on_field == 1 and
+                            new_bundle.residue_on_field == 0):
+                            residue_value = self.compute_residue_opportunity_cost()
+                            self.capital += residue_value
+
                         # Apply new practices
                         self.behaviour.apply_bundle(new_bundle)
                         self.behaviour.record_transition(new_bundle)
@@ -1173,9 +1295,10 @@ class ConservationAgricultureFarmer(Farmer):
                         self.behaviour.transition_blocker = BLOCKER_NONE
 
                         # Set driver to indicate why transition succeeded
-                        pathway = self.behaviour.target_pathway
                         if pathway == "fallback":
                             self.behaviour.transition_driver = DRIVER_FALLBACK
+                        elif pathway == "affordability":
+                            self.behaviour.transition_driver = DRIVER_AFFORDABILITY_FORCED
                         elif pathway in ("local", "country", "cluster", "exploration"):
                             self.behaviour.set_tpb_component_driver(pathway)
                     else:
@@ -1186,7 +1309,7 @@ class ConservationAgricultureFarmer(Farmer):
             self.behaviour.set_tpb_transition_blocker()
 
         # -----------------------------------------------------------------
-        # Step 8: Reset observation years after FULL evaluation completes
+        # Step 7: Reset observation years after FULL evaluation completes
         # -----------------------------------------------------------------
         # Only reset if we actually ran the full TPB evaluation (not blocked
         # by observation period). After evaluation, farmer waits again.

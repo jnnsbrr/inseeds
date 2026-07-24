@@ -59,6 +59,8 @@ output:
         - "behaviour.pbc"               # PBC FOR the proposed_bundle_id
         - "behaviour.transition_blocker"    # Primary reason for blocked transition (0-12), label in 'label' column
         - "behaviour.transition_driver"     # Primary reason for successful transition (0-9), label in 'label' column
+        - "profit"
+        - "leaching"
         - "capital"                     # Farm capital stock (USD, scaled by farm size)
         - "farm_size"                   # Farm size in hectares
         - "soilc"
@@ -78,11 +80,20 @@ practice_dimensions:
     cover_crop:
         n_options: 3  # 0=none, 1=non-legumes, 2=legumes
         leaching_high: 5    # mgN/l threshold for non-legume selection
-        fertilizer_high: 10  # gN/m2/yr threshold for non-legume selection
+        fertilizer_high: 15  # gN/m2/yr threshold for non-legume selection
     residue:
         # FAO CA threshold: 30% soil cover from crop residues
         # Below this, farmer increases retention; at/above, maintains current level
         ca_cover_threshold: 0.3
+        # How residue retention status (residue_on_field) is determined:
+        # - false (default): By farmer decision only. If farmer chooses to retain
+        #   residue (residue_on_field=1), that's what LPJmL sees, regardless of
+        #   actual litter cover. CA certification derived in post-processing.
+        # - true: By actual litter cover. Farmers who organically meet the
+        #   threshold (>= 30% cover) get upgraded to residue_on_field=1 even if
+        #   they didn't explicitly choose it. No automatic downgrade (would
+        #   contradict farmer intent and worsen low-yield situations).
+        residue_status_by_cover: true
 
 # Exploration constraints for random bundle exploration
 # Prevents farmers from repeatedly trying unreasonable or failed combinations
@@ -177,13 +188,14 @@ agroecological_clustering:
 farm_economics:
     # Minimum capital buffer as fraction of initial capital.
     # Below this threshold, farmers are forced to deselect practices.
-    # Based on Farm Financial Scorecard: working capital/gross revenue
-    #   - Strong: > 0.35 (can weather 1-2 year downturn)
-    #   - Vulnerable: < 0.20 (trouble repaying loans)
-    # Using 0.25 as midpoint between vulnerable and strong thresholds.
+    # Farm liquidity research shows working capital is typically 15-30% of total
+    # assets (Barry et al. 2000; Mishra & Morehart 2001). Smallholders often have
+    # even lower liquidity (10-25%) as most capital is locked in equipment and
+    # land (Fafchamps 1992; Rosenzweig & Wolpin 1993). Using 0.70 means farmers
+    # keep 70% as survival buffer, leaving 30% liquid - a reasonable midpoint.
     # Note: FAO NCS excludes land (SNA 2008 definition), so this fraction
     # applies to productive capital (machinery, equipment, buildings).
-    min_capital_fraction: 0.25
+    min_capital_fraction: 0.70
     # The FAO rates (i - δ) capture the NET capital change at sector level,
     # including: depreciation, reinvestment, subsidies, loans, average costs.
     # This is our baseline - what happens to capital at sector average.
@@ -266,7 +278,7 @@ practice_costs:
             # Lower herbicide use (mechanical weed control replaces chemicals)
             # USA: burndown avoided +$9/acre = $23/ha [10]; net +$6-20/acre [11]
             # Negative = cost reduction vs no-till (herbicide savings with tillage)
-            herbicide: [-35.0, -8.0]   # $/ha/yr [10,11]
+            herbicide: [-8.0, -35.0]   # $/ha/yr [10,11]
 
         # NET ANNUAL COST when tillage=1 (sum of components):
         #   Low-capital:  15 + 5 + 8  - 8  =  20 $/ha/yr vs no-till
@@ -283,7 +295,7 @@ practice_costs:
         transition: [12.0, 22.0]   # $/ha [4,5]
 
         # ANNUAL OPERATING COSTS
-        # All positive (cover crops are an additional investment)
+        # Costs are positive, subsidies are NEGATIVE (reduce net cost)
         costs:
             # Seed purchase costs
             # USA: $20-40/acre = $50-100/ha depending on species mix [4]
@@ -300,9 +312,18 @@ practice_costs:
             # Low-capital: often mechanical termination, cheaper herbicide
             termination: [12.0, 15.0]  # $/ha/yr [4]
 
+            # SUBSIDY (NEGATIVE = reduces costs)
+            # US EQIP: $34-75/acre = $84-185/ha (typically 50-75% cost-share) [6]
+            # EU CAP eco-schemes: €40-165/ha for soil conservation practices [7]
+            # Using conservative global average (partial cost-share)
+            # [6] USDA NRCS EQIP FY2024 Payment Rates
+            # [7] European Parliament (2024) Environment and the CAP
+            subsidy: [-40.0, -60.0]    # $/ha/yr (NEGATIVE = payment to farmer)
+
         # NET ANNUAL COST (sum of components):
-        #   Low-capital:  28 + 15 + 12 = 55 $/ha/yr
-        #   High-capital: 40 + 20 + 15 = 75 $/ha/yr
+        #   Low-capital:  28 + 15 + 12 - 40 = 15 $/ha/yr (with subsidy)
+        #   High-capital: 40 + 20 + 15 - 60 = 15 $/ha/yr (with subsidy)
+        # Without subsidy: 55-75 $/ha/yr
 
     residue_on_field:
         # Modern combines have straw choppers/spreaders as standard equipment.
@@ -310,16 +331,35 @@ practice_costs:
         # Purdue Extension CT-5: spreaders/choppers are standard attachments.
         transition: 0.0    # $/ha - no special equipment needed
 
-        # Opportunity cost is computed DYNAMICALLY in get_bundle_direct_costs()
-        # using compute_residue_opportunity_cost() which calculates:
-        #   crop_revenue × use_cost_fractions (from residue_economics section)
+        # Opportunity cost is computed DYNAMICALLY using compute_residue_opportunity_cost()
+        # which calculates: crop_revenue × use_cost_fractions
         # Based on Singh & Schiere (1995): straw value = 10-15% of crop value.
         # This makes residue costs spatially and temporally variable with yields.
-        costs: {}          # Empty - costs computed dynamically
+        #
+        # SUBSIDY is the only static component - applied as per-ha payment.
+        # US programs: $5-25/ha for residue management [6]
+        # EU CAP: soil conservation eco-schemes €20-50/ha [7]
+        # [6] USDA NRCS CSP FY2024 - E328L Leaving tall crop residue
+        # [7] Spanish eco-schemes for carbon capture agriculture
+        costs:
+            subsidy: [-20.0, -30.0]    # $/ha/yr (NEGATIVE = payment to farmer)
 
 # TPB specifc settings and parameters
 tpb:
     transition_threshold: 0.5   # TPB threshold for any practice change
+
+    # Performance scoring settings
+    # Toggle between profit-based and yield-based economic metric
+    # - true: Use profit (delta_profit / baseline_revenue) for economic performance
+    # - false: Use yield for economic performance (traditional approach)
+    # When true, weight_profit is used; when false, weight_yield is used.
+    use_profit: true  # Default: use profit rate (% improvement over baseline)
+
+    # NOTE: profit scoring no longer uses a fixed scale constant. The
+    # scale is derived automatically from data as the median per-farmer
+    # interannual profit-rate std (typical year-to-year profit fluctuation),
+    # so a sustained profit deviation is scored relative to normal profit
+    # noise - the same data-driven logic as the environmental metrics.
 
     # ATTITUDE SENSITIVITY
     # --------------------
@@ -337,12 +377,20 @@ tpb:
     #
     attitude_sensitivity: 1
 
+    # PBC sensitivity: controls steepness of PBC response to financial impact.
+    # PBC uses sigmoid(-net_financial_impact / (baseline_revenue × planning_horizon) × pbc_sensitivity).
+    # Revenue over the planning horizon ensures consistency with net_financial_impact.
+    # - Higher values → sharper transition between low/high PBC
+    # - Lower values → more gradual response to financial changes
+    # At neutral (no financial change), PBC = pbc_base × 0.5.
+    pbc_sensitivity: 1.0
+
     # Spreading level toggles for social learning
     # Allows enabling/disabling each level of spreading for testing or single-country runs
     # When a level is disabled, its weight is redistributed to enabled levels
     enable_local: true       # Neighbour-based spreading (attitude + social norm)
     enable_country: true     # Country-level spreading (attitude + social norm)
-    enable_cluster: true    # Agroecological cluster spreading (set false for single-country runs)
+    enable_cluster: false    # Agroecological cluster spreading (set false for single-country runs)
     # if enablele_country: cross-border social learning: blend own country stats with neighbouring countries
     # Weight for neighbouring countries' influence (0.0 = no cross-border, 0.5 = equal)
     # Own country weight = 1.0 - neighbour_country_weight
@@ -357,7 +405,8 @@ aftpar:
     # AFT for conservative/traditional values following farmer tending to stay
     #   with conventional agriculture
     traditionalist:
-        pbc_base: 0.75  # base perceived behavioral control (captures risk aversion)
+        pbc_base: 0.65  # base perceived behavioral control (captures risk aversion)
+
         weight_norm: 0.4  # Rogers "Late Majority": strong reliance on social proof
         weight_attitude: 0.6
 
@@ -375,18 +424,24 @@ aftpar:
         weight_attitude_country: 0.2       # Country-level less influential
         weight_attitude_cluster: 0.1       # Minimal cross-border learning
 
-        # weight variables for yield, soil, moisture (outcome importance)
-        weight_yield: 0.65 # Yield is everything
-        weight_soil: 0.1 # "I'll worry about that later"
-        weight_moisture: 0.25  # Drought scares me
+        # Outcome importance weights (MUST sum to 1.0)
+        # Either weight_yield OR weight_profit is used based on use_profit flag
+        # Traditionalists focus on economic output, less on ecosystem services
+        weight_yield: 0.65       # Used when use_profit=false
+        weight_profit: 0.65 # Used when use_profit=true (% improvement)
+        weight_soil: 0.1         # Soil carbon (ecosystem service)
+        weight_moisture: 0.25    # Water resilience (ecosystem service)
+        weight_leaching: 0.0     # Water quality (ecosystem service)
 
         # Trend weights per metric: how much to weight trend vs level (0-1)
         # level_weight = 1 - trend_weight
         # Based on metric dynamics: yield/moisture need maintenance (level);
         # soil carbon has legacy effects (trend matters more)
-        trend_weight_yield: 0.2     # Level-dominant (good yields should be maintained)
-        trend_weight_soil: 0.7      # Trend-dominant (legacy effects, trajectory matters)
-        trend_weight_moisture: 0.3  # Mostly level-based
+        trend_weight_yield: 0.3        # Level-dominant - absolute yields matter for income
+        trend_weight_soil: 0.7         # Trend-dominant - soil health is about trajectory
+        trend_weight_moisture: 0.2     # Very level-based - "do I have water now?"
+        trend_weight_profit: 0.4  # Level-dominant - current profitability pays bills
+        trend_weight_leaching: 0.5     # Balanced - current pollution & improvement trajectory
 
         # Similarity weights for social learning
         weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
@@ -396,8 +451,8 @@ aftpar:
         # Adoption fraction at which the practice feels "normative" (neutral).
         # Below threshold -> social drag; above -> social boost.
         # Traditionalists require broad uptake before a practice feels normal.
-        threshold_social_norm_local: 0.20    # 20% of neighbours = neutral
-        threshold_social_norm_country: 0.30  # 30% of country = neutral
+        threshold_social_norm_local: 0.2    # 20% of neighbours = neutral
+        threshold_social_norm_country: 0.3  # 30% of country = neutral
         threshold_social_norm_cluster: 0.25  # 25% of climate-similar countries = neutral
 
         # Time parameters (unified, AFT-specific)
@@ -410,15 +465,14 @@ aftpar:
         fallback_years: 10          # Consecutive decline years to trigger revert
 
         # Exploration parameters (Rogers 2003)
-        exploration_base_prob: 0.02 # Base probability of random exploration (doubled from 0.01)
-        poor_performance_threshold: 0.01  # Weighted score below which exploration doubles
-        poor_performance_multiplier: 2.0 # Multiplier for poor performers
-        max_exploration_prob: 0.15  # Cap on exploration probability
+        exploration_base_prob: 0.15 # Base probability of random exploration
+        poor_performance_multiplier: 2.0 # Multiplier when current_score < baseline_score
+        max_exploration_prob: 0.3  # Cap on exploration probability
 
     # AFT for pioneer farmer who more likely tends to transition to new (promising)
     #   regenerative agriculture practices
     pioneer:
-        pbc_base: 0.95  # base perceived behavioral control (captures risk aversion)
+        pbc_base: 0.85  # base perceived behavioral control (captures risk aversion)
         weight_attitude: 0.8
         weight_norm: 0.2  # Rogers "Innovators/Early Adopters": low but non-zero
 
@@ -436,16 +490,22 @@ aftpar:
         weight_attitude_country: 0.3       # More willing to learn from afar
         weight_attitude_cluster: 0.2       # Open to cross-border learning
 
-        # weight variables for yield, soil, moisture (outcome importance)
-        weight_yield: 0.5 # Still need to make money
-        weight_soil: 0.25 # More educated about long-term
-        weight_moisture: 0.25  # Same drought concern
+        # Outcome importance weights (MUST sum to 1.0)
+        # Either weight_yield OR weight_profit is used based on use_profit flag
+        # Pioneers are more balanced, value ecosystem services more
+        weight_yield: 0.5        # Used when use_profit=false
+        weight_profit: 0.5  # Used when use_profit=true (% improvement)
+        weight_soil: 0.25        # Soil carbon (ecosystem service)
+        weight_moisture: 0.25    # Water resilience (ecosystem service)
+        weight_leaching: 0.0     # Water quality (ecosystem service)
 
         # Trend weights per metric: how much to weight trend vs level (0-1)
         # Pioneers weight soil trends even more (long-term thinking)
-        trend_weight_yield: 0.2     # Level-dominant (good yields should be maintained)
-        trend_weight_soil: 0.8      # Very trend-focused (pioneers care about trajectory)
-        trend_weight_moisture: 0.3  # Mostly level-based
+        trend_weight_yield: 0.3        # Level-dominant - absolute yields matter for income
+        trend_weight_soil: 0.7         # Trend-dominant - soil health is about trajectory
+        trend_weight_moisture: 0.2     # Very level-based - "do I have water now?"
+        trend_weight_profit: 0.4  # Level-dominant - current profitability pays bills
+        trend_weight_leaching: 0.5     # Balanced - current pollution & improvement trajectory
 
         # Similarity weights for social learning
         weight_bundle_similarity: 0.5   # Weight for practice bundle similarity
@@ -454,7 +514,7 @@ aftpar:
         # Social norm thresholds (Granovetter 1978 heterogeneous thresholds).
         # Pioneers feel "normed" at much lower adoption fractions than
         # traditionalists - they interpret early signals as sufficient.
-        threshold_social_norm_local: 0.10    # 10% of neighbours = neutral
+        threshold_social_norm_local: 0.1    # 10% of neighbours = neutral
         threshold_social_norm_country: 0.15  # 15% of country = neutral
         threshold_social_norm_cluster: 0.12  # 12% of climate-similar countries = neutral
 
@@ -465,7 +525,6 @@ aftpar:
         fallback_years: 8           # Pioneers revert sooner if things go badly
 
         # Exploration parameters (Rogers 2003)
-        exploration_base_prob: 0.12 # Pioneers explore much more (doubled+ from 0.05)
-        poor_performance_threshold: 0.01  # Weighted score below which exploration doubles
-        poor_performance_multiplier: 2.0 # Multiplier for poor performers
-        max_exploration_prob: 0.25  # Higher cap for pioneers
+        exploration_base_prob: 0.3 # Pioneers explore much more
+        poor_performance_multiplier: 2.0 # Multiplier when current_score < baseline_score
+        max_exploration_prob: 0.6  # Higher cap for pioneers

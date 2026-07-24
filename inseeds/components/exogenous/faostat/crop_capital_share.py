@@ -499,6 +499,7 @@ def get_crop_share_from_qv(
         max_lookback=max_lookback,
         neighbour_codes=neighbour_codes,
         aggregator="mean",
+        field_name="gpv_crops",
     )
 
     # Get GPV for agriculture using tiered fallback
@@ -510,6 +511,7 @@ def get_crop_share_from_qv(
         max_lookback=max_lookback,
         neighbour_codes=neighbour_codes,
         aggregator="mean",
+        field_name="gpv_agriculture",
     )
 
     return crops_result.value / ag_result.value

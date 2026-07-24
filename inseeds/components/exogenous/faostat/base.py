@@ -62,6 +62,7 @@ def get_value_with_fallback(
     avg_years: int = 5,
     max_lookback: int = 20,
     aggregator: Literal["mean", "sum", "last"] = "mean",
+    field_name: str | None = None,
 ) -> FallbackResult:
     """Get value for a country with tiered fallback for missing data.
     
@@ -81,6 +82,8 @@ def get_value_with_fallback(
         Maximum years to search backward (default: 20 years).
     aggregator : str
         How to aggregate over time: "mean", "sum", or "last".
+    field_name : str, optional
+        Name of the data field being queried (for logging).
         
     Returns
     -------
@@ -177,7 +180,8 @@ def get_value_with_fallback(
         if neighbour_values:
             mean_val = float(np.mean(neighbour_values))
             detail = f"neighbours={','.join(used)}"
-            logger.info(f"{country_code}: using neighbours tier ({detail})")
+            field_str = f" for {field_name}" if field_name else ""
+            logger.info(f"{country_code}: using neighbours tier{field_str} ({detail})")
             return FallbackResult(mean_val, "neighbours", detail)
     
     # Tier C: Global mean
@@ -195,7 +199,8 @@ def get_value_with_fallback(
         
         if not np.isnan(global_mean):
             n_countries = int((~np.isnan(global_data.values)).sum())
-            logger.info(f"{country_code}: using global tier (n_countries={n_countries})")
+            field_str = f" for {field_name}" if field_name else ""
+            logger.info(f"{country_code}: using global tier{field_str} (n_countries={n_countries})")
             return FallbackResult(global_mean, "global", f"n_countries={n_countries}")
     
     raise ValueError(f"No valid data for {country_code} at any tier")

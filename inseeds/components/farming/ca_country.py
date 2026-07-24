@@ -53,7 +53,7 @@ import numpy as np
 import xarray as xr
 
 from inseeds.components.farming.region import Country
-from inseeds.components.exogenous.faostat import get_ag_share_of_aff, get_value_with_fallback
+from inseeds.components.exogenous.faostat import get_ag_share_of_aff, get_value_with_fallback, get_gdp_cost_ratio
 from inseeds.components.exogenous import Exogenous
 from inseeds.components.farming.ca_management import (
     RegionManagementPerformanceStore,
@@ -75,7 +75,7 @@ def _find_nearest_year(ds: xr.Dataset, target: int) -> int:
 
 def _extract_with_fallback(ds, var, country, year, neighbours, **kwargs):
     """Extract single value with fallback. Returns float."""
-    return get_value_with_fallback(ds[var], country, year, neighbour_codes=neighbours, **kwargs).value
+    return get_value_with_fallback(ds[var], country, year, neighbour_codes=neighbours, field_name=var, **kwargs).value
 
 
 class CACountry(Country):
@@ -191,6 +191,29 @@ class CACountry(Country):
         # Farm-gate prices (USD/tonne) for each PFT, used to compute farm revenue
         self._pft_prices = self.extract_prices(world.prices, code, year, neighbour_codes)
 
+        # ---------------------------------------------------------------------
+        # Step 5: Extract GDP per capita for cost scaling
+        # ---------------------------------------------------------------------
+        # GDP per capita determines where a country falls on the cost spectrum.
+        # Countries below 10th percentile use minimum costs, above 90th use maximum.
+        if "gdp" in world.keys():
+            gdp = world.gdp
+            self._gdp_per_capita = _extract_with_fallback(
+                gdp, "gdp_per_capita", code, year, neighbour_codes, aggregator="mean"
+            )
+            # Get percentiles from dataset attributes (computed during preprocessing)
+            self._gdp_p10 = gdp.attrs.get("gdp_percentile_10", 1000.0)
+            self._gdp_p90 = gdp.attrs.get("gdp_percentile_90", 40000.0)
+            # Compute cost ratio for practice cost scaling
+            self._gdp_cost_ratio = get_gdp_cost_ratio(
+                self._gdp_per_capita, self._gdp_p10, self._gdp_p90
+            )
+        else:
+            # Fallback if GDP data unavailable: use middle of cost range
+            logger.warning(f"{code}: GDP data unavailable, using default cost ratio 0.5")
+            self._gdp_per_capita = None
+            self._gdp_cost_ratio = 0.5
+
         self._fao_loaded = True
 
     # Properties (lazy-loaded via _ensure_fao_data)
@@ -207,7 +230,7 @@ class CACountry(Country):
         values = []
         for crop in prices[dim].values:
             try:
-                val = get_value_with_fallback(prices.sel({dim: crop}), country, year, neighbour_codes=neighbours, aggregator="mean").value
+                val = get_value_with_fallback(prices.sel({dim: crop}), country, year, neighbour_codes=neighbours, aggregator="mean", field_name=f"price_{crop}").value
             except ValueError:
                 val = np.nan
             values.append(val)
@@ -392,6 +415,45 @@ class CACountry(Country):
         ca_farmer.revenue : Uses these prices to compute farm income.
         """
         return self._fao("_pft_prices")
+
+    @property
+    def gdp_per_capita(self):
+        """Gross Domestic Product per capita (USD/capita).
+
+        National income level used to scale practice costs. Countries with
+        higher GDP face higher costs due to higher labor and equipment costs.
+
+        Source: FAO Macro Indicators database (MK domain).
+
+        Returns
+        -------
+        float
+            GDP in USD per capita. Ranges from ~500 (low-income) to 80,000+ (high-income).
+        """
+        return self._fao("_gdp_per_capita")
+
+    @property
+    def gdp_cost_ratio(self):
+        """Cost scaling ratio based on GDP per capita, in [0, 1].
+
+        Maps the country's GDP per capita to a ratio used for interpolating
+        practice costs between minimum (low-cost) and maximum (high-cost) values.
+
+        Computation:
+        - GDP <= 10th percentile: ratio = 0 (minimum costs)
+        - GDP >= 90th percentile: ratio = 1 (maximum costs)
+        - Between: linear interpolation
+
+        This ensures that practice costs reflect national income levels:
+        low-income countries face lower costs (affordable adoption), while
+        high-income countries face higher costs (consistent with labor/equipment prices).
+
+        Returns
+        -------
+        float
+            Ratio in [0, 1] for interpolating between min/max practice costs.
+        """
+        return self._fao("_gdp_cost_ratio")
 
     # -------------------------------------------------------------------------
     # Country-Level Statistics (for non-local spreading)

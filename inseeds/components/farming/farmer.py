@@ -413,6 +413,11 @@ class Farmer(core.Individual, base.Individual):
         return cache.get(name) if cache else None
 
     @property
+    def country(self):
+        """Return the country of the cell."""
+        return self.social_system if hasattr(self.social_system,"entity") and self.social_system.entity == "country" else None
+
+    @property
     def cell_cropyield(self):
         """Return the average crop yield of the cell (cache-aware)."""
         cached = self._cached("cropyield")
