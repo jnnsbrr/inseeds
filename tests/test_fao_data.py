@@ -114,13 +114,11 @@ class TestCACountryStatsCache:
             total_farmers=8,
             bundle_counts={ManagementBundle.notill: 5.0, ManagementBundle.conservation: 3.0},
         )
-        store._bundles[ManagementBundle.notill] = RegionManagementPerformance(
-            yield_sum=25.0,
-            soilc_sum=50.0,
-            moisture_sum=2.5,
-            yield_trend_sum=0.05,
-            soilc_trend_sum=0.10,
-            moisture_trend_sum=0.0,
+        store._bundles[ManagementBundle.notill] = RegionManagementPerformance.from_means(
+            {"yield": 5.0, "soilc": 10.0, "moisture": 0.5, "profit": 0.0,
+             "leaching": 0.0},
+            {"yield": 0.01, "soilc": 0.02, "moisture": 0.0, "profit": 0.0,
+             "leaching": 0.0},
             count=5,
         )
 
@@ -135,12 +133,10 @@ class TestCACountryStatsCache:
         )
 
         perf = RegionManagementPerformance(
-            yield_sum=25.0,
-            soilc_sum=50.0,
-            moisture_sum=2.5,
-            yield_trend_sum=0.05,
-            soilc_trend_sum=0.10,
-            moisture_trend_sum=0.0,
+            level_sums={"yield": 25.0, "soilc": 50.0, "moisture": 2.5,
+                        "profit": 0.0, "leaching": 0.0},
+            trend_sums={"yield": 0.05, "soilc": 0.10, "moisture": 0.0,
+                        "profit": 0.0, "leaching": 0.0},
             count=5,
         )
 
@@ -150,6 +146,9 @@ class TestCACountryStatsCache:
         assert perf.mean_yield_trend == 0.01
         assert perf.mean_soilc_trend == 0.02
         assert perf.count == 5
+        # The generated aliases the scorer reads by agree with the means
+        assert perf.yield_trend == perf.mean_yield_trend
+        assert perf.level["soilc"] == perf.mean_soilc
 
     def test_update_method_exists(self):
         """CACountry should have update method that computes management performance."""

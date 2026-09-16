@@ -82,7 +82,12 @@ class ResidueSource(ExogenousSource):
         cache_path = Path(sim_path) / "input" / self.CACHE_FILE
         
         if cache_path.exists() and not overwrite:
-            return cache_path
+            if self._cache_has_cfts(cache_path):
+                return cache_path
+            print(
+                f"Residue cache {cache_path} holds one fraction per cell rather "
+                "than one per crop, rebuilding it"
+            )
         
         if grid is None:
             raise ValueError("grid is required to extract residue fractions")
@@ -92,6 +97,16 @@ class ResidueSource(ExogenousSource):
         fractions = self._extract_fractions(grid, reference_year)
         fractions.to_netcdf(cache_path)
         return cache_path
+
+    def _cache_has_cfts(self, cache_path: Path) -> bool:
+        """Whether a cache carries the per-crop fractions the runtime needs.
+
+        Caches written before the CFT dimension existed hold a single fraction
+        per cell, which ``weighted_fractions`` cannot weight by crop
+        composition; it indexes a scalar and raises.
+        """
+        with xr.open_dataset(cache_path) as cached:
+            return "cft" in cached.dims
     
     def _extract_fractions(
         self,

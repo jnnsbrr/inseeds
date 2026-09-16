@@ -1,8 +1,7 @@
 """Tests for the regenerative_tillage_regions model with 3-level hierarchy.
 
 This test suite validates that the new country-based (3-level) approach
-produces identical results to the original 2-level approach, while adding
-support for country-level parallelization.
+produces identical results to the original 2-level approach.
 """
 
 import pytest
@@ -243,28 +242,6 @@ def test_update_countries_method(single_step_model_instance):
     ), "Countries should be a list"
 
 
-def test_parallel_executor_initialized(quick_model_instance):
-    """Test that the parallel executor is properly initialized."""
-
-    # Check that parallel executor exists
-    assert hasattr(
-        quick_model_instance, "_parallel_executor"
-    ), "Model should have _parallel_executor attribute"
-
-    # Check that executor has expected attributes
-    assert hasattr(
-        quick_model_instance._parallel_executor, "config"
-    ), "Parallel executor should have config"
-
-    # Verify executor mode (should be 'serial' in test environment or
-    # auto-detected)
-    assert quick_model_instance._parallel_executor.config.mode in [
-        "serial",
-        "mpi",
-        "auto",
-    ], f"Parallel executor mode should be valid, got {quick_model_instance._parallel_executor.config.mode}"  # noqa: E501
-
-
 def test_output_consistency_across_runs(cached_output_table):
     """Test that running the model multiple times produces consistent
     output."""
@@ -309,7 +286,6 @@ def test_country_output_aggregation(quick_model_instance):
         return
 
     # Test that we can aggregate data at country level
-    # This is important for country-level parallelization
 
     # Simply check that countries exist and are accessible
     for country in quick_model_instance.countries:

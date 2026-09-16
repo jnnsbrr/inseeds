@@ -680,5 +680,92 @@ class TestEdgeCases:
         assert store1.total_farmers == 8
 
 
+class TestRealNeighbourBlend:
+    """Tests of the shipped cross-border blend, not the inline copy above."""
+
+    @staticmethod
+    def _store(store_cls, bundle_cls, adopters, others):
+        """Store with ``adopters`` on conservation, ``others`` conventional."""
+        trend = {
+            "yield": 0.0,
+            "soilc": 0.0,
+            "moisture": 0.0,
+            "profit": 0.0,
+            "leaching": 0.0,
+        }
+        store = store_cls(year=2030)
+        for bundle, n in (
+            (bundle_cls.conservation, adopters),
+            (bundle_cls.conventional, others),
+        ):
+            for _ in range(n):
+                store._get(bundle).add_observation(dict(trend), trend)
+        store.finalize_store()
+        return store
+
+    def test_blend_does_not_depend_on_the_number_of_neighbours(self):
+        """A country reads its neighbours as one block, however many they are.
+
+        Blending the counts instead of the shares would let each additional
+        neighbour add a farmer count of its own, so a country with many
+        neighbours would weight its own farms far below the configured share.
+        """
+        from inseeds.components.farming.ca_management import (
+            ManagementBundle as RealBundle,
+            RegionManagementPerformanceStore as RealStore,
+        )
+
+        own_weight, neighbour_weight = 0.75, 0.25
+        expected = own_weight * 0.2 + neighbour_weight * 0.8
+
+        merged_stores = []
+        for n_neighbours in (1, 5):
+            own = self._store(RealStore, RealBundle, adopters=2, others=8)
+            neighbours = [
+                self._store(RealStore, RealBundle, adopters=8, others=2)
+                for _ in range(n_neighbours)
+            ]
+
+            merged_stores.append(
+                own.merge_with_neighbours(
+                    own_weight, neighbours, neighbour_weight
+                )
+            )
+
+        one, five = merged_stores
+        for merged in (one, five):
+            share = (
+                merged.bundle_counts[RealBundle.conservation]
+                / merged.total_farmers
+            )
+            assert share == pytest.approx(expected)
+
+        # The farms the merged store speaks for, which weight it in the cluster
+        # roll-up and in the confidence shrink, must not grow with the block.
+        assert one.total_farmers == five.total_farmers
+        assert (
+            one.get(RealBundle.conservation).count
+            == five.get(RealBundle.conservation).count
+        )
+
+    def test_a_country_without_farms_reads_its_neighbours(self):
+        """An empty own side hands its weight over rather than diluting."""
+        from inseeds.components.farming.ca_management import (
+            ManagementBundle as RealBundle,
+            RegionManagementPerformanceStore as RealStore,
+        )
+
+        own = self._store(RealStore, RealBundle, adopters=0, others=0)
+        neighbours = [self._store(RealStore, RealBundle, adopters=8, others=2)]
+
+        merged = own.merge_with_neighbours(0.75, neighbours, 0.25)
+
+        share = (
+            merged.bundle_counts[RealBundle.conservation]
+            / merged.total_farmers
+        )
+        assert share == pytest.approx(0.8)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

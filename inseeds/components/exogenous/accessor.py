@@ -59,7 +59,9 @@ class Exogenous:
         # Cell level
         elif hasattr(self._entity, "grid"):
             # Prefer local_index (position within country) for country-subsetted data
-            cell_idx = getattr(self._entity, "local_index", None) or getattr(self._entity, "_local_index", None)
+            cell_idx = getattr(self._entity, "local_index", None)
+            if cell_idx is None:
+                cell_idx = getattr(self._entity, "_local_index", None)
             if cell_idx is None:
                 cell_idx = self._entity.grid.cell.item()  # Fallback to global index
             country = getattr(self._entity, "country_code", None) or getattr(getattr(self._entity, "country", None), "country_code", None)

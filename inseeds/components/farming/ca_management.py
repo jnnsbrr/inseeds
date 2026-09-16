@@ -1,68 +1,102 @@
-"""Conservation Agriculture Management: Bundles, Costs, and Performance Tracking.
+"""Conservation Agriculture practice bundles, costs, and performance tracking.
 
-This module defines how farmers' agricultural practices are represented, tracked,
-and aggregated for social learning in the Conservation Agriculture model.
+This module defines how farmers' agricultural practices are represented,
+costed, tracked, and aggregated for social learning in the Conservation
+Agriculture model.
 
 Overview
 --------
 Conservation Agriculture (CA) is defined by three practices:
+
 1. **No-till** (tillage=0): Minimal soil disturbance
 2. **Cover crops** (cover_crop=1): Planting between main crops
 3. **Residue retention** (residue_on_field=1): Leaving crop residues on soil
 
-A "practice bundle" is a combination of these three practices. With each practice
-being ON (1) or OFF (0), there are 2³ = 8 possible bundles, from "conventional"
-(all OFF) to "full conservation agriculture" (all ON).
+A practice bundle is a combination of these three. Each is binary, so there
+are 2³ = 8 bundles. Tillage is inverted relative to the other two: 0 is the
+CA state (no-till), while 0 on cover crop or residue is the conventional
+state. Conventional farming is therefore ``(1, 0, 0)`` and full CA is
+``(0, 1, 1)``, not "all off" versus "all on".
+
+The bundle records only whether a cover crop is grown. Which crop - a
+nitrogen-fixing legume or a non-legume catch crop - lives on the farmer
+(``COVER_CROP_*``) because LPJmL needs it to pick the PFT. Memory slots
+follow that split so the two are not averaged into one experience.
 
 Key Concepts
 ------------
-- **ManagementBundle**: Which practices a farmer currently uses (e.g., no-till + cover crop)
-- **ManagementPerformance**: A farmer's remembered outcome (soil, yield, moisture trends)
-- **RegionManagementPerformance**: Aggregated outcomes for one bundle across many farmers
-- **RegionManagementPerformanceStore**: Collection of all bundles' performance in a region
+- **ManagementBundle**: Which three practices a farmer currently uses
+- **ManagementCosts** / **PracticeCost**: Annual and one-time costs (USD/ha),
+  GDP-scaled; cover-crop seed is typed
+- **PolicySettings**: Carbon, nitrogen, and practice-subsidy instruments
+- **ManagementPerformanceTracker**: Online trends of self-referenced rates
+  since the last practice change
+- **ManagementPerformance**: One remembered episode (bundle × cover-crop type)
+- **ManagementPerformanceMemory**: A farmer's episodes, decayed and failure-capped
+- **RegionManagementPerformance**: Winsorized mean of one bundle across farmers
+- **RegionManagementPerformanceStore**: All bundles' performance in a region
 
 Data Flow
 ---------
-    Individual Farmer
-           │
-           ▼
-    ManagementPerformanceTracker  ──► tracks trends over time
-           │
-           ▼
-    ManagementPerformanceMemory   ──► remembers past bundle outcomes
-           │
-           ▼
-    RegionManagementPerformanceStore  ──► aggregates across farmers
-           │
-           ├──► Country-level social learning
-           │
-           └──► Cluster-level social learning (similar climates)
+Individual Farmer
+        │
+        ▼
+ManagementPerformanceTracker  ──► tracks trends over the current episode
+        │
+        ▼
+ManagementPerformanceMemory   ──► remembers past (bundle, cover-crop) outcomes
+        │
+        ▼
+RegionManagementPerformanceStore  ──► aggregates across farmers
+        ├──► Country-level social learning
+        └──► Cluster-level social learning (similar climates)
 
 Example
 -------
->>> # A farmer practicing no-till with cover crops but no residue retention:
+>>> # No-till with a cover crop but without residue retention:
 >>> bundle = ManagementBundle.notill_covercrop
 >>> print(bundle.label)
-'no-till + cover crop'
+no-till + cover crop
 >>> print(bundle.tillage, bundle.cover_crop, bundle.residue_on_field)
 (0, 1, 0)
+>>> print(ManagementBundle.conventional.value, ManagementBundle.conservation.value)
+(1, 0, 0) (0, 1, 1)
 
 See Also
 --------
-- ca_behaviour.py: TPB decision model using these data structures
-- ca_country.py: Country-level aggregation
-- ca_agroecology.py: Cluster-level aggregation across similar countries
+ca_behaviour : TPB decision model
+ca_farmer : agent that holds a bundle, costs, and the tracker
+ca_country : country-level prices, capital, and aggregation
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
 import numpy as np
 
-from inseeds.components.farming.farmer import NON_CROPS, sigmoid
+import logging
+
+from inseeds.components.farming.farmer import (
+    AFT,
+    NON_CROPS,
+    agricultural_leaching,
+    log_rate,
+    moisture_var,
+)
+from inseeds.components.farming.metrics import (
+    DEFAULT_CLIP_BOUNDS,
+    METRIC_KEYS,
+    METRICS,
+    add_metric_properties,
+    rates_of,
+    scored_metrics,
+    zero_metrics,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -74,6 +108,28 @@ DESELECT_ORDER = ("cover_crop", "residue_on_field", "tillage")
 
 # The three practice dimensions that define a management bundle
 PRACTICE_FIELDS = ("tillage", "cover_crop", "residue_on_field")
+
+# Which cover crop is grown, where the bundle records only whether one is. The
+# type lives on the farmer because LPJmL needs it to pick the PFT, and the two
+# are different enough - one fixes nitrogen, the other only holds on to what is
+# already there - that the model prices them apart and remembers them apart.
+COVER_CROP_NONE = 0
+COVER_CROP_NONLEGUME = 1  # catch crop: scavenges nitrogen already in the soil
+COVER_CROP_LEGUME = 2     # fixes atmospheric nitrogen
+
+# Seed is the cost that separates the two, so it is configured once per type and
+# exactly one of these applies. `PracticeCost.direct` leaves both out and
+# `direct_for_type` adds the one that is actually being sown; summing them would
+# charge a farm for a crop it did not plant.
+SEED_COST_COMPONENTS = {
+    COVER_CROP_NONLEGUME: "seeds_nonlegume",
+    COVER_CROP_LEGUME: "seeds_legume",
+}
+
+# Clip bounds for per-farmer rates in region aggregates (Winsorized mean). Held
+# in the metric registry, where each metric can carry its own, and re-exported
+# here because that is where the model has always imported it from.
+RATE_CLIP_BOUNDS = DEFAULT_CLIP_BOUNDS
 
 
 # Human-readable labels and numeric IDs for each bundle
@@ -94,12 +150,27 @@ _BUNDLE_METADATA: dict[str, tuple[int, str]] = {
 # UNIFIED PERFORMANCE SCORING
 # =============================================================================
 
-# TODO: Consider implementing discounted future value approach for trends:
-#   PV = trend × [1 - (1+r)^(-n)] / r
-# where r is discount rate (~10-20%) and n is planning horizon.
-# This would account for uncertainty about distant future gains.
-# Current simple approach (trend × planning_horizon) is adequate for ABM
-# and more interpretable. Discounting would reduce trend impact by ~25-40%.
+def _z(deviation: float, scale: float) -> float:
+    """Normalise a deviation by cross-farmer spread (z-score units).
+
+    Returns 0 if scale ≤ 0.
+    """
+    if scale <= 0:
+        return 0.0
+    return float(deviation / scale)
+
+
+def _side_weights(own: float, other: float) -> tuple[float, float]:
+    """Rescale two blend weights to sum to one, or to (0, 0) if both are zero.
+
+    A side with nothing to say enters as zero, and rescaling then hands its
+    weight to the side that does, rather than leaving the blend short.
+    """
+    total = own + other
+    if total <= 0:
+        return 0.0, 0.0
+    return own / total, other / total
+
 
 def compute_metric_score_inverted(
     level: float,
@@ -110,24 +181,16 @@ def compute_metric_score_inverted(
     planning_horizon: float,
     trend_weight: float,
 ) -> float:
-    """Compute score for metrics where LOWER is better (e.g., leaching).
+    """Z-score metric score for lower-is-better variables (e.g. leaching).
 
-    Same robust z-score normalization as compute_metric_score(), with inverted signs:
-    - level_score = 1.0 - (level - median_level) / std_level
-      At median: 1.0, below median (good): >1.0, above median (bad): <1.0
-    - trend_score = 1.0 - (trend × horizon) / std_trend
-      Zero trend: 1.0, negative trend (improving): >1.0, positive (worse): <1.0
-
-    Parameters match compute_metric_score().
+    Inverts level and trend components relative to ``compute_metric_score``.
+    Parameters match that function.
     """
     # Inverted level z-score: below median → score > 1.0
-    level_score = (
-        1.0 - (level - median_level) / std_level if std_level > 0 else 1.0
-    )
+    level_score = 1.0 - _z(level - median_level, std_level)
 
     # Inverted trend, zero-centered: improving (negative) trend → score > 1.0
-    projected_trend = trend * planning_horizon
-    trend_score = 1.0 - (projected_trend / std_trend) if std_trend > 0 else 1.0
+    trend_score = 1.0 - _z(trend * planning_horizon, std_trend)
 
     level_weight = 1.0 - trend_weight
     return level_weight * level_score + trend_weight * trend_score
@@ -142,63 +205,40 @@ def compute_metric_score(
     planning_horizon: float,
     trend_weight: float,
 ) -> float:
-    """Compute performance score using z-score normalization.
+    """Per-metric performance score via robust z-normalisation.
 
-    Both components are centered at 1.0 with population spread ~1.0:
-    - level_score = 1.0 + (level - median_level) / std_level
-      → 1.0 at the world median, 2.0 one std above, 0.0 one std below
-    - trend_score = 1.0 + (trend × horizon) / std_trend
-      → 1.0 for zero trend (stable), >1.0 improving, <1.0 declining
-
-    Why robust z-scores (median + MAD)
-    ----------------------------------
-    Using median for centering and MAD-based std for scaling makes
-    the normalization robust to outliers. A few extreme farmers (near-
-    bankruptcy, windfall, extreme yields) won't distort the scaling.
-    This gives every metric comparable spread (~1 std), so the configured
-    AFT weights act as true decision weights.
-
-    The trend is deliberately centered at ZERO (not the mean trend), so
-    "stable = 1.0, improving > 1.0" always holds. This preserves the
-    semantics of fallback detection (current score vs baseline_score).
+    ``level_score = 1 + (level - median) / std_level``;
+    ``trend_score = 1 + (trend × horizon) / std_trend``.
+    Scales are MAD-based robust spreads from ``CAWorld.compute_reference_scales``.
+    Score ≈ 1 at baseline level with zero trend; unbounded above/below.
 
     Parameters
     ----------
     level : float
-        Current metric value as a self-referenced fractional rate
-        (value / own_baseline - 1), so it is dimensionless and centred at 0.
+        Self-referenced relative deviation (dimensionless, centred at 0).
     trend : float
-        Annual rate of change of the fractional rate (per year).
+        Annual change in that deviation (per year).
     median_level : float
-        Center of the z-score. Always 0.0 here (rates are centred at the
-        farmer's own baseline by construction).
+        Z-score centre (0.0 for self-referenced rates).
     std_level : float
-        Data-driven level scale (median per-farmer interannual rate std).
+        Level scale (cross-farmer spread, floored at interannual std).
     std_trend : float
-        Data-driven trend scale (robust MAD of projected trends).
+        Trend scale (robust MAD of projected trends).
     planning_horizon : float
-        Years over which to project trend impact (typically min_observation_years).
+        Years for trend projection (typically min_observation_years).
     trend_weight : float
-        Weight for trend component (0-1). Level weight = 1 - trend_weight.
+        Weight on trend component; level weight = 1 - trend_weight.
 
     Returns
     -------
     float
-        Performance score where:
-        - Score = 1.0 means average level AND zero/stable trend
-        - Score > 1.0 means above average (better)
-        - Score < 1.0 means below average (worse)
-        Scores are unbounded (can go negative for extreme underperformers);
-        only relative comparisons matter downstream.
+        Combined level/trend score.
     """
     # Level z-score centered at 1.0 (using median for robustness)
-    level_score = (
-        1.0 + (level - median_level) / std_level if std_level > 0 else 1.0
-    )
+    level_score = 1.0 + _z(level - median_level, std_level)
 
     # Trend zero-centered, scaled by population spread of projected trends
-    projected_trend = trend * planning_horizon
-    trend_score = 1.0 + (projected_trend / std_trend) if std_trend > 0 else 1.0
+    trend_score = 1.0 + _z(trend * planning_horizon, std_trend)
 
     # Combine with configured weighting
     level_weight = 1.0 - trend_weight
@@ -209,131 +249,132 @@ def compute_performance_score(
     tracker_or_region: Any,
     farmer: Any,
 ) -> float:
-    """Compute performance score using self-referenced, fractional-rate scaling.
+    """Weighted performance score over the declared metrics.
 
-    This function provides a single, consistent scoring mechanism used across
-    all comparison points: neighbor comparison, bundle selection, and attitude
-    calculation.
+    Which metrics those are, which way round each is scored and which config
+    weights it answers to all come from ``metrics.METRICS``; this function only
+    weighs them. Each is a relative deviation from the farm's own historic
+    baseline — ``ln((v+n)/(b+n))`` (materiality offsets ``n``) and ``asinh``
+    for profit. Per metric::
 
-    ALL five metrics (yield, soilc, moisture, leaching, profit) are scored
-    identically. Each is already a fractional deviation from the farmer's OWN
-    historic baseline (value / own_baseline - 1), so it is dimensionless and
-    centred at zero:
+        score_m = 1 + rate/std_level + trend_weight * (trend*horizon)/std_trend
 
-        score = 1 + rate / level_std + trend_weight × (trend × horizon) / trend_std
-
-    The scales come from CAWorld.compute_reference_scales (data-driven, no
-    tuning constant): level_std is the median per-farmer interannual rate std
-    (typical year-to-year fluctuation) and trend_std is the robust MAD of
-    projected trends across farmers. A sustained deviation counts as
-    "significant" when it exceeds typical interannual noise - the same ruler for
-    every metric.
-
-    Because rates are self-referenced, ambient conditions (climate, soil, farm
-    size, income level) are divided out by construction: no country medians or
-    divisors are needed, and tracker sources and region aggregates are scored
-    the same way (region aggregates simply hold means of the same rates).
-
-    For LEACHING, lower is better, so its z-scores are inverted before scoring.
+    with scales from ``CAWorld.compute_reference_scales`` (cross-farmer spread,
+    floored at interannual std). Metrics declared lower-is-better, leaching
+    today, are scored inverted. Same path for tracker, memory and region
+    aggregates, which is why all three answer to ``mean_<metric>`` and
+    ``<metric>_trend``.
 
     Parameters
     ----------
-    tracker_or_region : ManagementPerformanceTracker or RegionManagementPerformance
-        Performance data source to evaluate. Can be an individual farmer's
-        tracker or aggregated regional statistics.
-    farmer : Farmer
-        Farmer whose weights (weight_yield, weight_soil, etc.) and trend
-        weights (trend_weight_yield, etc.) are used for scoring. Also provides
-        access to world.statistic for fixed reference scales.
+    tracker_or_region :
+        Tracker, remembered performance, or region aggregate.
+    farmer :
+        Supplies AFT weights and ``world`` reference scales.
 
     Returns
     -------
     float
-        Dimensionless weighted performance score.
-        - Score of ~1.0 means at the farmer's own baseline (no change)
-        - Score > 1.0 means above baseline / improving
-        - Score < 1.0 means below baseline / declining
+        Dimensionless weighted score (~1 at own baseline).
 
     Notes
     -----
-    The score combines five metrics (yield, soil carbon, moisture, profit, leaching):
-    1. Per-metric level/trend weighting (based on metric dynamics)
-    2. Per-farmer importance weighting (based on AFT psychology)
-
-    For LEACHING, lower is better, so the z-scores are inverted before scoring.
+    ``use_profit`` selects profit vs yield for the economic slot — only four of
+    five ``weight_*`` config keys are active (see ``active_score_weights``).
+    ``planning_horizon`` must match the trend-ruler horizon; it nearly cancels
+    in the z-ratio and mainly affects PBC, not this score.
 
     See Also
     --------
-    compute_metric_score : Per-metric score computation.
-    CAWorld.compute_reference_scales : Where the fixed scales are computed.
+    metrics.METRICS : the metrics this loops over
+    compute_metric_score, CAWorld.compute_reference_scales, farmer.log_rate
     """
-    # Get FIXED reference scales from world (computed once from historic data).
+    # Same population rulers for every farmer this year
     scales = farmer.world.statistic.get("reference_scales")
 
-    # Planning horizon: farmer's decision-making window (min_observation_years)
-    planning_horizon = farmer.behaviour.get_aft_param("min_observation_years")
+    # Must match CAWorld trend-ruler horizon or trend z is mis-scaled
+    planning_horizon = farmer.behaviour.projection_weight()
 
-    # -----------------------------------------------------------------
-    # All metrics are self-referenced fractional rates (value/own_baseline - 1),
-    # so both tracker sources and region aggregates are already dimensionless
-    # and centred at zero. Every metric is scored the same way, with center 0
-    # and the data-driven scales from CAWorld.compute_reference_scales.
-    # -----------------------------------------------------------------
-    score_yield = compute_metric_score(
-        tracker_or_region.mean_yield, tracker_or_region.yield_trend,
-        0.0, scales["yield_std"], scales["yield_trend_std"],
-        planning_horizon,
-        farmer.trend_weight_yield
-    )
-    score_soilc = compute_metric_score(
-        tracker_or_region.mean_soilc, tracker_or_region.soilc_trend,
-        0.0, scales["soilc_std"], scales["soilc_trend_std"],
-        planning_horizon,
-        farmer.trend_weight_soil
-    )
-    score_moisture = compute_metric_score(
-        tracker_or_region.mean_moisture, tracker_or_region.moisture_trend,
-        0.0, scales["moisture_std"], scales["moisture_trend_std"],
-        planning_horizon,
-        farmer.trend_weight_moisture
-    )
+    # The economic metric is profit or physical yield, never both
+    use_profit = farmer.model.config.coupled_config.tpb.use_profit
 
-    # Leaching: LOWER is better, use inverted z-scoring
-    score_leaching = compute_metric_score_inverted(
-        tracker_or_region.mean_leaching, tracker_or_region.leaching_trend,
-        0.0, scales["leaching_std"], scales["leaching_trend_std"],
-        planning_horizon,
-        farmer.trend_weight_leaching
-    )
-
-    score_profit = compute_metric_score(
-        tracker_or_region.mean_profit, tracker_or_region.profit_trend,
-        0.0, scales["profit_std"], scales["profit_trend_std"],
-        planning_horizon,
-        farmer.trend_weight_profit
-    )
-
-    # Check use_profit flag to determine economic metric
-    # If true: use profit (delta_profit / baseline); if false: use yield (physical output)
-    tpb_config = getattr(farmer.model.config.coupled_config, "tpb", None)
-    use_profit = getattr(tpb_config, "use_profit", True) if tpb_config else True
-
-    # Aggregate with farmer's importance weights
-    # Economic metric is either yield or profit based on flag
-    if use_profit:
-        return (
-            farmer.weight_profit * score_profit  # Economic metric: profit rate
-            + farmer.weight_soil * score_soilc
-            + farmer.weight_moisture * score_moisture
-            + farmer.weight_leaching * score_leaching
+    total = 0.0
+    for spec in scored_metrics(use_profit):
+        score_metric = (
+            compute_metric_score
+            if spec.higher_is_better
+            else compute_metric_score_inverted
         )
-    else:
-        return (
-            farmer.weight_yield * score_yield  # Economic metric: yield
-            + farmer.weight_soil * score_soilc
-            + farmer.weight_moisture * score_moisture
-            + farmer.weight_leaching * score_leaching
+        # centre 0: rates already self-referenced
+        score = score_metric(
+            getattr(tracker_or_region, spec.mean_attr),
+            getattr(tracker_or_region, spec.trend_attr),
+            0.0,
+            scales[spec.level_scale_key],
+            scales[spec.trend_scale_key],
+            planning_horizon,
+            getattr(farmer, spec.trend_weight_key),
         )
+        total += getattr(farmer, spec.weight_key) * score
+
+    return total
+
+
+def active_score_weights(coupled_config):
+    """Score weights actually read by ``compute_performance_score``, per AFT.
+
+    The two economic metrics share one slot, so one ``weight_*`` entry is
+    always ignored: profit or yield per ``use_profit``.
+
+    Parameters
+    ----------
+    coupled_config
+        Config section with ``tpb`` and ``aftpar``.
+
+    Returns
+    -------
+    dict
+        ``{aft_name: {weight_name: value}}``.
+    """
+    use_profit = coupled_config.tpb.use_profit
+    names = tuple(spec.weight_key for spec in scored_metrics(use_profit))
+    return {
+        aft.name: {
+            name: float(getattr(getattr(coupled_config.aftpar, aft.name), name))
+            for name in names
+        }
+        for aft in AFT
+    }
+
+
+def log_active_score_weights(coupled_config, tolerance=0.02):
+    """Log active score weights; warn if sum deviates from 1.0.
+
+    Weights should sum to 1 because the score is compared to a fixed 0.5
+    threshold as an unnormalised weighted sum.
+
+    Parameters
+    ----------
+    coupled_config
+        Config section with ``tpb`` and ``aftpar``.
+    tolerance : float, optional
+        Allowed deviation from 1.0 before warning.
+    """
+    for aft_name, weights in active_score_weights(coupled_config).items():
+        total = sum(weights.values())
+        detail = ", ".join(
+            f"{name.removeprefix('weight_')} {value:g}"
+            for name, value in weights.items()
+        )
+        logger.info("Score weights in force (%s): %s | sum %g", aft_name, detail, total)
+        if abs(total - 1.0) > tolerance:
+            logger.warning(
+                "Score weights for %s sum to %g, not 1.0. The score is an "
+                "unnormalised weighted sum against a fixed 0.5 threshold, so "
+                "this rescales every farmer's score.",
+                aft_name,
+                total,
+            )
 
 
 # =============================================================================
@@ -367,34 +408,14 @@ def _scale_cost_value(value: Any, capital_ratio: float) -> float:
 
 @dataclass(frozen=True)
 class PracticeCost:
-    """Cost structure for a single agricultural practice.
-
-    Each practice (tillage, cover crop, residue retention) has:
-    - A one-time transition cost (equipment, training)
-    - Multiple annual cost components (fuel, labor, seeds, herbicide, etc.)
-
-    The generic cost_components dict allows adding any cost type in config
-    without code changes. The `direct` property sums all components.
+    """Annual and transition costs for one practice (USD/ha).
 
     Attributes
     ----------
     transition : float
-        One-time switching cost (USD/ha). Paid once when adopting the practice.
-        Example: New equipment, training, initial soil preparation.
-
+        One-time adoption cost (USD/ha).
     cost_components : dict[str, float]
-        Named annual cost components (USD/ha/year). Summed for total direct cost.
-        Example (conventional tillage): {"fuel": 45.0, "labor": 25.0, "herbicide": -35.0}
-        Positive = higher cost vs no-till; negative = cost reduction vs no-till.
-
-    Example
-    -------
-    >>> tillage_cost = PracticeCost(
-    ...     transition=66.0,
-    ...     cost_components={"fuel": 45.0, "labor": 25.0, "herbicide": -35.0}
-    ... )
-    >>> tillage_cost.direct  # Net cost of conventional tillage vs no-till
-    35.0
+        Named annual cost components (USD/ha/yr); summed by ``direct``.
     """
 
     transition: float
@@ -402,30 +423,42 @@ class PracticeCost:
 
     @property
     def direct(self) -> float:
-        """Total annual direct cost = sum of all cost components."""
-        return sum(self.cost_components.values())
+        """Annual cost that applies whichever variant of the practice is used.
+
+        Excludes the per-type seed costs, which are mutually exclusive: see
+        ``direct_for_type`` for the cover crop's full annual cost.
+        """
+        return sum(
+            value
+            for name, value in self.cost_components.items()
+            if name not in SEED_COST_COMPONENTS.values()
+        )
+
+    def seed_cost(self, cover_crop_type: int | None) -> float:
+        """Seed cost of the cover crop being sown, or zero if none is."""
+        component = SEED_COST_COMPONENTS.get(int(cover_crop_type or 0))
+        if component is None:
+            return 0.0
+        return self.cost_components.get(component, 0.0)
+
+    def direct_for_type(self, cover_crop_type: int | None) -> float:
+        """Annual cost including the seed for the cover crop actually sown."""
+        return self.direct + self.seed_cost(cover_crop_type)
 
     @classmethod
     def from_config(cls, data: Any, capital_ratio: float = 1.0) -> "PracticeCost":
-        """Create from configuration dictionary, optionally scaled by capital.
-
-        Supports two config formats:
-        1. New format with 'costs' dict containing named components
-        2. Legacy format with single 'direct' value (backward compatible)
+        """Build from config dict, optionally scaling [min, max] ranges.
 
         Parameters
         ----------
         data : dict
-            Configuration with 'transition' and either 'costs' dict or 'direct'.
-            Values can be scalars or [min, max] ranges for capital scaling.
+            ``transition`` plus ``costs`` dict or legacy ``direct``.
         capital_ratio : float
-            Ratio of farmer's capital to reference (default 1.0 = reference level).
-            Used to interpolate within [min, max] ranges.
+            Interpolation weight for ranged values (default 1.0).
 
         Returns
         -------
         PracticeCost
-            Cost structure with scaled values.
         """
         if hasattr(data, "to_dict"):
             data = data.to_dict()
@@ -452,21 +485,350 @@ class PracticeCost:
         return cls(transition=transition, cost_components=cost_components)
 
 
-@dataclass(frozen=True, slots=True)
-class ManagementCosts:
-    """Complete cost structure for all three CA practices.
+#: Stands in for "no end" when neither the policy block nor the LPJmL config
+#: says when the run stops. Far enough out that no run reaches it, and finite
+#: so the comparison in ``in_force`` needs no special case.
+MAX_YEAR = 9999
 
-    Groups the costs for tillage, cover crops, and residue retention together.
-    Loaded from the model configuration file, scaled by farmer's capital intensity.
+
+def default_policy_span(config) -> tuple[int, int]:
+    """Years instruments act over when the policy block does not say.
+
+    The whole coupled run: from the first year inseeds is in the loop to the
+    last year LPJmL simulates. Taken from the run rather than written down,
+    because a literal year in the policy block is a second copy of something
+    the simulation already knows, and the two go out of step silently. A
+    ``start_year`` left at 2025 after the coupling was moved to 2030 would
+    read as "in force from the start", which is harmless; moved the other way
+    it would back-date an instrument into the period farms learned from,
+    which is the one thing this must not do.
+
+    Parameters
+    ----------
+    config : LpjmlConfig
+        The run's LPJmL configuration.
+
+    Returns
+    -------
+    tuple of int
+        First and last year, both inclusive.
+    """
+    start = getattr(config, "start_coupling", None) or getattr(
+        config, "firstyear", None
+    )
+    end = getattr(config, "lastyear", None)
+    return (
+        0 if start is None else int(start),
+        MAX_YEAR if end is None else int(end),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PolicySettings:
+    """Instrument rates in force, resolved for one country.
 
     Attributes
     ----------
-    tillage : PracticeCost
-        Costs for conventional tillage (tillage=1); negated when no-till (tillage=0)
-    cover_crop : PracticeCost
-        Costs for planting cover crops between main crop seasons
-    residue_on_field : PracticeCost
-        Costs for retaining crop residues on the field surface
+    carbon_price : float
+        USD per tonne of CO2 equivalent sequestered above baseline.
+    nitrogen_charge : float
+        USD per kg of nitrogen leached, already interpolated for this country.
+    levy_free_concentration : float
+        Nitrate concentration in mgN/l below which leaching is not charged.
+    cover_crop_subsidy : float
+        USD per hectare per year for holding a cover crop, already
+        interpolated for this country. Positive is a payment to the farm.
+        Paid whichever crop is sown.
+    cover_crop_legume_subsidy : float
+        USD per hectare per year on top of ``cover_crop_subsidy`` where the
+        crop sown is a legume. An enhancement rather than a separate rate,
+        which is the shape the real schemes take: EQIP 340 and the CAP
+        eco-schemes post a base cover crop payment and pay more for a
+        multi-species or legume mix. It is also the only per-hectare rate here
+        that distinguishes the two crops, so it is what a scenario reaches for
+        to steer the type rather than the practice.
+    residue_subsidy : float
+        USD per hectare per year for retaining residue, same convention.
+    residue_subsidy_share : float
+        Fraction of the farm's own straw opportunity cost paid for retaining,
+        in [0, 1]. The alternative to ``residue_subsidy`` rather than an
+        addition to it, and the form the real schemes take; see
+        ``from_config``. Farm-specific, so the payment is worked out on the
+        farmer and not by ``subsidy_for``.
+    start_year, end_year : int
+        Years the instruments act, both inclusive. ``end_year`` defaults to no
+        end at all when the config leaves it out.
+    windows : tuple of (str, int, int)
+        Per-instrument overrides of that span, as ``(name, start, end)``. A
+        tuple rather than a dict so the record stays hashable.
+    """
+
+    carbon_price: float
+    nitrogen_charge: float
+    levy_free_concentration: float
+    cover_crop_subsidy: float
+    cover_crop_legume_subsidy: float
+    residue_subsidy: float
+    residue_subsidy_share: float
+    start_year: int
+    end_year: int = MAX_YEAR
+    windows: tuple[tuple[str, int, int], ...] = ()
+
+    #: Attributes holding the rates for each instrument a window can name. The
+    #: residue payment has two, a flat rate and a cost share, and a window over
+    #: the instrument has to switch off whichever of them a scenario used.
+    RATE_FIELDS = {
+        "carbon_price": ("carbon_price",),
+        "nitrogen_charge": ("nitrogen_charge",),
+        "cover_crop": ("cover_crop_subsidy", "cover_crop_legume_subsidy"),
+        "residue_on_field": ("residue_subsidy", "residue_subsidy_share"),
+    }
+
+    def window_for(self, name: str) -> tuple[int, int]:
+        """Years the named instrument acts, falling back to the global span."""
+        for entry, start, end in self.windows:
+            if entry == name:
+                return start, end
+        return self.start_year, self.end_year
+
+    def in_force(self, year: int) -> "PolicySettings":
+        """This record with every instrument outside its window zeroed.
+
+        Resolving the whole set at once, rather than testing the year at each
+        point of use, is what keeps the bill and the expectation of it from
+        disagreeing about whether a scheme is running - the same reason
+        ``nitrogen_charge_for`` is one function.
+
+        The allowance is not an instrument and is left alone: it only shapes a
+        charge, and a charge outside its window is already zero.
+        """
+        zeroed = {}
+        for name, fields in self.RATE_FIELDS.items():
+            start, end = self.window_for(name)
+            if not (start <= year <= end):
+                zeroed.update({field: 0.0 for field in fields})
+        if not zeroed:
+            return self
+        return replace(self, **zeroed)
+
+    @property
+    def any_in_force(self) -> bool:
+        """Whether this resolves to an instrument at all.
+
+        An allowance on its own is not one: it only shapes a charge that has
+        to be turned on separately.
+        """
+        return bool(
+            self.carbon_price
+            or self.nitrogen_charge
+            or self.cover_crop_subsidy
+            or self.cover_crop_legume_subsidy
+            or self.residue_subsidy
+            or self.residue_subsidy_share
+        )
+
+    def subsidy_for(self, bundle, cover_crop_type=None) -> float:
+        """Per-hectare annual payment for the practices in ``bundle``.
+
+        The flat rates only. ``residue_subsidy_share`` is a fraction of a
+        quantity only the farm knows, so it is added in
+        ``Farmer.practice_subsidy_for`` and is not part of any per-hectare
+        rate.
+
+        Parameters
+        ----------
+        bundle : ManagementBundle
+            The practices being paid for.
+        cover_crop_type : int, optional
+            Which crop is sown, where the bundle records only whether one is.
+            The legume enhancement is paid on this and nothing else. Left out,
+            only the base rate is paid, which is the right reading for a caller
+            that has a bundle and no farm to ask - the enhancement is a
+            property of the crop, not of the practice.
+        """
+        total = 0.0
+        if bundle.cover_crop == 1:
+            total += self.cover_crop_subsidy
+            if cover_crop_type == COVER_CROP_LEGUME:
+                total += self.cover_crop_legume_subsidy
+        if bundle.residue_on_field == 1:
+            total += self.residue_subsidy
+        return total
+
+    @classmethod
+    def _read_windows(cls, raw: dict) -> tuple[tuple[str, int, int], ...]:
+        """Parse ``policy.windows`` into ``(name, start, end)`` triples."""
+        windows = raw.get("windows", {}) or {}
+        if hasattr(windows, "to_dict"):
+            windows = windows.to_dict()
+        elif not isinstance(windows, dict):
+            windows = dict(windows)
+
+        parsed = []
+        for name, span in windows.items():
+            if name not in cls.RATE_FIELDS:
+                raise ValueError(
+                    f"policy.windows has no instrument called {name!r}. "
+                    f"Known instruments: {sorted(cls.RATE_FIELDS)}."
+                )
+            try:
+                start, end = span
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"policy.windows.{name} must be a [start_year, end_year] "
+                    f"pair, got {span!r}."
+                ) from None
+            if int(end) < int(start):
+                raise ValueError(
+                    f"policy.windows.{name} ends in {end} before it starts in "
+                    f"{start}, so the instrument would never act. Leave it out "
+                    "to switch it off instead of writing an empty window."
+                )
+            parsed.append((name, int(start), int(end)))
+        return tuple(parsed)
+
+    @staticmethod
+    def _read_residue_share(subsidies: dict) -> float:
+        """Parse ``practice_subsidies.residue_on_field_share``.
+
+        A SINGLE NUMBER, not a [low, high] pair, and not scaled by GDP. A
+        share is dimensionless, and the cost it applies to is the farm's own
+        straw income, which already carries every local difference there is -
+        the crop, the yield, the price, and how much straw that region takes
+        off the field at all. Interpolating the share on income too would
+        count the same gradient twice. The real schemes point the other way in
+        any case: EQIP raises its share for historically underserved
+        producers, so a share that rose with GDP would have the gradient
+        backwards.
+        """
+        share = subsidies.get("residue_on_field_share", 0.0)
+        if isinstance(share, (list, tuple)):
+            raise ValueError(
+                "policy.practice_subsidies.residue_on_field_share must be a "
+                "single fraction, not a [low, high] range. It is applied to "
+                "the farm's own straw opportunity cost, which already varies "
+                "with local yields, prices and residue use, so a share that "
+                "also varied by income would scale the same gradient twice."
+            )
+        share = float(share or 0.0)
+        if not 0.0 <= share <= 1.0:
+            raise ValueError(
+                "policy.practice_subsidies.residue_on_field_share is a "
+                f"fraction of the opportunity cost and must lie in [0, 1], "
+                f"got {share}. Above 1 a farm would be paid more than the "
+                "straw was worth, which makes retention profitable in itself "
+                "rather than compensated."
+            )
+        return share
+
+    @classmethod
+    def from_config(
+        cls,
+        raw: Any,
+        gdp_cost_ratio: float | None = None,
+        default_span: tuple[int, int] = (0, MAX_YEAR),
+    ):
+        """Resolve the configured rates for one country's income level.
+
+        Rates only. Whether they are in force in a given year is
+        ``in_force``, which the farmer applies on every read.
+
+        ``default_span`` is the window instruments take when the policy block
+        gives no ``start_year`` or ``end_year``, which is how the coupled run's
+        own extent becomes the default; see ``default_policy_span``.
+
+        The nitrogen charge scales on the same GDP ratio as the practice costs,
+        because nitrogen damage is local: it depends on the aquifer and on who
+        drinks from it, so the rate that internalises it is set locally too.
+        The flat practice subsidies scale for a different local reason - they
+        come out of a national budget, so what a country pays tracks what it
+        can afford. ``residue_on_field_share`` does not, being a share of a
+        cost that is already local; see ``_read_residue_share``.
+
+        The carbon price does not, and passing a range for it is an error
+        rather than something to average. Carbon is a global externality, so a
+        tonne is worth the same wherever it is put away; a price that varied by
+        income would misprice it and would draw sequestration towards the
+        countries paying most rather than the ones abating cheapest.
+        """
+        if hasattr(raw, "to_dict"):
+            raw = raw.to_dict()
+        elif not isinstance(raw, dict):
+            raw = dict(raw)
+
+        carbon_price = raw.get("carbon_price", 0.0)
+        if isinstance(carbon_price, (list, tuple)):
+            raise ValueError(
+                "policy.carbon_price must be a single global figure, not a "
+                "[low, high] range: a tonne of CO2 is worth the same wherever "
+                "it is sequestered, and a price that varied by income would "
+                "move sequestration towards the richer country rather than "
+                "the cheaper one."
+            )
+
+        ratio = 0.5 if gdp_cost_ratio is None else gdp_cost_ratio
+
+        subsidies = raw.get("practice_subsidies", {}) or {}
+        if hasattr(subsidies, "to_dict"):
+            subsidies = subsidies.to_dict()
+        elif not isinstance(subsidies, dict):
+            subsidies = dict(subsidies)
+
+        windows = cls._read_windows(raw)
+        residue_flat = _scale_cost_value(
+            subsidies.get("residue_on_field", 0.0), ratio
+        )
+        residue_share = cls._read_residue_share(subsidies)
+        if residue_flat and residue_share:
+            raise ValueError(
+                "policy.practice_subsidies sets both residue_on_field and "
+                "residue_on_field_share, which would pay a farm twice for one "
+                "retention. They are two ways of writing the same instrument: "
+                "a flat rate per hectare, or a share of the straw income the "
+                "farm actually gives up. Set one and leave the other at zero."
+            )
+
+        return cls(
+            carbon_price=float(carbon_price or 0.0),
+            nitrogen_charge=_scale_cost_value(
+                raw.get("nitrogen_charge", 0.0), ratio
+            ),
+            # A drinking-water standard, so the same figure everywhere and not
+            # scaled by income: what is safe to drink does not depend on the
+            # country's GDP.
+            levy_free_concentration=float(
+                raw.get("levy_free_concentration", 0.0) or 0.0
+            ),
+            cover_crop_subsidy=_scale_cost_value(
+                subsidies.get("cover_crop", 0.0), ratio
+            ),
+            cover_crop_legume_subsidy=_scale_cost_value(
+                subsidies.get("cover_crop_legume", 0.0), ratio
+            ),
+            residue_subsidy=residue_flat,
+            residue_subsidy_share=residue_share,
+            start_year=int(
+                default_span[0]
+                if raw.get("start_year") is None
+                else raw["start_year"]
+            ),
+            end_year=int(
+                default_span[1]
+                if raw.get("end_year") is None
+                else raw["end_year"]
+            ),
+            windows=windows,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementCosts:
+    """Direct and transition costs for tillage, cover crop, and residue.
+
+    Attributes
+    ----------
+    tillage, cover_crop, residue_on_field : PracticeCost
+        Per-practice cost structures (scaled by GDP at load).
     """
 
     tillage: PracticeCost
@@ -477,34 +839,20 @@ class ManagementCosts:
     def from_config(
         cls,
         raw: dict[str, Any] | Any,
-        capital_per_ha: float | None = None,
-        model: Any = None,
         gdp_cost_ratio: float | None = None,
     ) -> ManagementCosts:
-        """Create from configuration dictionary, scaled by GDP per capita.
-
-        Costs are scaled based on where the country's GDP per capita falls
-        relative to global percentiles (10th and 90th). Countries below p10
-        use minimum costs, above p90 use maximum costs.
+        """Build from config, scaling costs by GDP percentile ratio.
 
         Parameters
         ----------
         raw : dict
-            Configuration dictionary with practice cost specifications.
-        capital_per_ha : float, optional
-            DEPRECATED. Previously used for capital-based scaling. Now ignored
-            in favor of GDP-based scaling.
-        model : Model, optional
-            DEPRECATED. Previously used to look up reference country capital.
+            Practice cost specifications.
         gdp_cost_ratio : float, optional
-            Pre-computed GDP cost ratio in [0, 1] from country's GDP per capita.
-            0 = minimum costs (low GDP), 1 = maximum costs (high GDP).
-            If None, defaults to 0.5 (middle of cost range).
+            Value in [0, 1] from country GDP; default 0.5.
 
         Returns
         -------
         ManagementCosts
-            Cost structure with appropriately scaled values.
         """
         if hasattr(raw, "to_dict"):
             raw = raw.to_dict()
@@ -526,54 +874,14 @@ class ManagementCosts:
 # =============================================================================
 
 class ManagementBundle(Enum):
-    """A combination of agricultural practices used by a farmer.
+    """Triple of binary CA practices (8 combinations).
 
-    Conservation Agriculture (CA) involves three practices that can each be
-    ON (1) or OFF (0), creating 8 possible "bundles":
+    Encoding (0 = CA state for tillage; conventional for others):
+    - tillage: 0 no-till, 1 conventional
+    - cover_crop: 0 none, 1 cover crop
+    - residue_on_field: 0 baseline removal, 1 retention
 
-    Practice Encoding
-    -----------------
-    - tillage:          0 = no-till (CA practice), 1 = conventional tillage
-    - cover_crop:       0 = no cover crop,         1 = cover crop planted
-    - residue_on_field: 0 = residues removed,      1 = residues retained (CA)
-
-    Note: For tillage, 0 means the CA practice (no-till) is ACTIVE.
-    This matches LPJmL's internal representation.
-
-    The 8 Bundles
-    -------------
-    +------------------+----------+------------+---------+
-    | Bundle Name      | Tillage  | Cover Crop | Residue |
-    +==================+==========+============+=========+
-    | notill           |    0     |     0      |    0    |
-    | notill_residue   |    0     |     0      |    1    |
-    | notill_covercrop |    0     |     1      |    0    |
-    | conservation     |    0     |     1      |    1    | ← Full CA
-    | conventional     |    1     |     0      |    0    | ← Baseline
-    | residue          |    1     |     0      |    1    |
-    | covercrop        |    1     |     1      |    0    |
-    | covercrop_residue|    1     |     1      |    1    |
-    +------------------+----------+------------+---------+
-
-    Example
-    -------
-    >>> # Get a bundle by name
-    >>> bundle = ManagementBundle.conservation
-    >>> print(bundle.label)
-    'conservation agriculture'
-
-    >>> # Check individual practices
-    >>> print(f"No-till: {bundle.tillage == 0}")
-    No-till: True
-
-    >>> # Find bundle from practice values
-    >>> bundle = ManagementBundle.from_practices(tillage=0, cover_crop=1, residue_on_field=1)
-    >>> print(bundle.key)
-    'conservation'
-
-    tillage:          0 = no-till (CA), 1 = conventional tillage
-    cover_crop:       0 = none,         1 = cover crop
-    residue_on_field: 0 = baseline,      1 = CA residue retention
+    Full CA is ``(0, 1, 1)`` (conservation).
     """
 
     notill = (0, 0, 0)
@@ -701,66 +1009,29 @@ class ManagementBundle(Enum):
 
 @dataclass
 class ManagementPerformance:
-    """A farmer's remembered experience with a specific practice bundle.
+    """Stored performance for one practice bundle (farmer memory).
 
-    When a farmer tries a practice bundle, they observe how their land responds
-    over time. This class stores that memory, allowing farmers to recall past
-    experiences when deciding whether to try a bundle again.
-
-    Think of it like a farmer's mental note: "Last time I tried cover crops,
-    my soil improved but yields dropped slightly over 3 years."
+    Holds mean levels and trends of self-referenced rates plus duration,
+    last update year, and failure count for exploration limits.
 
     Attributes
     ----------
-    trend_soilc : float
-        Remembered soil carbon trend (% change per year, can be negative).
-        Positive = soil carbon was increasing.
-
-    trend_moisture : float
-        Remembered soil moisture trend (% change per year).
-        Positive = moisture was increasing.
-
-    trend_yield : float
-        Remembered crop yield trend (% change per year).
-        Positive = yields were improving.
-
+    level, trend : dict[str, float]
+        Mean level and trend (per year) of every registered metric over the
+        episode, keyed by metric. Named to match the tracker's properties of
+        the same name, so a remembered episode and a live one read alike.
     duration : int
-        How many years the farmer used this bundle (sample size for trends).
-
+        Years on this bundle.
     last_updated : int
-        The simulation year when this memory was last updated.
-        Used for memory decay (old memories fade).
-
+        Simulation year of last update (for decay).
     failure_count : int
-        How many times this bundle led to poor outcomes.
-        Used to avoid repeatedly trying bundles that failed.
-
-    Example
-    -------
-    >>> # A farmer remembers that conservation agriculture improved their soil
-    >>> # but had neutral effect on yields over 5 years:
-    >>> memory = ManagementPerformance(
-    ...     trend_soilc=0.02,      # 2% annual soil carbon increase
-    ...     trend_yield=-0.005,    # 0.5% annual yield decrease
-    ...     trend_moisture=0.01,   # 1% moisture increase
-    ...     duration=5,
-    ...     last_updated=2025,
-    ... )
+        Poor-outcome count for this bundle.
     """
 
-    # Trend data (absolute change per year)
-    trend_soilc: float = 0.0
-    trend_moisture: float = 0.0
-    trend_yield: float = 0.0
-    trend_profit: float = 0.0
-    trend_leaching: float = 0.0
-
-    # Level data (absolute mean values during the experience period)
-    level_yield: float = 0.0
-    level_soilc: float = 0.0
-    level_moisture: float = 0.0
-    level_profit: float = 0.0
-    level_leaching: float = 0.0
+    # Self-referenced deviations, as the tracker reports them: dimensionless
+    # and centred on zero, so no conversion is needed to score them.
+    level: dict[str, float] = field(default_factory=zero_metrics)
+    trend: dict[str, float] = field(default_factory=zero_metrics)
 
     duration: int = 0
     last_updated: int = 0
@@ -782,16 +1053,8 @@ class ManagementPerformance:
     ) -> ManagementPerformance:
         """Create from tracker trend and level dictionaries."""
         return cls(
-            trend_soilc=trend["soilc"],
-            trend_moisture=trend["moisture"],
-            trend_yield=trend["yield"],
-            trend_profit=trend["profit"],
-            trend_leaching=trend["leaching"],
-            level_yield=level["yield"],
-            level_soilc=level["soilc"],
-            level_moisture=level["moisture"],
-            level_profit=level["profit"],
-            level_leaching=level["leaching"],
+            level=dict(level),
+            trend=dict(trend),
             duration=duration,
             last_updated=year,
             failure_count=failure_count,
@@ -806,11 +1069,7 @@ class ManagementPerformance:
         failure_count: int = 0,
     ) -> ManagementPerformance:
         return cls(
-            trend_soilc=trend["soilc"],
-            trend_moisture=trend["moisture"],
-            trend_yield=trend["yield"],
-            trend_profit=trend["profit"],
-            trend_leaching=trend["leaching"],
+            trend=dict(trend),
             duration=duration,
             last_updated=year,
             failure_count=failure_count,
@@ -824,16 +1083,8 @@ class ManagementPerformance:
         year: int,
     ) -> None:
         """Refresh trends, levels and duration; preserve failure_count."""
-        self.trend_soilc = trend["soilc"]
-        self.trend_moisture = trend["moisture"]
-        self.trend_yield = trend["yield"]
-        self.trend_profit = trend["profit"]
-        self.trend_leaching = trend["leaching"]
-        self.level_yield = level["yield"]
-        self.level_soilc = level["soilc"]
-        self.level_moisture = level["moisture"]
-        self.level_profit = level["profit"]
-        self.level_leaching = level["leaching"]
+        self.level = dict(level)
+        self.trend = dict(trend)
         self.duration = duration
         self.last_updated = year
 
@@ -844,26 +1095,14 @@ class ManagementPerformance:
         year: int,
     ) -> None:
         """Refresh trends and duration; preserve failure_count."""
-        self.trend_soilc = trend["soilc"]
-        self.trend_moisture = trend["moisture"]
-        self.trend_yield = trend["yield"]
-        self.trend_profit = trend["profit"]
-        self.trend_leaching = trend["leaching"]
+        self.trend = dict(trend)
         self.duration = duration
         self.last_updated = year
 
     def clear(self) -> None:
         """Reset to neutral (no remembered experience)."""
-        self.trend_soilc = 0.0
-        self.trend_moisture = 0.0
-        self.trend_yield = 0.0
-        self.trend_profit = 0.0
-        self.trend_leaching = 0.0
-        self.level_yield = 0.0
-        self.level_soilc = 0.0
-        self.level_moisture = 0.0
-        self.level_profit = 0.0
-        self.level_leaching = 0.0
+        self.level = zero_metrics()
+        self.trend = zero_metrics()
         self.duration = 0
         self.last_updated = 0
         self.failure_count = 0
@@ -872,44 +1111,51 @@ class ManagementPerformance:
         self.failure_count += 1
 
     def __repr__(self) -> str:
-        return (
-            f"ManagementPerformance(yield={self.level_yield:+.1%}, yield_trend={self.trend_yield:+.2%}/yr, "
-            f"soilc={self.level_soilc:+.1%}, soilc_trend={self.trend_soilc:+.2%}/yr, "
-            f"moisture={self.level_moisture:+.1%}, moisture_trend={self.trend_moisture:+.2%}/yr, "
-            f"profit={self.level_profit:+.1%}, profit_trend={self.trend_profit:+.2%}/yr, "
-            f"leaching={self.level_leaching:+.1%}, leaching_trend={self.trend_leaching:+.2%}/yr, "
-            f"n={self.duration}yr)"
+        detail = ", ".join(
+            f"{key}={self.level[key]:+.1%}, {key}_trend={self.trend[key]:+.2%}/yr"
+            for key in METRIC_KEYS
         )
+        return f"ManagementPerformance({detail}, n={self.duration}yr)"
+
+
+# The unified scoring API, plus the ``level_``/``trend_`` spellings the rest of
+# the model reads a remembered episode by. Generated rather than written out:
+# a remembered episode holds the means of the same self-referenced rates a
+# tracker does, so only the names differ.
+add_metric_properties(
+    ManagementPerformance,
+    {
+        "level_{key}": lambda self, key: self.level[key],
+        "trend_{key}": lambda self, key: self.trend[key],
+        "mean_{key}": lambda self, key: self.level[key],
+        "{key}_trend": lambda self, key: self.trend[key],
+    },
+)
+
+
+#: Returned for a slot the farm has no record of. Shared rather than allocated
+#: per read: peer scans hit far more empty slots than full ones. Reads must not
+#: mutate it, which is why every mutating path goes through ``_slot``.
+_NO_EXPERIENCE = ManagementPerformance.empty()
 
 
 class ManagementPerformanceMemory:
-    """A farmer's complete memory of all practice bundles they've tried.
+    """Per-episode performance memory for one farmer.
 
-    Farmers remember their experiences with different practice combinations.
-    This class stores one ManagementPerformance for each of the 8 possible
-    bundles, allowing farmers to recall: "What happened when I tried no-till?"
+    An episode is a bundle *and* the cover crop grown under it. Two cover crops
+    are two different practices - a legume fixes nitrogen, a catch crop takes up
+    what is already there - and remembering both in one slot would average a
+    farm's experience of each into an experience of neither. Bundles without a
+    cover crop key on ``None``, so the bundle space itself stays binary and does
+    not inflate with the type.
 
-    This memory influences future decisions through social learning - farmers
-    share their experiences with neighbors, and neighbors can learn from
-    bundles they haven't personally tried.
+    Which type a slot means is resolved by ``type_for``, supplied by the
+    behaviour: for the bundle being run it is the crop actually in the ground,
+    and for a candidate it is the one this farm would plant. That keeps every
+    caller talking in bundles while the slots stay typed.
 
-    Memory Decay
-    ------------
-    Old memories fade over time (configurable via `memory_decay_years`).
-    This reflects bounded rationality - farmers don't perfectly remember
-    experiences from decades ago.
-
-    Failure Tracking
-    ----------------
-    If a bundle leads to poor outcomes, the failure count increases.
-    Farmers avoid bundles with multiple past failures (exploration limit).
-
-    Example
-    -------
-    >>> # Access a farmer's memory of the conservation bundle:
-    >>> memory = farmer.behaviour.performance_memory
-    >>> ca_experience = memory[ManagementBundle.conservation]
-    >>> print(f"Soil trend: {ca_experience.trend_soilc}")
+    Memories older than ``memory_decay_years`` are cleared. Failure counts limit
+    re-exploration of poor bundles.
     """
 
     def __init__(
@@ -917,28 +1163,39 @@ class ManagementPerformanceMemory:
         current_bundle: ManagementBundle,
         state: ManagementPerformanceTracker,
         year: int,
+        type_for=None,
     ) -> None:
-        for bundle in ManagementBundle:
-            setattr(self, bundle.key, ManagementPerformance.empty())
+        self._type_for = type_for
+        self._slots: dict[
+            tuple[ManagementBundle, int | None], ManagementPerformance
+        ] = {}
 
         if state.n > 1:
-            self._set(
-                current_bundle,
-                ManagementPerformance.from_tracker(
-                    state.trend, state.level, state.n, year
-                ),
+            self._slot(self.key(current_bundle)).update_from_tracker(
+                state.trend, state.level, state.n, year
             )
 
-    def _get(self, bundle: ManagementBundle) -> ManagementPerformance:
-        return getattr(self, bundle.key)
+    def key(self, bundle: ManagementBundle) -> tuple[ManagementBundle, int | None]:
+        """The slot this farm's experience of ``bundle`` belongs in."""
+        if not bundle.cover_crop:
+            return (bundle, None)
+        if self._type_for is None:
+            return (bundle, None)
+        return (bundle, self._type_for(bundle))
 
-    def _set(
-        self, bundle: ManagementBundle, performance: ManagementPerformance
-    ) -> None:
-        setattr(self, bundle.key, performance)
+    def _slot(self, key) -> ManagementPerformance:
+        """The stored slot, created empty if this is its first use."""
+        if key not in self._slots:
+            self._slots[key] = ManagementPerformance.empty()
+        return self._slots[key]
+
+    def get(self, key) -> ManagementPerformance:
+        """Read a slot by its exact key, without creating it."""
+        return self._slots.get(key, _NO_EXPERIENCE)
 
     def __getitem__(self, bundle: ManagementBundle) -> ManagementPerformance:
-        return self._get(bundle)
+        """Read this farm's experience of ``bundle`` under the type it would use."""
+        return self.get(self.key(bundle))
 
     def update_current(
         self,
@@ -951,7 +1208,7 @@ class ManagementPerformanceMemory:
         """Refresh memory for the active bundle with latest trends and levels."""
         if n < 2:
             return
-        self._get(bundle).update_from_tracker(trend, level, n, year)
+        self._slot(self.key(bundle)).update_from_tracker(trend, level, n, year)
 
     def record_performance(
         self,
@@ -964,21 +1221,17 @@ class ManagementPerformanceMemory:
         """Store outcome when leaving a bundle; preserve failure count."""
         if n < 2:
             return
-        failure_count = self._get(bundle).failure_count
-        self._set(
-            bundle,
-            ManagementPerformance.from_tracker(
-                trend, level, n, year, failure_count=failure_count
-            ),
+        key = self.key(bundle)
+        self._slots[key] = ManagementPerformance.from_tracker(
+            trend, level, n, year, failure_count=self.get(key).failure_count
         )
 
     def record_failure(self, bundle: ManagementBundle) -> None:
-        self._get(bundle).record_failure()
+        self._slot(self.key(bundle)).record_failure()
 
     def decay(self, current_year: int, memory_decay_years: int) -> None:
         """Clear memories older than memory_decay_years."""
-        for bundle in ManagementBundle:
-            mem = getattr(self, bundle.key)
+        for mem in self._slots.values():
             if mem.duration > 0 and current_year - mem.last_updated > memory_decay_years:
                 mem.clear()
 
@@ -989,182 +1242,85 @@ class ManagementPerformanceMemory:
 
 @dataclass
 class RegionManagementPerformance:
-    """Average performance of ONE practice bundle across many farmers in a region.
+    """Regional mean performance for one practice bundle.
 
-    When farmers learn from their country or agroecological cluster, they need
-    to know: "How well does no-till work on average in my country?"
-
-    This class aggregates performance data from all farmers using a specific
-    bundle in a region (country or cluster).
-
-    IMPORTANT: Every metric (yield, soilc, moisture, leaching, profit) is
-    stored as a self-referenced fractional rate (value / own_baseline - 1),
-    computed per contributing farmer. This makes aggregates dimensionless and
-    ambient-free: merging across countries compares management effects on a
-    percentage scale rather than climate/soil baselines.
-
-    Why Store Sums?
-    ---------------
-    We store sums (not means) internally because:
-    1. Sums can be combined when merging regions (country + neighbors)
-    2. Means are computed on-demand via properties (mean_yield, etc.)
-    3. This avoids precision loss when re-aggregating
+    Metrics are self-referenced relative deviations per farmer. Rates are
+    Winsorized to ``RATE_CLIP_BOUNDS`` before summing. Sums (not means) are
+    stored internally for mergeable aggregation; means via properties.
 
     Attributes
     ----------
-    yield_sum : float
-        Sum of yield rates (value / own_baseline - 1).
-    soilc_sum : float
-        Sum of soil carbon rates.
-    moisture_sum : float
-        Sum of root zone moisture rates.
-    yield_trend_sum : float
-        Sum of yield trends (% change/year × count).
-    soilc_trend_sum : float
-        Sum of soil carbon trends (% change/year × count).
-    moisture_trend_sum : float
-        Sum of moisture trends (% change/year × count).
+    level_sums, trend_sums : dict[str, float]
+        Summed level and trend rates across contributing farmers, keyed by
+        metric. Sums rather than means so two aggregates can be pooled.
     count : int
-        Number of farmers contributing to these sums.
-
-    Example
-    -------
-    >>> # Country-level mean for no-till bundle:
-    >>> perf = country_store.get(ManagementBundle.notill)
-    >>> print(f"Mean yield: {perf.mean_yield:.2f} t/ha")
-    >>> print(f"Yield trend: {perf.mean_yield_trend:+.1%}/year")
-    >>> print(f"Based on {perf.count} farmers")
+        Number of farmers in the aggregate.
     """
 
-    yield_sum: float = 0.0
-    soilc_sum: float = 0.0
-    moisture_sum: float = 0.0
-    yield_trend_sum: float = 0.0
-    soilc_trend_sum: float = 0.0
-    moisture_trend_sum: float = 0.0
-    profit_sum: float = 0.0
-    profit_trend_sum: float = 0.0
-    leaching_sum: float = 0.0
-    leaching_trend_sum: float = 0.0
+    level_sums: dict[str, float] = field(default_factory=zero_metrics)
+    trend_sums: dict[str, float] = field(default_factory=zero_metrics)
     count: int = 0
 
     @classmethod
     def empty(cls) -> RegionManagementPerformance:
         return cls()
 
+    @classmethod
+    def from_means(
+        cls,
+        level: dict[str, float],
+        trend: dict[str, float],
+        count: int,
+    ) -> RegionManagementPerformance:
+        """Build an aggregate that reports the given means over ``count`` farms."""
+        return cls(
+            level_sums={key: value * count for key, value in level.items()},
+            trend_sums={key: value * count for key, value in trend.items()},
+            count=count,
+        )
+
     @property
     def n_farmers(self) -> int:
         return self.count
 
     @property
-    def mean_yield(self) -> float:
-        """Mean yield across farmers in this region."""
-        return self.yield_sum / self.count if self.count else 0.0
+    def level(self) -> dict[str, float]:
+        """Mean level of every metric, keyed by metric."""
+        return {key: self._mean(self.level_sums[key]) for key in METRIC_KEYS}
 
     @property
-    def mean_soilc(self) -> float:
-        """Mean soil carbon across farmers in this region."""
-        return self.soilc_sum / self.count if self.count else 0.0
+    def trend(self) -> dict[str, float]:
+        """Mean trend of every metric, keyed by metric."""
+        return {key: self._mean(self.trend_sums[key]) for key in METRIC_KEYS}
 
-    @property
-    def mean_moisture(self) -> float:
-        """Mean root moisture across farmers in this region."""
-        return self.moisture_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_yield_trend(self) -> float:
-        """Mean yield trend across farmers in this region."""
-        return self.yield_trend_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_soilc_trend(self) -> float:
-        """Mean soil carbon trend across farmers in this region."""
-        return self.soilc_trend_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_moisture_trend(self) -> float:
-        """Mean moisture trend across farmers in this region."""
-        return self.moisture_trend_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_profit(self) -> float:
-        """Mean profit rate (fraction) across farmers in this region."""
-        return self.profit_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_profit_trend(self) -> float:
-        """Mean profit rate trend across farmers in this region."""
-        return self.profit_trend_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_leaching(self) -> float:
-        """Mean leaching (gN/m2/yr) across farmers in this region."""
-        return self.leaching_sum / self.count if self.count else 0.0
-
-    @property
-    def mean_leaching_trend(self) -> float:
-        """Mean leaching trend across farmers in this region."""
-        return self.leaching_trend_sum / self.count if self.count else 0.0
-
-    # Trend aliases for unified scoring API
-    @property
-    def yield_trend(self) -> float:
-        """Alias for mean_yield_trend (unified scoring API)."""
-        return self.mean_yield_trend
-
-    @property
-    def soilc_trend(self) -> float:
-        """Alias for mean_soilc_trend (unified scoring API)."""
-        return self.mean_soilc_trend
-
-    @property
-    def moisture_trend(self) -> float:
-        """Alias for mean_moisture_trend (unified scoring API)."""
-        return self.mean_moisture_trend
-
-    @property
-    def profit_trend(self) -> float:
-        """Alias for mean_profit_trend (unified scoring API)."""
-        return self.mean_profit_trend
-
-    @property
-    def leaching_trend(self) -> float:
-        """Alias for mean_leaching_trend (unified scoring API)."""
-        return self.mean_leaching_trend
+    def _mean(self, total: float) -> float:
+        return total / self.count if self.count else 0.0
 
     def add_observation(
         self,
-        cropyield: float,
-        soilc: float,
-        moisture: float,
+        level: dict[str, float],
         trend: dict[str, float],
-        profit: float = 0.0,
-        leaching: float = 0.0,
     ) -> None:
-        self.yield_sum += cropyield
-        self.soilc_sum += soilc
-        self.moisture_sum += moisture
-        self.yield_trend_sum += trend["yield"]
-        self.soilc_trend_sum += trend["soilc"]
-        self.moisture_trend_sum += trend["moisture"]
-        self.profit_sum += profit
-        self.profit_trend_sum += trend["profit"]
-        self.leaching_sum += leaching
-        self.leaching_trend_sum += trend["leaching"]
+        """Add one farmer; clip rates to the metric's bounds before summing."""
+        for key, spec in METRICS.items():
+            lo, hi = spec.clip_bounds
+            self.level_sums[key] += max(lo, min(hi, level[key]))
+            self.trend_sums[key] += max(lo, min(hi, trend[key]))
         self.count += 1
 
     def merge(self, other: RegionManagementPerformance) -> None:
-        """Add another aggregate's sums (cluster roll-up)."""
-        self.yield_sum += other.yield_sum
-        self.soilc_sum += other.soilc_sum
-        self.moisture_sum += other.moisture_sum
-        self.yield_trend_sum += other.yield_trend_sum
-        self.soilc_trend_sum += other.soilc_trend_sum
-        self.moisture_trend_sum += other.moisture_trend_sum
-        self.profit_sum += other.profit_sum
-        self.profit_trend_sum += other.profit_trend_sum
-        self.leaching_sum += other.leaching_sum
-        self.leaching_trend_sum += other.leaching_trend_sum
+        """Add another aggregate's sums (cluster roll-up).
+
+        Pooling, so the result is the mean over every farmer in the parts and a
+        populous member of a cluster weighs more than a sparse one. That is
+        what a cluster is: one population of farms sharing an agroecology, read
+        as a whole. Blending across a border instead asks how far a farmer
+        looks beyond it, which is a stated preference rather than a matter of
+        sample size - see ``from_weighted_means``.
+        """
+        for key in METRIC_KEYS:
+            self.level_sums[key] += other.level_sums[key]
+            self.trend_sums[key] += other.trend_sums[key]
         self.count += other.count
 
     @classmethod
@@ -1177,89 +1333,61 @@ class RegionManagementPerformance:
         other_weight: float,
         n_farmers: int,
     ) -> RegionManagementPerformance:
-        """Merge two aggregates using weights applied to their means."""
+        """Merge two aggregates using weights applied to their means.
+
+        Weights on the means, not on the sums, so the configured own/neighbour
+        split holds whatever the two populations are: how much attention a
+        farmer pays across the border is a behavioural assumption, and pooling
+        would silently replace it with the ratio of the farmer counts. Contrast
+        ``merge``, which pools because a cluster is a single population.
+
+        ``n_farmers`` only scales the sums so the result reports the blended
+        means; it does not enter the blend.
+        """
         if n_farmers <= 0:
             return cls.empty()
 
-        m_yield = own_weight * own.mean_yield + other_weight * other.mean_yield
-        m_soilc = own_weight * own.mean_soilc + other_weight * other.mean_soilc
-        m_moisture = own_weight * own.mean_moisture + other_weight * other.mean_moisture
-        m_yield_trend = (
-            own_weight * own.mean_yield_trend + other_weight * other.mean_yield_trend
-        )
-        m_soilc_trend = (
-            own_weight * own.mean_soilc_trend + other_weight * other.mean_soilc_trend
-        )
-        m_moisture_trend = (
-            own_weight * own.mean_moisture_trend
-            + other_weight * other.mean_moisture_trend
-        )
-        m_profit = own_weight * own.mean_profit + other_weight * other.mean_profit
-        m_profit_trend = (
-            own_weight * own.mean_profit_trend + other_weight * other.mean_profit_trend
-        )
-        m_leaching = own_weight * own.mean_leaching + other_weight * other.mean_leaching
-        m_leaching_trend = (
-            own_weight * own.mean_leaching_trend
-            + other_weight * other.mean_leaching_trend
+        def blend(own_means, other_means):
+            return {
+                key: own_weight * own_means[key] + other_weight * other_means[key]
+                for key in METRIC_KEYS
+            }
+
+        return cls.from_means(
+            blend(own.level, other.level),
+            blend(own.trend, other.trend),
+            n_farmers,
         )
 
-        return cls(
-            yield_sum=m_yield * n_farmers,
-            soilc_sum=m_soilc * n_farmers,
-            moisture_sum=m_moisture * n_farmers,
-            yield_trend_sum=m_yield_trend * n_farmers,
-            soilc_trend_sum=m_soilc_trend * n_farmers,
-            moisture_trend_sum=m_moisture_trend * n_farmers,
-            profit_sum=m_profit * n_farmers,
-            profit_trend_sum=m_profit_trend * n_farmers,
-            leaching_sum=m_leaching * n_farmers,
-            leaching_trend_sum=m_leaching_trend * n_farmers,
-            count=n_farmers,
-        )
+
+# The unified scoring API. A region aggregate answers to the same names as a
+# tracker and a remembered episode, which is what lets one scoring path serve
+# all three.
+add_metric_properties(
+    RegionManagementPerformance,
+    {
+        "mean_{key}": lambda self, key: self._mean(self.level_sums[key]),
+        "mean_{key}_trend": lambda self, key: self._mean(self.trend_sums[key]),
+        "{key}_trend": lambda self, key: self._mean(self.trend_sums[key]),
+        "{key}_sum": lambda self, key: self.level_sums[key],
+        "{key}_trend_sum": lambda self, key: self.trend_sums[key],
+    },
+)
+
 
 class RegionManagementPerformanceStore:
-    """Collection of performance data for ALL bundles in a region.
-
-    This is the main data structure for country-level and cluster-level
-    social learning. It answers questions like:
-    - "What is the average yield for farmers using no-till in my country?"
-    - "What fraction of farmers in my cluster use conservation agriculture?"
-
-    Data Flow
-    ---------
-    1. Each farmer's data is added via add_observation()
-    2. finalize_store() computes bundle_counts and total_farmers
-    3. For country-level: merge_with_neighbours() blends with neighbor countries
-    4. For cluster-level: merge_store() combines multiple countries
+    """Performance and adoption data for all bundles in a region.
 
     Attributes
     ----------
     year : int
-        Simulation year this data represents (-1 if not set).
-
+        Simulation year (-1 if unset).
     total_farmers : int
-        Total number of farmers in this region.
-
+        Farmer count in region.
     bundle_counts : dict[ManagementBundle, float]
-        How many farmers use each bundle. After neighbor merging, these
-        may be weighted floats (e.g., 150.5) rather than integers.
-
+        Adoption counts per bundle (may be weighted floats after neighbour merge).
     country_codes : list[str]
-        ISO country codes included (for cluster-level stores).
-
-    Example
-    -------
-    >>> # Get country-level performance store:
-    >>> store = country.statistic.get("management_performance")
-    >>>
-    >>> # How does no-till perform on average?
-    >>> notill_perf = store.get(ManagementBundle.notill)
-    >>> print(f"Mean yield: {notill_perf.mean_yield:.2f} t/ha")
-    >>>
-    >>> # What fraction of farmers use no-till?
-    >>> adoption_rate = store.bundle_counts.get(ManagementBundle.notill, 0) / store.total_farmers
-    >>> print(f"Adoption rate: {adoption_rate:.1%}")
+        ISO codes included (cluster stores).
     """
 
     def __init__(
@@ -1284,24 +1412,13 @@ class RegionManagementPerformanceStore:
         return self._bundles.get(bundle, RegionManagementPerformance.empty())
 
     def add_observation(self, bundle: ManagementBundle, farmer: Any) -> None:
-        """Add one farmer's observation as self-referenced fractional rates.
+        """Add farmer observation as self-referenced relative deviations.
 
-        Every metric is stored as a fractional deviation from the contributing
-        farmer's OWN historic baseline (value / own_baseline - 1): the current
-        year's rate as the level, and the tracker's rate slopes as the trend.
-        Because rates are dimensionless and ambient-free by construction,
-        aggregates can be merged across countries directly - no country medians
-        or divisors are needed.
+        Level = current rates; trends from ``performance_tracker``.
         """
-        trend = farmer.behaviour.performance_tracker.trend
-
         self._get(bundle).add_observation(
-            farmer.yield_rate,
-            farmer.soilc_rate,
-            farmer.moisture_rate,
-            trend,
-            farmer.profit,
-            farmer.leaching_rate,
+            rates_of(farmer),
+            farmer.behaviour.performance_tracker.trend,
         )
 
     def add_performance(
@@ -1350,16 +1467,26 @@ class RegionManagementPerformanceStore:
         neighbour_stores: list[RegionManagementPerformanceStore],
         neighbour_weight: float,
     ) -> RegionManagementPerformanceStore:
-        """Merge this country's stats with neighbouring countries' published stats.
+        """Blend country stats with neighbours' prior-year published stats.
 
-        Two quantities are merged separately per bundle:
+        Performance (levels, trends) and adoption (bundle_counts) are merged
+        separately per bundle, both as weighted means of the two sides rather
+        than as weighted sums. Sums would make the weights depend on how many
+        neighbours a country happens to have, since every neighbour store
+        carries a full farmer count of its own: Germany with nine neighbours
+        would count its own farms a ninth of what Portugal with one counts
+        theirs, at the same configured weight.
 
-        1. **Performance** (yield, soilc, moisture, trends) — weighted average of
-           bundle-level averages, using farmer counts as sample sizes.
-        2. **Adoption** (bundle_counts) — weighted merge of adoption shares used
-           for social-norm calculations; may already be fractional from prior merges.
+        Neighbours enter as one pooled block, so a large neighbour speaks for
+        more of it than a small one, and the block as a whole gets the
+        configured weight. Where one side has no farmers at all the other
+        carries the full weight.
 
-        Neighbour stats come from the previous year (world broadcast).
+        The farmer counts the merged store reports are the own farms plus one
+        average neighbour's worth, for the same reason: they set how far social
+        learning is shrunk towards neutral and how heavily the country weighs
+        in its cluster's roll-up, and a country should not claim more evidence
+        for happening to border more countries.
         """
         if not neighbour_stores or neighbour_weight <= 0:
             self.finalize_store()
@@ -1380,6 +1507,19 @@ class RegionManagementPerformanceStore:
         merged_store = RegionManagementPerformanceStore(year=self.year)
         merged_bundle_n: dict[ManagementBundle, float] = {}
 
+        # Weights for the adoption shares, with the empty side's weight handed
+        # to the other so a country whose farms are all unaccounted for still
+        # reads its neighbours rather than a quarter of them.
+        adoption_weights = _side_weights(
+            own_weight if own_farmer_n > 0 else 0.0,
+            neighbour_weight if neighbour_farmer_n > 0 else 0.0,
+        )
+        # Counts are shares of the farms behind the blend, so the ratio the
+        # social norm reads gives the blended share back exactly.
+        merged_farmer_n = int(
+            own_farmer_n + neighbour_farmer_n / len(neighbour_stores)
+        )
+
         for bundle in all_bundles:
             own_bundle_performance = self._bundles.get(
                 bundle, RegionManagementPerformance.empty()
@@ -1392,6 +1532,7 @@ class RegionManagementPerformanceStore:
             # Pool neighbour performance sums across all neighbour countries.
             neighbour_bundle_performance = RegionManagementPerformance.empty()
             neighbour_performance_n = 0
+            neighbour_reporting_n = 0
             # Pool neighbour adoption counts (may be float-weighted from last year).
             neighbour_bundle_n = 0.0
             for neighbour_store in neighbour_stores:
@@ -1399,9 +1540,22 @@ class RegionManagementPerformanceStore:
                 if neighbour_bundle_slice.count > 0:
                     neighbour_bundle_performance.merge(neighbour_bundle_slice)
                     neighbour_performance_n += neighbour_bundle_slice.count
+                    neighbour_reporting_n += 1
                 neighbour_bundle_n += neighbour_store.bundle_counts.get(
                     bundle, 0
                 )
+
+            # Farms behind the blended means: own plus one average neighbour of
+            # those running the bundle, so identical neighbours added to the
+            # block do not multiply the evidence.
+            blended_n = int(
+                own_performance_n
+                + (
+                    neighbour_performance_n / neighbour_reporting_n
+                    if neighbour_reporting_n > 0
+                    else 0.0
+                )
+            )
 
             # Performance merge: weighted mean of bundle-level means
             if own_performance_n > 0 and neighbour_performance_n > 0:
@@ -1411,28 +1565,40 @@ class RegionManagementPerformanceStore:
                         neighbour_bundle_performance,
                         own_weight=own_weight,
                         other_weight=neighbour_weight,
-                        n_farmers=(
-                            own_performance_n
-                            + neighbour_performance_n
-                        ),
+                        n_farmers=blended_n,
                     )
                 )
             elif own_performance_n > 0:
                 merged_store._bundles[bundle] = own_bundle_performance
             elif neighbour_performance_n > 0:
-                merged_store._bundles[bundle] = neighbour_bundle_performance
+                # Neighbours only: their pooled means, reported for the size of
+                # the block rather than the sum over its members.
+                merged_store._bundles[bundle] = (
+                    RegionManagementPerformance.from_weighted_means(
+                        neighbour_bundle_performance,
+                        RegionManagementPerformance.empty(),
+                        own_weight=1.0,
+                        other_weight=0.0,
+                        n_farmers=blended_n,
+                    )
+                )
 
-            # Adoption merge: weighted mix of bundle adoption counts
-            merged_bundle_n[bundle] = (
-                own_weight * own_adoption_count
-                + neighbour_weight * neighbour_bundle_n
+            # Adoption merge: weighted mix of the shares running the bundle
+            own_share = (
+                own_adoption_count / own_farmer_n if own_farmer_n > 0 else 0.0
+            )
+            neighbour_share = (
+                neighbour_bundle_n / neighbour_farmer_n
+                if neighbour_farmer_n > 0
+                else 0.0
+            )
+            merged_bundle_n[bundle] = merged_farmer_n * (
+                adoption_weights[0] * own_share
+                + adoption_weights[1] * neighbour_share
             )
 
         merged_store.bundle_counts = merged_bundle_n
-        merged_store.total_farmers = int(
-            own_weight * own_farmer_n
-            + neighbour_weight * neighbour_farmer_n
-        )
+        merged_store.total_farmers = merged_farmer_n
         return merged_store
 
 
@@ -1442,85 +1608,37 @@ class RegionManagementPerformanceStore:
 
 @dataclass
 class ManagementPerformanceTracker:
-    """Tracks how a farmer's land responds to their current practices over time.
+    """Online linear regression of self-referenced metric rates.
 
-    This class computes TRENDS (is my soil improving or declining?) using
-    linear regression, without storing the full time series.
-
-    Why Trends Matter
-    -----------------
-    Farmers care not just about current yield, but whether things are getting
-    better or worse. A trend of +2%/year in soil carbon means the practice
-    is building long-term soil health.
-
-    Mathematical Background
-    -----------------------
-    Uses "online" linear regression (streaming algorithm):
-
-    For y = a + b×t:
-        slope b = (n×Σ(t×y) - Σt×Σy) / (n×Σt² - (Σt)²)
-
-    This only requires storing running sums, not the full history.
-    The slope is then normalized by the mean to get % change per year.
-
-    Reset on Transition
-    -------------------
-    When a farmer switches practices, the tracker resets to measure
-    the NEW practice's effect. The old practice's performance is
-    stored in ManagementPerformanceMemory.
+    Accumulates running sums for mean levels and slopes without storing the
+    full series. Resets on practice transition; prior episode stored in
+    ``ManagementPerformanceMemory``. ``baseline_performance`` holds rates at
+    last transition for fallback scoring with current reference scales.
 
     Attributes
     ----------
     t_start : int
-        The year when tracking began (when current practice was adopted).
-
-    baseline_score : float
-        Performance score at time of last transition (from compute_performance_score).
-        Used for fallback detection (if current score drops below baseline for
-        several years, farmer may revert to previous practice).
-
+        Year tracking began for current bundle.
+    baseline_performance : ManagementPerformance | None
+        Rate snapshot at last transition (fallback detection).
     n : int
-        Number of observations (years of data).
-
-    sum_soilc, sum_moisture, sum_yield : float
-        Running sums of each metric (for computing means).
-
-    sum_t_soilc, sum_t_moisture, sum_t_yield : float
-        Running sums of t×metric (for computing slopes).
-
-    Example
-    -------
-    >>> # After 5 years, check how no-till is affecting soil:
-    >>> tracker = farmer.behaviour.performance_tracker
-    >>> trends = tracker.trend
-    >>> print(f"Soil carbon trend: {trends['soilc']:+.1%}/year")
-    >>> print(f"Yield trend: {trends['yield']:+.1%}/year")
+        Observation count.
     """
 
     t_start: int
-    baseline_score: float | None = None  # Set on first update (deferred init)
+    # Rates at the last transition; scored on demand. Set on first update
+    # (deferred init).
+    baseline_performance: ManagementPerformance | None = None
     n: int = 0
     sum_t: float = 0.0
     sum_tt: float = 0.0
-    # All metrics are stored as fractional rates (value / own_baseline - 1),
-    # so levels are dimensionless and centred on zero. The _sq sums capture
-    # each metric's interannual variability, used to calibrate the scoring
-    # scale (see CAWorld.compute_reference_scales).
-    sum_soilc: float = 0.0
-    sum_t_soilc: float = 0.0
-    sum_soilc_sq: float = 0.0
-    sum_moisture: float = 0.0
-    sum_t_moisture: float = 0.0
-    sum_moisture_sq: float = 0.0
-    sum_yield: float = 0.0
-    sum_t_yield: float = 0.0
-    sum_yield_sq: float = 0.0
-    sum_profit: float = 0.0
-    sum_t_profit: float = 0.0
-    sum_profit_sq: float = 0.0
-    sum_leaching: float = 0.0
-    sum_t_leaching: float = 0.0
-    sum_leaching_sq: float = 0.0
+    # All metrics are stored as self-referenced relative deviations, so levels
+    # are dimensionless and centred on zero. ``square_sums`` captures each
+    # metric's interannual variability, used to calibrate the scoring scale
+    # (see CAWorld.compute_reference_scales).
+    sums: dict[str, float] = field(default_factory=zero_metrics)
+    time_sums: dict[str, float] = field(default_factory=zero_metrics)
+    square_sums: dict[str, float] = field(default_factory=zero_metrics)
     last_obs_year: int = -1
 
     @classmethod
@@ -1536,47 +1654,39 @@ class ManagementPerformanceTracker:
         cls,
         farmer: Any,
         current_year: int,
-        baseline_score: float,
+        baseline_performance: ManagementPerformance | None,
     ) -> ManagementPerformanceTracker:
         """Fresh state when switching to a new practice bundle."""
-        soilc = farmer.soilc_rate
-        moisture = farmer.moisture_rate
-        cropyield = farmer.yield_rate
-        profit = farmer.profit
-        leaching = farmer.leaching_rate
+        rates = rates_of(farmer)
         return cls(
             t_start=current_year,
-            baseline_score=baseline_score,
+            baseline_performance=baseline_performance,
             n=1,
-            sum_soilc=soilc,
-            sum_soilc_sq=soilc * soilc,
-            sum_moisture=moisture,
-            sum_moisture_sq=moisture * moisture,
-            sum_yield=cropyield,
-            sum_yield_sq=cropyield * cropyield,
-            sum_profit=profit,
-            sum_profit_sq=profit * profit,
-            sum_leaching=leaching,
-            sum_leaching_sq=leaching * leaching,
+            # Time index of this single point is 0, so the time sums stay zero.
+            sums=dict(rates),
+            square_sums={key: value * value for key, value in rates.items()},
             last_obs_year=current_year,
         )
 
     @staticmethod
     def _load_history(farmer: Any) -> tuple[int, list[dict[str, float]]]:
-        """Load historic time series of fractional rates for regression init.
+        """Load historic time series of relative deviations for regression init.
 
-        Every metric is expressed as a fractional deviation from the farmer's
-        own historic baseline (``value / baseline - 1``), so all five metrics
-        share the same self-referenced, dimensionless scale:
+        Every metric is expressed as a self-referenced deviation from the
+        farmer's own historic baseline, so all five share one dimensionless
+        scale:
 
-        - yield, soilc, moisture, leaching: relative to the historic-mean
-          baselines set by ``CAFarmer._compute_baseline_metrics``.
-        - profit: ``(revenue - baseline_revenue) / baseline_revenue``.
+        - yield, soilc, moisture, leaching: ``log_rate`` against the
+          historic-mean baselines set by ``CAFarmer._compute_baseline_metrics``.
+        - profit: ``asinh((revenue - baseline_revenue) / baseline_revenue)``.
           During the historic period delta_costs = 0 (same bundle as baseline),
-          so this is a clean percentage deviation from baseline revenue.
+          so this is a clean deviation from baseline revenue.
 
-        This yields genuine year-to-year variation for all metrics, which the
-        world uses to calibrate the (interannual) scoring scale.
+        These must be the exact transforms the farmer properties apply at
+        runtime. The world calibrates the scoring scales from the interannual
+        spread of this history and the same tracker then accumulates runtime
+        observations, so a mismatch would measure a log-scale signal with a
+        linear-scale ruler, with a bias that varies by metric and by site.
         """
         from_earth = farmer.cell.from_earth
         has_history = hasattr(from_earth, "time") and len(from_earth.time) > 1
@@ -1588,13 +1698,11 @@ class ManagementPerformanceTracker:
                 t_start = farmer.model.lpjml.sim_year
                 has_history = False
 
-        def rate(value: float, baseline: float) -> float:
-            return value / baseline - 1.0 if baseline > 0 else 0.0
-
         if has_history:
             history = []
             n_years = len(from_earth.time)
             baseline_revenue = farmer.baseline_revenue
+            moisture_name = moisture_var(from_earth)
 
             for i in range(n_years):
                 pft_harvestc = farmer.get_from_earth(
@@ -1603,40 +1711,57 @@ class ManagementPerformanceTracker:
                 cftfrac = farmer.get_from_earth(
                     "cftfrac", as_scalar=False, drop_band=NON_CROPS, time_idx=i
                 )
-                avg_yield = pft_harvestc.weighted(cftfrac).sum("band").item()
+                cropped = float(cftfrac.sum("band").item())
+                avg_yield = (
+                    pft_harvestc.weighted(cftfrac).sum("band").item() / cropped
+                    if cropped > 0 else 0.0
+                )
 
                 soilc = farmer.get_from_earth(
                     "soilc_agr_layer", as_scalar=True, band=0, time_idx=i
                 )
                 moisture = farmer.get_from_earth(
-                    "rootmoist_agr", as_scalar=True, time_idx=i
+                    moisture_name, as_scalar=True, time_idx=i
                 )
-                runoff = farmer.get_from_earth("runoff", as_scalar=True, time_idx=i)
-                raw_leaching = farmer.get_from_earth(
-                    "leaching", as_scalar=True, time_idx=i
-                )
-                leaching = raw_leaching * 1e3 / runoff if runoff > 0 else 0.0
+                leached = agricultural_leaching(farmer, time_idx=i)
 
+                # Same quantity as ConservationAgricultureFarmer.profit,
+                # written out: revenue/baseline - 1 is the revenue change over
+                # baseline, and costs do not move over the historic period
+                # because nobody has changed practice yet. Keep the two in step.
+                #
+                # No policy transfer either, whatever the scenario sets: these
+                # are the years the farm learned from, and they were farmed
+                # without an instrument. Back-dating one would put payments in
+                # a memory that never received them, and peers would read a
+                # practice as having paid before it was ever paid for.
                 revenue_this_year = farmer._compute_revenue_for_year(i)
-                profit = rate(revenue_this_year, baseline_revenue)
+                profit = (
+                    float(np.arcsinh(revenue_this_year / baseline_revenue - 1.0))
+                    if baseline_revenue > 0 else 0.0
+                )
 
                 history.append({
-                    "soilc": rate(soilc, farmer.baseline_soilc),
-                    "moisture": rate(moisture, farmer.baseline_moisture),
-                    "yield": rate(avg_yield, farmer.baseline_yield),
-                    "leaching": rate(leaching, farmer.baseline_leaching),
+                    "soilc": log_rate(
+                        soilc, farmer.baseline_soilc, farmer.negligible_soilc
+                    ),
+                    "moisture": log_rate(
+                        moisture, farmer.baseline_moisture, farmer.negligible_moisture
+                    ),
+                    "yield": log_rate(
+                        avg_yield, farmer.baseline_yield, farmer.negligible_yield
+                    ),
+                    "leaching": log_rate(
+                        leached, farmer.baseline_leaching, farmer.negligible_leaching
+                    ),
                     "profit": profit,
                 })
             return t_start, history
 
         # Fallback: single observation at baseline (all rates = 0)
-        return farmer.model.lpjml.sim_year, [{
-            "soilc": farmer.soilc_rate,
-            "moisture": farmer.moisture_rate,
-            "yield": farmer.yield_rate,
-            "leaching": farmer.leaching_rate,
-            "profit": 0.0,  # At baseline = no deviation
-        }]
+        rates = rates_of(farmer)
+        rates["profit"] = 0.0  # At baseline = no deviation
+        return farmer.model.lpjml.sim_year, [rates]
 
     def _ingest_history(
         self,
@@ -1645,55 +1770,29 @@ class ManagementPerformanceTracker:
     ) -> None:
         """Populate regression accumulators from historic observations."""
         for i, obs in enumerate(history):
-            self._add_point(
-                i, obs["soilc"], obs["moisture"], obs["yield"],
-                profit=obs["profit"],
-                leaching=obs["leaching"],
-            )
+            self._add_point(i, obs)
         self.last_obs_year = sim_year
 
-    def _add_point(
-        self,
-        t: int,
-        soilc: float,
-        moisture: float,
-        cropyield: float,
-        profit: float = 0.0,
-        leaching: float = 0.0,
-    ) -> None:
+    def _add_point(self, t: int, rates: dict[str, float]) -> None:
         """Add one observation at time index t."""
         self.n += 1
         self.sum_t += t
         self.sum_tt += t * t
-        self.sum_soilc += soilc
-        self.sum_t_soilc += t * soilc
-        self.sum_soilc_sq += soilc * soilc
-        self.sum_moisture += moisture
-        self.sum_t_moisture += t * moisture
-        self.sum_moisture_sq += moisture * moisture
-        self.sum_yield += cropyield
-        self.sum_t_yield += t * cropyield
-        self.sum_yield_sq += cropyield * cropyield
-        self.sum_profit += profit
-        self.sum_t_profit += t * profit
-        self.sum_profit_sq += profit * profit
-        self.sum_leaching += leaching
-        self.sum_t_leaching += t * leaching
-        self.sum_leaching_sq += leaching * leaching
+        for key in METRIC_KEYS:
+            value = rates[key]
+            self.sums[key] += value
+            self.time_sums[key] += t * value
+            self.square_sums[key] += value * value
 
     def add_observation(
         self,
-        soilc: float,
-        moisture: float,
-        cropyield: float,
+        rates: dict[str, float],
         current_year: int,
-        profit: float = 0.0,
-        leaching: float = 0.0,
     ) -> None:
         """Add current year's observation (skips if already recorded)."""
         if self.last_obs_year >= current_year:
             return
-        self._add_point(self.n, soilc, moisture, cropyield, profit, leaching)
+        self._add_point(self.n, rates)
         self.last_obs_year = current_year
 
     def _slope(self, sum_y: float, sum_ty: float) -> float:
@@ -1709,143 +1808,79 @@ class ManagementPerformanceTracker:
 
     @property
     def trend(self) -> dict[str, float]:
-        """Absolute annual change in soil, moisture, yield, capital, and leaching.
+        """Annual change in each metric's relative deviation from baseline.
 
-        Returns raw regression slopes (absolute change per year), NOT normalized
-        by mean. This is deliberate:
-
-        1. Farmers observe and communicate absolute changes ("yield increased by
-           500 kg/ha"), not percentages (Bandura 1977 social learning theory).
-
-        2. The AFT-specific weights (weight_yield, weight_soil, weight_moisture)
-           already capture subjective importance and implicitly handle scale
-           differences between metrics.
-
-        3. Percentage normalization produces values too small for meaningful
-           differentiation in the sigmoid-based decision model.
+        The tracker stores log (or asinh) rates, so these slopes are relative
+        rates per year - e.g. soil carbon rising at +0.02/yr in log space - not
+        absolute physical units. Comparability across metrics is handled later by
+        CAWorld.compute_reference_scales, which divides by the cross-farmer
+        spread of the projected trends.
 
         Returns
         -------
         dict
-            {"soilc": slope, "moisture": slope, "yield": slope, "profit": slope,
-             "leaching": slope} in native units/year.
+            Slope per metric, in relative-deviation units per year.
         """
         if self.n < 2:
-            return {"soilc": 0.0, "moisture": 0.0, "yield": 0.0,
-                    "profit": 0.0, "leaching": 0.0}
-
-        slope_soilc = self._slope(self.sum_soilc, self.sum_t_soilc)
-        slope_moisture = self._slope(self.sum_moisture, self.sum_t_moisture)
-        slope_yield = self._slope(self.sum_yield, self.sum_t_yield)
-        slope_profit = self._slope(self.sum_profit, self.sum_t_profit)
-        slope_leaching = self._slope(self.sum_leaching, self.sum_t_leaching)
+            return zero_metrics()
 
         return {
-            "soilc": slope_soilc,
-            "moisture": slope_moisture,
-            "yield": slope_yield,
-            "profit": slope_profit,
-            "leaching": slope_leaching,
+            key: self._slope(self.sums[key], self.time_sums[key])
+            for key in METRIC_KEYS
         }
 
     @property
     def level(self) -> dict[str, float]:
         """Absolute performance level (mean of all tracked metrics)."""
-        return {
-            "soilc": self.mean_soilc,
-            "moisture": self.mean_moisture,
-            "yield": self.mean_yield,
-            "profit": self.mean_profit,
-            "leaching": self.mean_leaching,
-        }
+        return {key: self._mean(key) for key in METRIC_KEYS}
 
-    @property
-    def mean_yield(self) -> float:
-        """Average yield over tracking period."""
-        return self.sum_yield / self.n if self.n else 0.0
+    def _mean(self, key: str) -> float:
+        return self.sums[key] / self.n if self.n else 0.0
 
-    @property
-    def mean_soilc(self) -> float:
-        """Average soil carbon over tracking period."""
-        return self.sum_soilc / self.n if self.n else 0.0
-
-    @property
-    def mean_moisture(self) -> float:
-        """Average root moisture over tracking period."""
-        return self.sum_moisture / self.n if self.n else 0.0
-
-    @property
-    def yield_trend(self) -> float:
-        """Annual yield trend (absolute change per year)."""
-        return self._slope(self.sum_yield, self.sum_t_yield)
-
-    @property
-    def soilc_trend(self) -> float:
-        """Annual soil carbon trend (absolute change per year)."""
-        return self._slope(self.sum_soilc, self.sum_t_soilc)
-
-    @property
-    def moisture_trend(self) -> float:
-        """Annual moisture trend (absolute change per year)."""
-        return self._slope(self.sum_moisture, self.sum_t_moisture)
-
-    @property
-    def mean_profit(self) -> float:
-        """Average profit rate (fraction) over tracking period."""
-        return self.sum_profit / self.n if self.n else 0.0
-
-    @property
-    def profit_trend(self) -> float:
-        """Annual profit rate trend (change per year)."""
-        return self._slope(self.sum_profit, self.sum_t_profit)
-
-    def _std(self, sum_x: float, sum_x_sq: float) -> float:
+    def _std(self, key: str) -> float:
         """Interannual std of one metric's rate over the tracking period."""
         if self.n < 2:
             return 0.0
-        mean = sum_x / self.n
-        variance = sum_x_sq / self.n - mean * mean
+        mean = self.sums[key] / self.n
+        variance = self.square_sums[key] / self.n - mean * mean
         return float(np.sqrt(variance)) if variance > 0 else 0.0
 
     @property
     def level_std(self) -> dict[str, float]:
-        """Interannual std of each metric's fractional rate.
+        """Interannual std of each metric's relative deviation.
 
         Measures how much each metric fluctuates year-to-year for THIS farmer
-        (weather/price-driven). Used to calibrate the scoring scale empirically:
-        the cross-farmer spread of self-referenced rates is degenerate at init
-        (every farmer sits on its own baseline, so all levels are ~0), but the
-        within-farmer temporal spread is real and non-zero. A sustained
-        deviation counts as "significant" when it exceeds typical interannual
-        noise - one consistent, data-driven ruler for all five metrics.
+        (weather/price-driven). Serves as the LOWER BOUND on the level ruler in
+        CAWorld.compute_reference_scales: the cross-farmer spread of
+        self-referenced rates is degenerate at init (every farmer sits on its own
+        baseline, so all levels are ~0), so the within-farmer temporal spread
+        carries the early years until the population has spread out. It cannot be
+        the ruler on its own, because a stock's deviation from baseline outgrows
+        its year-to-year wobble without bound.
         Returns 0.0 per metric if fewer than 2 observations.
         """
-        return {
-            "yield": self._std(self.sum_yield, self.sum_yield_sq),
-            "soilc": self._std(self.sum_soilc, self.sum_soilc_sq),
-            "moisture": self._std(self.sum_moisture, self.sum_moisture_sq),
-            "profit": self._std(self.sum_profit, self.sum_profit_sq),
-            "leaching": self._std(self.sum_leaching, self.sum_leaching_sq),
-        }
-
-    @property
-    def mean_leaching(self) -> float:
-        """Average leaching (gN/m2/yr) over tracking period."""
-        return self.sum_leaching / self.n if self.n else 0.0
-
-    @property
-    def leaching_trend(self) -> float:
-        """Annual leaching trend (absolute change per year)."""
-        return self._slope(self.sum_leaching, self.sum_t_leaching)
+        return {key: self._std(key) for key in METRIC_KEYS}
 
     def __repr__(self) -> str:
         trend = self.trend
         level = self.level
-        return (
-            f"ManagementPerformanceTracker(n={self.n}, "
-            f"yield={level['yield']:+.1%}({trend['yield']:+.2%}/yr), "
-            f"soilc={level['soilc']:+.1%}({trend['soilc']:+.2%}/yr), "
-            f"moisture={level['moisture']:+.1%}({trend['moisture']:+.2%}/yr), "
-            f"profit={level['profit']:+.1%}({trend['profit']:+.2%}/yr), "
-            f"leaching={level['leaching']:+.1%}({trend['leaching']:+.2%}/yr))"
+        detail = ", ".join(
+            f"{key}={level[key]:+.1%}({trend[key]:+.2%}/yr)" for key in METRIC_KEYS
         )
+        return f"ManagementPerformanceTracker(n={self.n}, {detail})"
+
+
+# The unified scoring API, plus the accumulator names the tracker was read by
+# before its sums became dicts.
+add_metric_properties(
+    ManagementPerformanceTracker,
+    {
+        "mean_{key}": lambda self, key: self._mean(key),
+        "{key}_trend": lambda self, key: self._slope(
+            self.sums[key], self.time_sums[key]
+        ),
+        "sum_{key}": lambda self, key: self.sums[key],
+        "sum_t_{key}": lambda self, key: self.time_sums[key],
+        "sum_{key}_sq": lambda self, key: self.square_sums[key],
+    },
+)

@@ -1,37 +1,30 @@
-"""CA-specific World entity with static reference scales."""
+"""CA-specific World entity holding the reference scales for performance scoring."""
 
 import numpy as np
 
+from inseeds.components.farming.metrics import METRIC_KEYS
 from inseeds.components.farming.world import World
 
-# Metrics tracked by the performance scoring system. All are scored on the same
-# self-referenced, fractional-rate footing (value / own_baseline - 1).
-_METRICS = ("yield", "soilc", "moisture", "profit", "leaching")
-
-# MAD scaling factor: for normally distributed data, std ≈ 1.4826 × MAD
+# For normally distributed data, std ≈ 1.4826 × MAD
 _MAD_SCALE = 1.4826
 
 
 def _robust_std(values: np.ndarray) -> float:
-    """Compute robust standard deviation using MAD (Median Absolute Deviation).
+    """Robust standard deviation via MAD × 1.4826.
 
-    MAD is the most outlier-resistant measure of spread:
-    - std: one extreme value can inflate it massively
-    - IQR: more robust, but still uses specific quantiles
-    - MAD: based on median of absolute deviations from median
-
-    Scaled by 1.4826 so it equals std for normally distributed data,
-    but resists outliers (e.g., a few near-bankrupt or windfall farmers).
+    Median absolute deviation resists outliers (e.g. a few bankrupt or windfall
+    farms) better than sample std or IQR. The 1.4826 factor matches std under
+    normality.
 
     Parameters
     ----------
     values : np.ndarray
-        Array of values to compute spread for.
+        Values to summarise.
 
     Returns
     -------
     float
-        Robust std estimate (MAD × 1.4826). Returns 0.0 if array is empty.
+        Robust std estimate, or 0.0 if empty.
     """
     if values.size == 0:
         return 0.0
@@ -41,59 +34,52 @@ def _robust_std(values: np.ndarray) -> float:
 
 
 class CAWorld(World):
-    """World entity with static reference scales for performance scoring.
+    """World-level reference scales for performance scoring.
 
-    Computes world-level statistics from farmer data at initialization.
-    These serve as fixed scaling factors for social learning
-    (between-farmer comparisons).
+    Recomputed from farmer trackers at initialisation and at the start of each
+    simulated year. Used as the common scaling factors for social learning
+    (between-farm comparisons).
 
-    Self-Referenced, Fractional-Rate Scoring
-    ----------------------------------------
-    Every metric (yield, soilc, moisture, leaching, profit) is expressed
-    as a fractional deviation from each farmer's OWN historic baseline:
+    Self-referenced rates
+    ---------------------
+    Each metric is a relative deviation from the farm's own historic baseline:
+    ``ln((v+n)/(b+n))`` for environmental metrics and ``asinh`` for profit
+    (see ``farmer.log_rate``). Rates are dimensionless and centred at zero, so
+    climate, soil and farm size cancel by construction.
 
-        rate = value / own_baseline - 1
-        score = 1 + rate / scale_level + trend_weight × (trend × horizon) / scale_trend
+    Level and trend scales
+    ----------------------
+    Level scale = max(cross-farmer robust spread of current rates, median
+    per-farmer interannual rate std, 0.01). Trend scale = robust MAD of
+    projected trends (rate slope × horizon), floored at 0.01.
 
-    This makes all five metrics dimensionless, centred at zero, and comparable
-    across farmers regardless of climate, soil, farm size or income level - the
-    ambient conditions are divided out by construction, so no country medians or
-    divisors are needed.
-
-    Scale Calibration (data-driven, no tuning constant)
-    ---------------------------------------------------
-    - Level scale = median per-farmer INTERANNUAL std of the rate. The
-      cross-farmer spread of self-referenced rates is degenerate at init
-      (everyone sits at their own baseline ≈ 0), so it cannot serve as a
-      ruler; the year-to-year fluctuation is real and non-zero. A sustained
-      deviation is "significant" when it exceeds typical interannual noise -
-      one consistent, one-fluctuation-equals-one-unit logic for all metrics.
-    - Trend scale = robust MAD of projected trends (rate slope × horizon)
-      across farmers.
-
-    Both are floored at 0.01 (1% relative spread) to prevent division by zero.
+    Cross-farmer spread puts stocks and flows on one footing. Yield/profit
+    deviations stay of order one year's fluctuation; soil carbon integrates
+    increments, so its deviation from baseline grows while year-to-year noise
+    stays small — against an interannual-only ruler it would produce large z
+    and override other metrics' weights. The population spread lengthens on
+    the same timescale as that stock signal. At initialisation every farm sits
+    on its baseline (spread ≈ 0), so the interannual std is the lower bound
+    until the population diverges. Annual recomputation is required because
+    that spread changes as farms diverge.
     """
 
     def compute_reference_scales(self):
-        """Compute static reference scales from initial farmer data.
+        """Recompute reference scales from current farmer trackers.
 
-        Called ONCE during model initialization, after farmers are created.
-        Uses the performance trackers (populated from the historic period,
-        e.g. 2015-2025) so levels and trends reflect the same data that is
-        scored during the coupled run.
+        Called after farmers exist at init, then each year before decisions.
+        For every metric in ``METRIC_KEYS``:
 
-        For every metric:
-        - Center = 0.0 (fractional rate, by construction)
-        - Level std = median of per-farmer interannual rate std (data-driven)
-        - Trend std = robust MAD of projected trends (rate slope × horizon)
+        - centre = 0.0 (self-referenced by construction)
+        - ``metric_std`` = max(cross-farmer MAD of rates, median per-farmer
+          interannual rate std, 0.01)
+        - ``metric_trend_std`` = max(MAD of rate_slope × horizon, 0.01)
 
-        Results stored in world.statistic["reference_scales"] as a dict of
-        {metric: 0.0, metric_std: ..., metric_trend_std: ...}.
+        Stored in ``world.statistic["reference_scales"]``.
         """
-        # Per metric: per-farmer interannual rate std (level ruler) and the
-        # projected trend across farmers (trend ruler).
-        level_stds = {m: [] for m in _METRICS}
-        proj_trends = {m: [] for m in _METRICS}
+        levels = {m: [] for m in METRIC_KEYS}
+        noise_stds = {m: [] for m in METRIC_KEYS}
+        proj_trends = {m: [] for m in METRIC_KEYS}
 
         for farmer in self.farmers:
             if not (
@@ -103,22 +89,31 @@ class CAWorld(World):
                 continue
 
             tracker = farmer.behaviour.performance_tracker
-            horizon = farmer.behaviour.get_aft_param("min_observation_years")
+            # Must match the horizon used in compute_performance_score
+            horizon = farmer.behaviour.projection_weight()
             trend = tracker.trend
             std = tracker.level_std
 
-            for metric in _METRICS:
+            for metric in METRIC_KEYS:
+                level = getattr(tracker, f"mean_{metric}")
+                if np.isfinite(level):
+                    levels[metric].append(level)
                 if std[metric] > 0:
-                    level_stds[metric].append(std[metric])
+                    noise_stds[metric].append(std[metric])
                 proj_trends[metric].append(trend[metric] * horizon)
 
         scales = {}
-        for metric in _METRICS:
-            level_std = float(np.median(level_stds[metric])) if level_stds[metric] else 0.0
+        for metric in METRIC_KEYS:
+            # Between-farm dispersion of this year's rates (stock-safe ruler)
+            spread = _robust_std(np.asarray(levels[metric], dtype=float))
+            # Typical within-farm year-to-year rate noise (init / early floor)
+            noise = float(np.median(noise_stds[metric])) if noise_stds[metric] else 0.0
+            # Dispersion of projected trends; same horizon as scoring
             trend_std = _robust_std(np.asarray(proj_trends[metric], dtype=float))
 
-            scales[metric] = 0.0  # Centered at own baseline (fractional rate)
-            scales[f"{metric}_std"] = max(level_std, 0.01)
+            scales[metric] = 0.0  # centre: rates already self-referenced
+            # Early years: noise often binds. Later: spread grows (soilc slowest).
+            scales[f"{metric}_std"] = max(spread, noise, 0.01)
             scales[f"{metric}_trend_std"] = max(trend_std, 0.01)
 
         self.statistic.set("reference_scales", scales)

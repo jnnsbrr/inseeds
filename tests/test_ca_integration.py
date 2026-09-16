@@ -8,15 +8,13 @@ These tests exercise the full CA farmer lifecycle including:
 - Practice adoption
 """
 
+import math
 import tempfile
 from pathlib import Path
 
 import numpy as np
 import pytest
 import xarray as xr
-
-# Note: ensure_dummy_fao_data was removed with dummy FAO functionality
-# Tests relying on dummy data need to use mocks or real data
 
 
 class TestCAModelWithDummyFAO:
@@ -26,6 +24,16 @@ class TestCAModelWithDummyFAO:
         """CA model should create farmers."""
         farmers = getattr(ca_model_instance, "_farmers", [])
         assert len(farmers) > 0
+
+    def test_ca_farmers_have_farm_size(self, ca_model_instance):
+        """CA farmers must expose farm_size (used for capital and costs)."""
+        farmers = getattr(ca_model_instance, "_farmers", [])
+        if not farmers:
+            pytest.skip("No farmers")
+
+        for farmer in farmers[:3]:
+            assert hasattr(farmer, "farm_size")
+            assert farmer.farm_size > 0
 
     def test_ca_farmers_have_capital(self, ca_model_instance):
         """CA farmers should have capital attribute."""
@@ -41,19 +49,16 @@ class TestCAModelWithDummyFAO:
             if not math.isnan(farmer.capital):
                 assert farmer.capital >= 0
 
-    def test_ca_farmers_have_fao_rates(self, ca_model_instance):
-        """CA farmers should have FAO depreciation and investment rates."""
+    def test_ca_farmers_have_capital_endowment(self, ca_model_instance):
+        """CA farmers should take their initial capital from FAO Net Capital Stock."""
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
-        
+
         for farmer in farmers[:3]:
-            # FAO depreciation rate (typically 3-8%)
-            assert hasattr(farmer, "fao_depreciation_rate")
-            assert 0 < farmer.fao_depreciation_rate < 1
-            # FAO investment rate (typically 5-15%)
-            assert hasattr(farmer, "fao_investment_rate")
-            assert 0 < farmer.fao_investment_rate < 1
+            assert hasattr(farmer, "initial_capital_per_ha")
+            if not math.isnan(farmer.initial_capital_per_ha):
+                assert farmer.initial_capital_per_ha >= 0
 
     def test_ca_farmers_have_tpb_behaviour(self, ca_model_instance):
         """CA farmers should have TPB behaviour model."""
@@ -105,14 +110,18 @@ class TestCAModelWithDummyFAO:
 class TestCAFarmerCapitalDynamics:
     """Tests for capital dynamics in CA farmers."""
 
-    def test_capital_depreciates_over_time(self, ca_model_instance):
-        """Capital should change after updates."""
+    def test_capital_moves_by_the_profit_of_the_year(self, ca_model_instance):
+        """K_{t+1} = K + profit, and nothing else moves the stock.
+
+        A farm whose environment does not change earns exactly its baseline and
+        so holds its capital, which is what the deviation-based dynamics mean.
+        """
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
-        
+
         farmer = farmers[0]
-        
+
         # Check if output data has required variables for update
         try:
             output = farmer.cell.from_earth
@@ -120,16 +129,20 @@ class TestCAFarmerCapitalDynamics:
                 pytest.skip("Test data missing pft_harvestc for update")
         except Exception:
             pytest.skip("Cannot access cell output data")
-        
-        capitals = [farmer.capital]
-        
-        # Run multiple updates
+
         for t in range(2020, 2023):
+            before = farmer.capital
             farmer.update(t=t)
-            capitals.append(farmer.capital)
-        
-        # Capital should have changed
-        assert not all(c == capitals[0] for c in capitals)
+            # A transition is charged after update_capital, so the operating
+            # profit alone does not close the year; see test_capital_balance.
+            expected = max(
+                0.0,
+                before
+                + farmer.raw_profit
+                - farmer.transition_cost
+                + farmer.residue_sale_income,
+            )
+            assert farmer.capital == pytest.approx(expected)
 
     def test_min_capital_threshold_exists(self, ca_model_instance):
         """Farmers should have min_capital threshold."""
@@ -181,8 +194,7 @@ class TestCAFarmerProfitCalculation:
         # Call costs calculation
         if hasattr(farmer, "get_bundle_direct_costs"):
             costs = farmer.get_bundle_direct_costs(
-                farmer.behaviour.practice_bundle,
-                per_ha=True
+                farmer.behaviour.practice_bundle
             )
             # Costs may be NaN if FAO data extraction fails for test data
             if not math.isnan(costs):
@@ -304,18 +316,20 @@ class TestCAFarmerAFTTypes:
             assert farmer.aft in (AFT.traditionalist, AFT.pioneer)
 
     def test_aft_distribution_follows_config(self, ca_model_instance):
-        """AFT distribution should roughly follow configured pioneer_share."""
+        """AFT distribution should follow the configured pioneer_share.
+
+        Drawn here rather than counted over the farmers of the run: a couple of
+        dozen cells are too few for a share to show, so counting them would
+        fail on the luck of the draw a few runs in a hundred.
+        """
         from inseeds.components.farming.farmer import AFT
         
-        farmers = getattr(ca_model_instance, "_farmers", [])
-        if not farmers or len(farmers) < 10:
-            pytest.skip("Need at least 10 farmers for distribution test")
+        share = ca_model_instance.config.coupled_config.pioneer_share
+        np.random.seed(0)
+        drawn = [AFT.random(share) for _ in range(2000)]
         
-        pioneers = sum(1 for f in farmers if f.aft == AFT.pioneer)
-        pioneer_fraction = pioneers / len(farmers)
-        
-        # Should be roughly 30% pioneers (allow wide range for small samples)
-        assert 0.1 <= pioneer_fraction <= 0.6
+        pioneer_fraction = sum(a == AFT.pioneer for a in drawn) / len(drawn)
+        assert pioneer_fraction == pytest.approx(share, abs=0.05)
 
 
 class TestResidueEconomics:
@@ -394,52 +408,32 @@ class TestNeighbourhoodStructure:
 class TestFAODataStructure:
     """Tests for FAO data structure and access."""
 
-    def test_producer_prices_structure(self):
+    def test_producer_prices_structure(self, ca_model_instance):
         """Producer prices should have correct structure."""
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            ensure_dummy_fao_data(sim_path, years=(2016, 2020))
-            
-            prices_path = sim_path / "input" / "fao_pft_prices_DUMMY.nc"
-            ds = xr.open_dataset(prices_path)
-            
-            # Check dimensions
-            assert "npft" in ds.dims
-            assert "time" in ds.dims
-            assert "area_code" in ds.dims
-            
-            # Check data variable
-            assert "5532" in ds
-            
-            ds.close()
+        prices = ca_model_instance.world.exogenous.prices
 
-    def test_capital_stock_structure(self):
+        assert "npft" in prices.dims
+        assert "time" in prices.dims
+        assert "area_code" in prices.dims
+
+        # FAOSTAT element 5532, Producer Price (USD/tonne)
+        assert "5532" in prices
+
+    def test_capital_stock_structure(self, ca_model_instance):
         """Capital stock should have correct structure."""
-        with tempfile.TemporaryDirectory() as tmp:
-            sim_path = Path(tmp) / "sim"
-            ensure_dummy_fao_data(sim_path, years=(2016, 2020))
-            
-            capital_path = sim_path / "input" / "fao_capital_stock_DUMMY.nc"
-            ds = xr.open_dataset(capital_path)
-            
-            # Check dimensions
-            assert "time" in ds.dims
-            assert "area_code" in ds.dims
-            
-            # Check data variables
-            assert "ncs" in ds
-            assert "gfcf" in ds
-            assert "cfc" in ds
-            assert "depreciation_rate" in ds
-            assert "investment_rate" in ds
-            
-            # Check derived metrics are valid
-            assert (ds["depreciation_rate"] > 0).all()
-            assert (ds["depreciation_rate"] < 1).all()
-            assert (ds["investment_rate"] > 0).all()
-            assert (ds["investment_rate"] < 1).all()
-            
-            ds.close()
+        capital = ca_model_instance.world.exogenous.capital
+
+        assert "time" in capital.dims
+        assert "area_code" in capital.dims
+
+        for name in ("ncs", "gfcf", "cfc", "depreciation_rate", "investment_rate"):
+            assert name in capital
+
+        # Rates are shares of the capital stock, so they live in (0, 1)
+        for name in ("depreciation_rate", "investment_rate"):
+            rate = capital[name]
+            assert (rate > 0).all()
+            assert (rate < 1).all()
 
 
 class TestFAODataBatchDownload:
@@ -571,18 +565,6 @@ class TestFAOItemFiltering:
 class TestCACountryFAOProperties:
     """Tests for CACountry FAO-derived properties."""
 
-    def test_ca_country_has_depreciation_rate_property(self):
-        """CACountry should have depreciation_rate property."""
-        from inseeds.components.farming.ca_country import CACountry
-        
-        assert "depreciation_rate" in dir(CACountry)
-
-    def test_ca_country_has_investment_rate_property(self):
-        """CACountry should have _investment_rate property."""
-        from inseeds.components.farming.ca_country import CACountry
-        
-        assert "_investment_rate" in dir(CACountry)
-
     def test_ca_country_has_capital_per_ha_property(self):
         """CACountry should have initial_capital_per_ha property."""
         from inseeds.components.farming.ca_country import CACountry
@@ -671,6 +653,43 @@ class TestTPBBehaviourExecution:
         
         result = farmer.behaviour.should_transition()
         assert isinstance(result, bool)
+
+
+class TestYearlyLevels:
+    """Tests that the levels farmers are judged on share one vintage."""
+
+    def test_leaching_holds_until_the_year_is_read(self, ca_model_instance):
+        """Leaching is a value for the year, like yield and soil carbon.
+
+        The country performance store is built before any farmer has updated,
+        so a level that read the cell there would answer with a year the other
+        levels have not reached, and the store would mix two vintages.
+        """
+        farmers = getattr(ca_model_instance, "_farmers", [])
+        if not farmers:
+            pytest.skip("No farmers")
+
+        from inseeds.components.farming.farmer import agricultural_leaching
+
+        farmer = farmers[0]
+        held = farmer.leaching
+        cell_leaching = farmer.cell.from_earth["leaching"]
+        original = cell_leaching.values.copy()
+
+        try:
+            # Set the raw cell field; farmer reads whole-cell leaching directly.
+            new_val = held * 2.0 + 1.0
+            cell_leaching.values[...] = new_val
+            expected = agricultural_leaching(farmer)
+
+            assert farmer.leaching == held
+            assert farmer.cell_leaching != held
+
+            farmer._read_leaching_state()
+            assert farmer.leaching == pytest.approx(expected)
+        finally:
+            cell_leaching.values[...] = original
+            farmer._read_leaching_state()
 
 
 class TestTPBBundleOperations:
@@ -777,8 +796,9 @@ class TestTPBAffordabilityChecks:
     """Tests for TPB affordability checks."""
 
     def test_affordable_bundle_check(self, ca_model_instance):
-        """Affordability check should return boolean."""
-        import math
+        """Affordability returns the bundle the capital reaches, not a verdict."""
+        from inseeds.components.farming.ca_management import ManagementBundle
+
         farmers = getattr(ca_model_instance, "_farmers", [])
         if not farmers:
             pytest.skip("No farmers")
@@ -794,7 +814,9 @@ class TestTPBAffordabilityChecks:
             if math.isnan(farmer.capital):
                 pytest.skip("Capital is NaN")
             result = farmer.behaviour.affordable_bundle(bundle)
-            assert isinstance(result, bool)
+            assert isinstance(result, ManagementBundle)
+            # The bundle it already runs is always within reach
+            assert result == bundle
 
     def test_bundle_direct_cost_calculation(self, ca_model_instance):
         """Bundle direct cost should be calculable."""
@@ -809,7 +831,7 @@ class TestTPBAffordabilityChecks:
         
         if hasattr(farmer.behaviour, "get_bundle_direct_cost"):
             bundle = farmer.behaviour.practice_bundle  # Use internal tuple
-            cost = farmer.get_bundle_direct_costs(bundle, per_ha=True)
+            cost = farmer.get_bundle_direct_costs(bundle)
             # Cost may be NaN if FAO data extraction fails
             if not math.isnan(cost):
                 assert isinstance(cost, (int, float))

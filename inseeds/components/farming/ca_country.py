@@ -1,51 +1,19 @@
-"""Country-level entity with FAO economic data for Conservation Agriculture.
-
-This module defines the CACountry class, which extends the base Country class
-with FAO economic data (capital, prices, depreciation) and country-level
-social learning statistics.
+"""Country entity with FAO economic data for Conservation Agriculture.
 
 Overview
 --------
 Each country:
-1. Loads FAO economic data lazily (capital stock, producer prices, etc.)
+1. Loads FAO economic data lazily (capital stock, producer prices)
 2. Aggregates farmer performance by practice bundle each year
-3. Optionally blends its statistics with neighboring countries
+3. Optionally blends statistics with neighbouring countries
 
-Data Sources
-------------
-- **FAO Capital Stock**: Depreciation rates, investment rates, net capital
-- **FAO Producer Prices**: Farm-gate prices per crop type (PFT)
-- **FAO Gross Production Value**: For calculating crop vs livestock shares
-
-Fallback Logic
---------------
-Missing FAO data is handled via tiered fallback:
-    country → neighboring countries → global mean
-
-This ensures all countries have usable parameters even with sparse FAO coverage.
-
-Key Methods
------------
-compute_management_performance(t)
-    Aggregates farmer data into RegionManagementPerformanceStore and
-    optionally merges with neighboring country statistics.
-
-Attributes (Lazy-Loaded)
-------------------------
-depreciation_rate : float
-    Annual capital depreciation (typically 3-8%/year)
-investment_rate : float
-    Annual capital formation rate (typically 5-15%/year)
-initial_capital_per_ha : float
-    Starting capital endowment (USD/ha)
-pft_prices : xarray.DataArray
-    Producer prices per plant functional type (USD/tonne)
+Data sources: FAO Capital Stock, Producer Prices, Gross Production Value.
+Missing values fall back: country → neighbours → global mean.
 
 See Also
 --------
-ca_management : RegionManagementPerformanceStore definition
-ca_agroecology : Cluster-level aggregation across countries
-ca_behaviour : How farmers use country-level statistics
+ca_management : RegionManagementPerformanceStore
+ca_behaviour : farmer use of country-level statistics
 """
 
 import logging
@@ -99,12 +67,7 @@ class CACountry(Country):
         return self._neighbour_codes
 
     def _ensure_fao_data(self):
-        """Load FAO economic parameters lazily on first access.
-
-        All parameters are loaded together since they share the same reference
-        year and fallback logic. Loading is idempotent - subsequent calls return
-        immediately.
-        """
+        """Load FAO economic parameters on first access (idempotent)."""
         if self._fao_loaded:
             return
 
@@ -137,24 +100,11 @@ class CACountry(Country):
         # Source: FAO Capital Stock database for Agriculture+Forestry+Fishing
         cap = world.capital
 
-        # Depreciation rate: annual fraction of capital value lost (wear/obsolescence)
-        # Aggregator="mean" averages over available years if multiple exist
-        self._depreciation_rate = _extract_with_fallback(
-            cap, "depreciation_rate", code, year, neighbour_codes, aggregator="mean"
-        )
-
-        # Investment rate: annual gross fixed capital formation / existing stock
-        self._investment_rate_value = _extract_with_fallback(
-            cap, "investment_rate", code, year, neighbour_codes, aggregator="mean"
-        )
-
         # Net Capital Stock (NCS): total value of agricultural capital in million USD
         # Aggregator="last" uses most recent available year
         ncs = _extract_with_fallback(cap, "ncs", code, year, neighbour_codes, aggregator="last")
 
-        # ---------------------------------------------------------------------
         # Step 3: Compute crop-specific capital share
-        # ---------------------------------------------------------------------
         # FAO reports capital for combined AFF sector. We need crop-only portion.
         # Approach: NCS_crops = NCS_aff * ag_share_of_aff * crop_share_of_ag
         gpv = world.gpv
@@ -222,7 +172,11 @@ class CACountry(Country):
         return getattr(self, attr)
 
     def extract_prices(self, prices_ds, country, year, neighbours):
-        """Extract producer prices for all crops."""
+        """Producer prices per PFT with country→neighbour→global fallback.
+
+        Crops that fail all tiers become NaN here; ``_init_revenue_mapping``
+        raises if a cropped LPJmL band would map to a non-finite price.
+        """
         var = list(prices_ds.data_vars)[0]
         prices = prices_ds[var]
         dim = "npft" if "npft" in prices.dims else "band"
@@ -232,6 +186,7 @@ class CACountry(Country):
             try:
                 val = get_value_with_fallback(prices.sel({dim: crop}), country, year, neighbour_codes=neighbours, aggregator="mean", field_name=f"price_{crop}").value
             except ValueError:
+                # No country / neighbour / global value (e.g. cotton, tea in FAO)
                 val = np.nan
             values.append(val)
         
@@ -239,219 +194,44 @@ class CACountry(Country):
         return result.rename({dim: "band"}) if dim == "npft" else result
 
     @property
-    def depreciation_rate(self):
-        """Annual capital depreciation rate (fraction per year).
-
-        The rate at which agricultural capital loses value due to wear,
-        obsolescence, and physical deterioration. Used in the capital
-        dynamics model to compute capital loss each year.
-
-        Source: FAO Capital Stock database (consumption of fixed capital
-        divided by net capital stock).
-
-        Returns
-        -------
-        float
-            Depreciation rate, typically 0.03-0.08 (3-8% per year).
-            Higher values indicate faster capital turnover.
-
-        Example
-        -------
-        If depreciation_rate = 0.05 and capital = 10000:
-        annual_depreciation = 0.05 * 10000 = 500 currency units lost
-        """
-        return self._fao("_depreciation_rate")
-
-    @property
-    def investment_rate(self):
-        """Annual gross fixed capital formation rate (fraction per year).
-
-        The rate at which new capital is added to the existing stock through
-        investment. Represents farmer reinvestment behavior at the country
-        level, derived from national accounts data.
-
-        Source: FAO Capital Stock database (gross fixed capital formation
-        divided by net capital stock).
-
-        Returns
-        -------
-        float
-            Investment rate, typically 0.05-0.15 (5-15% per year).
-            Higher values indicate more active capital accumulation.
-
-        Notes
-        -----
-        Net capital change = investment_rate - depreciation_rate.
-        If investment_rate > depreciation_rate, capital grows over time.
-        """
-        return self._fao("_investment_rate_value")
-
-    @property
     def initial_capital_per_ha(self):
-        """Initial agricultural capital stock per hectare (USD/ha).
+        """Initial agricultural capital per hectare (USD/ha).
 
-        Starting capital endowment for farmers, computed from national
-        capital stock data scaled to cropland area. Used to initialize
-        farmer capital at simulation start.
-
-        Computed as:
-            (NCS * 1e6 * crop_capital_share) / cropland_area
-
-        Where NCS is Net Capital Stock in million USD.
+        Computed as ``(NCS × 1e6 × crop_capital_share) / cropland_area`` from
+        FAO Net Capital Stock (million USD).
 
         Returns
         -------
         float
-            Capital per hectare in USD. Varies widely by country:
-            - Low-income countries: ~100-500 USD/ha
-            - Middle-income: ~500-2000 USD/ha
-            - High-income: ~2000-10000+ USD/ha
-
-        See Also
-        --------
-        crop_capital_share : Fraction of total capital attributable to crops.
+            Capital endowment used to initialise farmer capital.
         """
         return self._fao("_initial_capital_per_ha")
 
     @property
-    def crop_capital_share(self):
-        """Fraction of agricultural capital attributable to crop production.
-
-        The share of total Agriculture+Forestry+Fishing (AFF) sector capital
-        that belongs specifically to crop production. Used to disaggregate
-        national capital stock data to the crop sector.
-
-        Computed as:
-            ag_share_of_aff * crop_share_of_ag
-
-        Returns
-        -------
-        float
-            Share in [0, 1]. Typically 0.3-0.8 depending on country's
-            economic structure (fishing, forestry, livestock importance).
-
-        See Also
-        --------
-        ag_share_of_aff : Agriculture's share of AFF sector.
-        crop_share_of_ag : Crops' share within agriculture.
-        """
-        return self._fao("_crop_capital_share")
-
-    @property
-    def ag_share_of_aff(self):
-        """Agriculture's share of the Agriculture+Forestry+Fishing sector.
-
-        FAO capital stock data is reported for the combined AFF sector.
-        This coefficient extracts the agriculture-only portion, accounting
-        for countries where fishing (e.g., Norway, Iceland) or forestry
-        (e.g., Finland, Sweden) dominate the sector.
-
-        Source: Country-specific estimates based on value-added data.
-        Falls back to global default (0.85) if country not in database.
-
-        Returns
-        -------
-        float
-            Share in [0, 1]. Examples:
-            - Norway (major fishing): ~0.60
-            - Bolivia (landlocked): ~0.95
-            - USA (diversified): ~0.85
-
-        Notes
-        -----
-        This is a structural parameter that changes slowly over time.
-        Currently uses static country-level estimates.
-        """
-        return self._fao("_ag_share_of_aff")
-
-    @property
-    def crop_share_of_ag(self):
-        """Crops' share of total agricultural gross production value.
-
-        The fraction of agricultural output value (in USD) that comes from
-        crop production vs. livestock, aquaculture, etc. Derived from FAO
-        Gross Production Value (GPV) data.
-
-        Computed as:
-            GPV_crops / GPV_agriculture
-
-        Returns
-        -------
-        float
-            Share in [0, 1]. Typically 0.4-0.7 for most countries.
-            Higher values indicate crop-dominated agriculture.
-
-        Source
-        ------
-        FAO Gross Production Value database, averaged over recent years
-        with fallback to neighbours if country data unavailable.
-        """
-        return self._fao("_crop_share_of_ag")
-
-    @property
     def pft_prices(self):
-        """Producer prices per plant functional type (USD per tonne).
+        """Farm-gate producer prices by PFT (USD/t dry matter).
 
-        Farm-gate prices received by farmers for each crop type, used to
-        calculate farm revenue from harvest yields. Prices are matched to
-        LPJmL's plant functional types (PFTs).
-
-        Source: FAO Producer Prices database, with fallback to neighbour
-        countries or regional averages if country data unavailable.
+        Source: FAO Producer Prices; neighbour/global fallback if missing.
+        Fixed at coupling start (exogenous prices).
 
         Returns
         -------
         xarray.DataArray
-            Prices indexed by 'band' dimension (PFT names).
-            Units: USD per metric tonne of dry matter.
-
-        Notes
-        -----
-        Prices are fixed at simulation start year and do not change
-        during the simulation (exogenous price assumption).
-
-        See Also
-        --------
-        ca_farmer.revenue : Uses these prices to compute farm income.
+            Prices indexed by ``band`` (PFT names).
         """
         return self._fao("_pft_prices")
 
     @property
-    def gdp_per_capita(self):
-        """Gross Domestic Product per capita (USD/capita).
-
-        National income level used to scale practice costs. Countries with
-        higher GDP face higher costs due to higher labor and equipment costs.
-
-        Source: FAO Macro Indicators database (MK domain).
-
-        Returns
-        -------
-        float
-            GDP in USD per capita. Ranges from ~500 (low-income) to 80,000+ (high-income).
-        """
-        return self._fao("_gdp_per_capita")
-
-    @property
     def gdp_cost_ratio(self):
-        """Cost scaling ratio based on GDP per capita, in [0, 1].
+        """GDP-based practice cost scaling ratio in [0, 1].
 
-        Maps the country's GDP per capita to a ratio used for interpolating
-        practice costs between minimum (low-cost) and maximum (high-cost) values.
-
-        Computation:
-        - GDP <= 10th percentile: ratio = 0 (minimum costs)
-        - GDP >= 90th percentile: ratio = 1 (maximum costs)
-        - Between: linear interpolation
-
-        This ensures that practice costs reflect national income levels:
-        low-income countries face lower costs (affordable adoption), while
-        high-income countries face higher costs (consistent with labor/equipment prices).
+        Linear interpolation between global 10th and 90th GDP percentiles;
+        values below p10 → 0, above p90 → 1.
 
         Returns
         -------
         float
-            Ratio in [0, 1] for interpolating between min/max practice costs.
+            Weight for interpolating min/max practice costs.
         """
         return self._fao("_gdp_cost_ratio")
 
@@ -460,14 +240,10 @@ class CACountry(Country):
     # -------------------------------------------------------------------------
 
     def compute_management_performance(self, t):
-        """Compute management performance for the country.
+        """Aggregate bundle-level performance for country social learning.
 
-        Computes bundle distribution and average performance per bundle
-        across all farmers in this country, then merges with neighbouring
-        countries' stats (from previous year) for cross-border social learning.
-
-        Enables O(1) lookup for country-level social influence
-        instead of O(n²) pairwise comparisons.
+        Merges with neighbouring countries' prior-year stats when
+        ``neighbour_country_weight > 0``.
 
         Parameters
         ----------
@@ -516,14 +292,15 @@ class CACountry(Country):
         ]
 
     def update(self, t):
-        """Update country statistics and its farmers.
+        """Update country statistics, then farmers.
 
-        Computes country-level statistics BEFORE updating farmers to ensure
-        all farmers see the same country-level data for this timestep.
-
-        Note: Global reference values for performance scoring are computed
-        at the world level (CAWorld.compute_reference_values) before
-        country updates begin.
+        Country-level performance is computed before farmer updates so all
+        farmers share the same country stats for timestep ``t``. Those stats
+        therefore describe the farms as they stood at the end of the previous
+        year - levels and trends alike, which is why the farmer holds its
+        levels as values for the year rather than reading them off the cell.
+        Farmers learn from what the country did last year, not from a mixture
+        of last year's trends and this year's harvests.
         """
         # Compute country-level statistics for non-local spreading
         # Must run BEFORE farmers update so they see current country stats

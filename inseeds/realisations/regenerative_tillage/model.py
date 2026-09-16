@@ -18,25 +18,22 @@ class Farmer(TillageFarmer):
 
     @property
     def cell_cropyield(self):
-        """Return the average crop yield of the cell (simple, fast)."""
-        val = self.cell.from_earth.harvestc.values.mean()
-        return max(val, 1e-3)
+        """Return the average crop yield of the cell.
+
+        Delegates to the base property rather than averaging ``harvestc``.
+        LPJmL books residue taken off the field as harvest, so ``harvestc``
+        drops whenever a scenario retains residue - in the conservation
+        agriculture runs that turned an 11% grain gain into an 8% loss. This
+        realisation only varies tillage today and so is not biased by it, but
+        reading grain keeps that true if residue management is ever added.
+        """
+        return max(super().cell_cropyield, 1e-3)
 
     @property
     def cell_soilc(self):
         """Return the average soil carbon of the cell (simple, fast)."""
         val = self.cell.from_earth.soilc_agr_layer.values[0].item()
         return max(val, 1e-3)
-
-    @property
-    def cell_avg_hdate(self):
-        """Return the average harvest date of the cell (simple, fast)."""
-        import numpy as np
-        cftfrac = self.cell.from_earth.cftfrac
-        hdate = self.cell.from_earth.hdate
-        if cftfrac.sum().item() == 0:
-            return 365.0
-        return np.average(hdate.values, weights=cftfrac.values)
 
     output_variables = base.Output(
         aft_id=Variable("AFT ID", "unique identifier for agent"),

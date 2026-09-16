@@ -10,6 +10,8 @@ Tests cover:
 
 import numpy as np
 import pytest
+from collections import deque
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from inseeds.components.farming.ca_behaviour import DecisionModel, TPB, sigmoid
@@ -33,7 +35,7 @@ class TestDecisionModelInterface:
     def test_decision_model_has_properties(self):
         """DecisionModel should expose bundle and TPB output properties."""
         assert hasattr(DecisionModel, "proposed_bundle_id")
-        assert hasattr(DecisionModel, "proposed_bundle_label")
+        assert hasattr(DecisionModel, "practice_bundle_id")
 
 
 class TestTPBStructure:
@@ -203,7 +205,8 @@ class TestBundleTracking:
         from inseeds.components.farming.ca_management import ManagementPerformanceTracker
 
         assert hasattr(ManagementPerformanceTracker, "trend")
-        assert hasattr(ManagementPerformanceTracker, "weighted_trend")
+        assert hasattr(ManagementPerformanceTracker, "level")
+        assert hasattr(ManagementPerformanceTracker, "level_std")
 
     def test_record_transition_method_exists(self):
         """DecisionModel should have record_transition method."""
@@ -513,16 +516,55 @@ class TestSocialNormThresholds:
         source = inspect.getsource(TPB.compute_social_norm_country)
         assert "threshold_social_norm_country" in source
 
-    def test_thresholds_are_shifted_sigmoid(self):
-        """Both methods should apply a shifted sigmoid (fraction - threshold)."""
-        import inspect
-        src_local = inspect.getsource(TPB.compute_social_norm_local)
-        src_country = inspect.getsource(TPB.compute_social_norm_country)
-        assert "sigmoid(" in src_local
-        assert "sigmoid(" in src_country
-        # Should no longer subtract the hardcoded 0.5
-        assert "sigmoid(avg_similarity - 0.5)" not in src_local
-        assert "sigmoid(bundle_fraction - 0.5)" not in src_country
+    def test_threshold_cluster_is_read_from_config(self):
+        """The cluster norm must consult its AFT parameter, not a literal.
+
+        It once read an attribute the farmer never carries, so every farmer
+        silently fell back to a hardcoded 0.1 and the configured cluster
+        thresholds were dead. Assert the parameter is actually requested.
+        """
+        asked = []
+        tpb = object.__new__(TPB)
+        tpb.get_aft_param = lambda name: (asked.append(name), 0.25)[1]
+        store = SimpleNamespace(bundle_counts={"b": 40}, total_farmers=100)
+
+        tpb._social_norm_from_region(store, "b", "threshold_social_norm_cluster")
+        assert "threshold_social_norm_cluster" in asked
+
+    def test_region_norm_is_shifted_sigmoid(self):
+        """The region norm is sigmoid(uptake - threshold), verified numerically."""
+        tpb = object.__new__(TPB)
+        threshold = 0.30
+        tpb.get_aft_param = lambda name: threshold
+        store = SimpleNamespace(bundle_counts={"b": 40}, total_farmers=100)
+
+        norm = tpb._social_norm_from_region(store, "b", "threshold_social_norm_country")
+        assert norm == pytest.approx(sigmoid(0.40 - threshold))
+
+        # Uptake exactly at the threshold is the neutrality point.
+        at_threshold = SimpleNamespace(bundle_counts={"b": 30}, total_farmers=100)
+        assert tpb._social_norm_from_region(
+            at_threshold, "b", "threshold_social_norm_country"
+        ) == pytest.approx(0.5)
+
+        # Monotone in uptake.
+        below = SimpleNamespace(bundle_counts={"b": 10}, total_farmers=100)
+        assert tpb._social_norm_from_region(
+            below, "b", "threshold_social_norm_country"
+        ) < 0.5
+
+    def test_region_norm_neutral_without_a_population(self):
+        """A missing region, or one holding a single farm, says nothing."""
+        tpb = object.__new__(TPB)
+        tpb.get_aft_param = lambda name: 0.3
+
+        assert tpb._social_norm_from_region(
+            None, "b", "threshold_social_norm_country"
+        ) == 0.5
+        alone = SimpleNamespace(bundle_counts={"b": 1}, total_farmers=1)
+        assert tpb._social_norm_from_region(
+            alone, "b", "threshold_social_norm_country"
+        ) == 0.5
 
     def test_pioneer_threshold_below_traditionalist(self):
         """Pioneers should have lower adoption thresholds than traditionalists.
@@ -699,3 +741,141 @@ class TestTPBTransitionDriverLogic:
     def test_set_tpb_component_driver_method_exists(self):
         """TPB should have set_tpb_component_driver method."""
         assert hasattr(TPB, "set_tpb_component_driver")
+
+
+class TestResidueCertification:
+    """The residue label is measured, and measured over a run of seasons.
+
+    Litter cover moves with the harvest. Read off a single year, the label
+    would follow the weather: each flip re-keys the slot the memory records
+    under and redates the label, so a farm could be kept from ever
+    accumulating experience of anything by rainfall alone.
+
+    Certification is not commitment, and none of this touches the latter.
+    A farm over the threshold on baseline removal sold its straw and has the
+    income; it pays no opportunity cost and draws no retention subsidy.
+    """
+
+    @pytest.fixture
+    def farm(self, ca_model_builder):
+        model = ca_model_builder(seed=404)
+        return model, list(model.world.farmers)[0]
+
+    @staticmethod
+    def _seen(behaviour, covers):
+        """Replace the window outright, so the median is the test's to set."""
+        behaviour._litter_cover_record = deque(covers)
+
+    @staticmethod
+    def _labelled(behaviour, retains):
+        behaviour.practice_bundle = behaviour.practice_bundle.change_practices(
+            residue_on_field=int(retains)
+        )
+
+    def test_the_current_year_does_not_decide(self, farm):
+        """A bare year on a field that is usually covered changes nothing."""
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        self._labelled(behaviour, True)
+        farmer.litter_cover = 0.0
+        self._seen(behaviour, [0.5, 0.5, 0.5, 0.5, 0.5])
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 1
+
+    def test_two_failures_do_not_decertify_a_covered_field(self, farm):
+        """Median, not mean: two bare years pull an average under the line."""
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        self._labelled(behaviour, True)
+        self._seen(behaviour, [0.35, 0.35, 0.35, 0.0, 0.0])  # mean 0.21
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 1
+
+    def test_two_exceptional_years_do_not_certify_a_bare_field(self, farm):
+        """The same asymmetry the other way up."""
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        self._labelled(behaviour, False)
+        self._seen(behaviour, [0.05, 0.05, 0.05, 1.0, 1.0])  # mean 0.43
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 0
+
+    def test_a_sustained_run_above_the_threshold_certifies(self, farm):
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        self._labelled(behaviour, False)
+        self._seen(behaviour, [0.42, 0.38, 0.51, 0.35, 0.44])
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 1
+        assert behaviour.bundle_since == model.lpjml.sim_year
+
+    def test_a_sustained_run_below_it_decertifies(self, farm):
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        self._labelled(behaviour, True)
+        self._seen(behaviour, [0.2, 0.11, 0.25, 0.08, 0.19])
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 0
+
+    def test_certifying_does_not_commit(self, farm):
+        """The whole point of keeping the two apart."""
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        behaviour.residue_committed = False
+        self._labelled(behaviour, False)
+        self._seen(behaviour, [0.5, 0.5, 0.5])
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 1
+        assert behaviour.residue_committed is False
+        assert behaviour.committed_bundle.residue_on_field == 0
+
+    def test_an_empty_window_certifies_nothing(self, farm):
+        """A farm that has not been observed yet keeps the label it was given."""
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        self._labelled(behaviour, True)
+        self._seen(behaviour, [])
+
+        behaviour.reevaluate_residue_status()
+
+        assert behaviour.practice_bundle.residue_on_field == 1
+
+    def test_the_window_is_filled_by_observing(self, farm):
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        behaviour._litter_cover_record.clear()
+
+        behaviour.observe()
+
+        assert list(behaviour._litter_cover_record) == [farmer.litter_cover]
+
+    def test_the_label_is_read_on_the_cadence_not_annually(self, farm, monkeypatch):
+        """Off the cadence the weather cannot reach the label at all."""
+        model, farmer = farm
+        behaviour = farmer.behaviour
+        calls = []
+        monkeypatch.setattr(
+            type(behaviour),
+            "reevaluate_residue_status",
+            lambda self: calls.append(1),
+        )
+
+        behaviour._observation_years = 5
+        behaviour.update()
+        assert not calls
+
+        behaviour._observation_years = 0
+        behaviour.update()
+        assert calls

@@ -18,7 +18,11 @@ from inseeds.components.exogenous.faostat import (
     FaoCapitalStock,
 )
 from inseeds.components.farming.ca_behaviour import sigmoid
-from inseeds.components.farming.ca_management import ManagementBundle
+from inseeds.components.farming.ca_management import (
+    COVER_CROP_LEGUME,
+    COVER_CROP_NONLEGUME,
+    ManagementBundle,
+)
 
 
 class TestSigmoidFunction:
@@ -215,7 +219,6 @@ class TestCACountryFAOBatching:
         from inseeds.components.farming.ca_country import CACountry
         
         # Check that properties exist
-        assert "depreciation_rate" in dir(CACountry)
         assert "initial_capital_per_ha" in dir(CACountry)
         assert "pft_prices" in dir(CACountry)
 
@@ -331,7 +334,7 @@ class TestCAFarmerProfitComponents:
         """Direct costs calculation method should exist."""
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
         
-        assert hasattr(ConservationAgricultureFarmer, "get_current_direct_costs")
+        assert hasattr(ConservationAgricultureFarmer, "get_bundle_direct_costs")
 
     def test_capital_dynamics_methods_exist(self):
         """Capital dynamics methods should exist."""
@@ -341,6 +344,77 @@ class TestCAFarmerProfitComponents:
         assert "min_capital" in dir(ConservationAgricultureFarmer)
         assert hasattr(ConservationAgricultureFarmer, "update")
         assert hasattr(ConservationAgricultureFarmer, "update_capital")
+
+
+class TestWeedControlCredit:
+    """The cover crop only saves weed control where there is no cultivation."""
+
+    @staticmethod
+    def _costs():
+        from inseeds.components.farming.ca_management import ManagementCosts
+
+        return ManagementCosts.from_config(
+            {
+                "tillage": {"transition": 0, "costs": {"fuel": 30.0}},
+                "cover_crop": {
+                    "transition": 0,
+                    "costs": {
+                        "seeds_nonlegume": 40.0,
+                        "seeds_legume": 90.0,
+                        "weed_control": -15.0,
+                    },
+                },
+                "residue_on_field": {"transition": 0, "costs": {}},
+            },
+            gdp_cost_ratio=1.0,
+        )
+
+    def _cost_of(self, bundle, cover_crop_type=COVER_CROP_NONLEGUME):
+        from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
+
+        class _Stub:
+            practice_costs = self._costs()
+            get_practice_direct_cost_per_ha = (
+                ConservationAgricultureFarmer.get_practice_direct_cost_per_ha
+            )
+
+        return ConservationAgricultureFarmer.get_bundle_direct_cost_per_ha(
+            _Stub(), bundle, cover_crop_type
+        )
+
+    def test_no_till_field_earns_the_credit(self):
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        assert self._cost_of(ManagementBundle.from_practices(0, 1, 0)) == 25.0
+
+    def test_tilled_field_pays_the_full_cover_crop_cost(self):
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        # 30 tillage + 40 seeds, no credit: cultivation already kills the weeds.
+        assert self._cost_of(ManagementBundle.from_practices(1, 1, 0)) == 70.0
+
+    def test_credit_needs_a_cover_crop(self):
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        assert self._cost_of(ManagementBundle.from_practices(0, 0, 0)) == 0.0
+
+    def test_only_the_seed_actually_sown_is_charged(self):
+        """The two seed costs are alternatives, never a sum.
+
+        Both live in the same cost_components dict, so anything that reaches
+        for the total rather than for the one in the ground would charge a farm
+        $130/ha for a crop it planted once.
+        """
+        from inseeds.components.farming.ca_management import ManagementBundle
+
+        cover_crop = ManagementBundle.from_practices(0, 1, 0)
+
+        catch = self._cost_of(cover_crop, COVER_CROP_NONLEGUME)
+        legume = self._cost_of(cover_crop, COVER_CROP_LEGUME)
+
+        assert catch == 25.0   # 40 seed - 15 credit
+        assert legume == 75.0  # 90 seed - 15 credit
+        assert legume - catch == 50.0
 
 
 class TestCABehaviourStructure:
@@ -404,6 +478,228 @@ class TestCAFarmerResidueEconomics:
         assert "compute_residue_opportunity_cost" in dir(ConservationAgricultureFarmer)
 
 
+class TestBandPriceMatching:
+    """Tests for matching LPJmL crop bands to producer price categories."""
+
+    CATEGORIES = [
+        "Others, annual", "Others, perennial", "cotton", "maize", "pulses",
+        "temperate cereals", "tropical roots",
+    ]
+
+    def test_named_crop_matches_its_own_category(self):
+        from inseeds.components.farming.ca_farmer import _price_category_for
+
+        assert _price_category_for("maize", self.CATEGORIES, {}) == "maize"
+        assert _price_category_for(
+            "temperate cereals", self.CATEGORIES, {}
+        ) == "temperate cereals"
+
+    def test_others_is_priced_as_the_cereal_lpjml_grows(self):
+        """others_to_crop makes that band a cereal stand, not a residual."""
+        from inseeds.components.farming.ca_farmer import _price_category_for
+
+        assert _price_category_for(
+            "others", self.CATEGORIES, {"others": "temperate cereals"}
+        ) == "temperate cereals"
+        assert _price_category_for(
+            "others", self.CATEGORIES, {"others": "maize"}
+        ) == "maize"
+
+    def test_unpriceable_band_returns_nothing(self):
+        """No category of its own; _price_for_band takes it from here."""
+        from inseeds.components.farming.ca_farmer import _price_category_for
+
+        assert _price_category_for("sugarcane", self.CATEGORIES, {}) is None
+
+
+class TestPriceForBand:
+    """Tests for the price a band is finally valued at."""
+
+    @staticmethod
+    def _prices(values):
+        import xarray as xr
+
+        return xr.DataArray(
+            np.array(list(values.values()), dtype=float),
+            dims=("npft",),
+            coords={"npft": list(values)},
+        )
+
+    def test_own_category_wins(self):
+        from inseeds.components.farming.ca_farmer import _price_for_band
+
+        prices = self._prices(
+            {"maize": 200.0, "Others, annual": 50.0, "Others, perennial": 40.0}
+        )
+        assert _price_for_band("maize", prices, "npft", {}) == ("maize", 200.0)
+
+    def test_uncovered_crop_is_worth_its_own_group(self):
+        """A country-only price file holds only that country's crops."""
+        from inseeds.components.farming.ca_farmer import _price_for_band
+
+        prices = self._prices(
+            {"temperate cereals": 180.0, "maize": 220.0, "Others, annual": 900.0}
+        )
+        label, price = _price_for_band("rice", prices, "npft", {})
+        assert price == pytest.approx(200.0)
+        assert "temperate cereals" in label and "maize" in label
+
+    def test_crop_without_a_priced_relative_falls_back_to_the_residual(self):
+        from inseeds.components.farming.ca_farmer import _price_for_band
+
+        prices = self._prices(
+            {"Others, annual": 50.0, "Others, perennial": 40.0}
+        )
+        assert _price_for_band("sugarcane", prices, "npft", {}) == (
+            "Others, perennial", 40.0
+        )
+        assert _price_for_band("pulses", prices, "npft", {}) == (
+            "Others, annual", 50.0
+        )
+
+    def test_non_finite_own_price_falls_back(self):
+        """FAO returning no value must not silently void the revenue."""
+        from inseeds.components.farming.ca_farmer import _price_for_band
+
+        prices = self._prices({"rice": np.nan, "temperate cereals": 180.0})
+        assert _price_for_band("rice", prices, "npft", {}) == (
+            "mean of temperate cereals", 180.0
+        )
+
+    def test_nothing_usable_reports_no_price(self):
+        from inseeds.components.farming.ca_farmer import _price_for_band
+
+        prices = self._prices({"temperate cereals": 180.0})
+        category, price = _price_for_band("pulses", prices, "npft", {})
+        assert category is None
+        assert not np.isfinite(price)
+
+
+class TestInitRevenueMapping:
+    """Tests for grouping a cell's crop bands onto producer prices."""
+
+    CROPS = [
+        "temperate cereals", "rice", "maize", "tropical cereals", "pulses",
+        "temperate roots", "tropical roots", "oil crops sunflower",
+        "oil crops soybean", "oil crops groundnut", "oil crops rapeseed",
+        "sugarcane", "others",
+    ]
+
+    @classmethod
+    def _farmer(cls, price_values, cropped, min_crop_fraction=0.01):
+        """A farmer stub carrying only what the mapping reads."""
+        import xarray as xr
+        from types import SimpleNamespace
+
+        from inseeds.components.farming.ca_farmer import (
+            ConservationAgricultureFarmer,
+        )
+
+        bands = [
+            f"{water} {crop}"
+            for water in ("rainfed", "irrigated")
+            for crop in cls.CROPS
+        ]
+        fractions = np.array([cropped.get(b, 0.0) for b in bands])
+        cftfrac = xr.DataArray(
+            fractions, dims=("band",), coords={"band": bands}
+        )
+        prices = xr.DataArray(
+            np.array(list(price_values.values()), dtype=float),
+            dims=("npft",),
+            coords={"npft": list(price_values)},
+        )
+
+        farmer = object.__new__(ConservationAgricultureFarmer)
+        farmer.get_from_earth = lambda *args, **kwargs: cftfrac
+        farmer.pft_prices = prices
+        farmer._cell = SimpleNamespace(
+            grid=SimpleNamespace(lat=np.float64(52.0), cell=np.int64(20)),
+            area=np.float64(3.9e8),
+            country=SimpleNamespace(code="NLD"),
+        )
+        farmer._model = SimpleNamespace(
+            config=SimpleNamespace(
+                coupled_config=SimpleNamespace(
+                    materiality=SimpleNamespace(
+                        min_crop_fraction=min_crop_fraction
+                    )
+                )
+            )
+        )
+        return farmer, bands
+
+    def test_every_band_is_priced_from_a_country_only_price_file(self):
+        """The case that broke the Netherlands run: 6 categories, 26 bands."""
+        farmer, bands = self._farmer(
+            {
+                "Others, annual": 1175.0,
+                "Others, perennial": 2067.0,
+                "oil crops rapeseed": 442.0,
+                "pulses": 1029.0,
+                "temperate cereals": 209.0,
+                "temperate roots": 548.0,
+            },
+            {"rainfed temperate cereals": 0.3, "rainfed maize": 0.1},
+        )
+        farmer._init_revenue_mapping()
+
+        priced = sorted(
+            i for indices, _ in farmer._revenue_groups for i in indices
+        )
+        assert priced == list(range(len(bands)))
+
+    def test_maize_is_worth_cereals_not_dutch_horticulture(self):
+        """The residual aggregate of a horticulture country is far off."""
+        farmer, bands = self._farmer(
+            {"Others, annual": 1175.0, "temperate cereals": 209.0},
+            {"rainfed maize": 0.1},
+        )
+        farmer._init_revenue_mapping()
+
+        maize = bands.index("rainfed maize")
+        price = next(
+            p for indices, p in farmer._revenue_groups if maize in indices
+        )
+        assert price == pytest.approx(209.0)
+
+    def test_unpriceable_band_the_cell_does_not_crop_is_left_out(self):
+        farmer, bands = self._farmer(
+            {"temperate cereals": 209.0},
+            {"rainfed temperate cereals": 0.3},
+        )
+        farmer._init_revenue_mapping()
+
+        priced = {i for indices, _ in farmer._revenue_groups for i in indices}
+        assert bands.index("rainfed temperate cereals") in priced
+        assert bands.index("rainfed pulses") not in priced
+
+    def test_unpriceable_band_the_cell_does_crop_raises(self):
+        """Its cost share is charged either way, so revenue must count it."""
+        farmer, _ = self._farmer(
+            {"temperate cereals": 209.0},
+            {"rainfed temperate cereals": 0.3, "rainfed pulses": 0.1},
+        )
+        with pytest.raises(ValueError, match="no producer price"):
+            farmer._init_revenue_mapping()
+
+
+class TestOthersCftLatitudeSplit:
+    """Tests for which cereal stands in for 'others' cropland."""
+
+    def test_split_follows_lpjml_thirty_degrees(self):
+        from inseeds.components.farming.ca_farmer import (
+            OTHERS_CFT_TEMPERATE,
+            OTHERS_CFT_TROPICAL,
+            OTHERS_TROPICS_LAT,
+            ConservationAgricultureFarmer,
+        )
+
+        assert OTHERS_TROPICS_LAT == 30.0
+        assert "others_cft" in dir(ConservationAgricultureFarmer)
+        assert OTHERS_CFT_TEMPERATE != OTHERS_CFT_TROPICAL
+
+
 class TestCAFarmerCellProperties:
     """Tests for cell property accessors."""
 
@@ -414,7 +710,6 @@ class TestCAFarmerCellProperties:
         # Check for various cell properties
         assert "cell_runoff" in dir(ConservationAgricultureFarmer)
         assert "cell_leaching" in dir(ConservationAgricultureFarmer)
-        assert "cell_fertilizer" in dir(ConservationAgricultureFarmer)
         assert "cell_pft_yield" in dir(ConservationAgricultureFarmer)
         assert "cell_pft_production" in dir(ConservationAgricultureFarmer)
 
@@ -448,6 +743,33 @@ class TestCAFarmerUpdate:
         assert "t" in sig.parameters
 
 
+class TestFarmSizeHa:
+    """Cropped-area helper used by Farmer.farm_size."""
+
+    def test_farm_size_ha_is_crop_area_in_hectares(self):
+        """cftfrac of 0.5 on a 1e6 m2 cell is 50 ha after dropping grassland."""
+        import xarray as xr
+        from types import SimpleNamespace
+
+        from inseeds.components.farming.farmer import NON_CROPS, farm_size_ha
+
+        bands = [
+            "rainfed temperate cereals",
+            "rainfed maize",
+            *NON_CROPS,
+        ]
+        cftfrac = xr.DataArray(
+            np.array([0.3, 0.2] + [0.0] * (len(NON_CROPS) - 1) + [0.4]),
+            dims=("band",),
+            coords={"band": bands},
+        )
+        cell = SimpleNamespace(
+            from_earth=SimpleNamespace(cftfrac=cftfrac),
+            area=1_000_000.0,
+        )
+        assert farm_size_ha(cell) == pytest.approx(50.0)
+
+
 class TestCAFarmerCapitalProperties:
     """Tests for capital-related properties."""
 
@@ -458,7 +780,7 @@ class TestCAFarmerCapitalProperties:
         assert "min_capital" in dir(ConservationAgricultureFarmer)
 
     def test_farm_size_property_exists(self):
-        """farm_size property should exist."""
+        """farm_size is the public name used by CA init, costs and output."""
         from inseeds.components.farming.ca_farmer import ConservationAgricultureFarmer
-        
+
         assert "farm_size" in dir(ConservationAgricultureFarmer)

@@ -6,19 +6,6 @@ control_run: False
 # Generates HTML profile at: {output_dir}/profiling_{timestamp}.html
 profiling: false
 
-# Parallelization settings for country updates
-# Designed for Python 3.14+ free-threaded mode (no GIL)
-parallelization:
-    # Mode: 'serial' or 'threaded'
-    # 'serial' = sequential execution (default, safe)
-    # 'threaded' = use ThreadPoolExecutor for parallel country updates
-    mode: 'serial'
-    # Maximum number of worker threads (0 = auto-detect from CPU count)
-    max_workers: 0
-    # Enable debug output for parallelization
-    debug: false
-
-
 # Output collection settings for pycopanlpjml
 # All settings from pycopanlpjml/config.yaml are explicitly listed here
 output:
@@ -49,8 +36,9 @@ output:
     farmer:
         - "aft_id"
         - "tillage"
-        - "cover_crop"
-        - "residue_on_field"
+        - "cover_crop"                     # 0=none, 1=catch crop, 2=legume
+        - "residue_on_field"               # Fraction left (0-1), what LPJmL is told
+        - "behaviour.residue_committed"    # The binary undertaking behind that fraction
         - "behaviour.practice_bundle_id"   # Current bundle ID (0-7), settable for Dask sync
         - "behaviour.proposed_bundle_id"   # Bundle being evaluated (-1 if none)
         - "behaviour.tpb"               # TPB value FOR the proposed_bundle_id
@@ -59,8 +47,24 @@ output:
         - "behaviour.pbc"               # PBC FOR the proposed_bundle_id
         - "behaviour.transition_blocker"    # Primary reason for blocked transition (0-12), label in 'label' column
         - "behaviour.transition_driver"     # Primary reason for successful transition (0-9), label in 'label' column
-        - "profit"
-        - "leaching"
+        - "baseline_revenue"            # Historic average revenue frozen at start ($)
+        - "current_revenue"             # This year's harvest valued at prices ($)
+        - "delta_revenue"               # = current_revenue - baseline_revenue ($)
+        - "delta_costs"                 # Cost change from baseline bundle ($)
+        - "carbon_payment"              # Payment for soil C sequestration ($)
+        - "practice_subsidy"            # Payment for holding CA practices ($)
+        - "nitrogen_charge"             # Charge on N leaching ($)
+        - "raw_profit"                  # = delta_revenue - delta_costs + transfers ($)
+        # Close the year's capital balance:
+        #   ΔK = raw_profit - transition_cost + residue_sale_income
+        - "transition_cost"             # One-off cost of a practice change ($)
+        - "residue_sale_income"         # Straw sold on a forced deselection ($)
+        # The two straw valuations delta_costs is a difference between
+        - "residue_opportunity_cost"    # This year's straw at current revenue ($)
+        - "baseline_residue_cost"       # Straw frozen on baseline revenue ($)
+        - "leaching"                    # gN/m2/yr, the tracked flux
+        - "leaching_concentration"      # mgN/l, reported only
+        - "taxable_leaching"            # gN/m2/yr, the part above the allowance
         - "capital"                     # Farm capital stock (USD, scaled by farm size)
         - "farm_size"                   # Farm size in hectares
         - "soilc"
@@ -76,23 +80,31 @@ coupling_map:
 
 # Practice dimensions for multi-practice farmer decisions
 practice_dimensions:
-    tillage: { n_options: 2 }  # 0=no-till (CA), 1=conventional tillage
     cover_crop:
         n_options: 3  # 0=none, 1=non-legumes, 2=legumes
-        leaching_high: 5    # mgN/l threshold for non-legume selection
-        fertilizer_high: 15  # gN/m2/yr threshold for non-legume selection
     residue:
         # FAO CA threshold: 30% soil cover from crop residues
         # Below this, farmer increases retention; at/above, maintains current level
         ca_cover_threshold: 0.3
-        # How residue retention status (residue_on_field) is determined:
-        # - false (default): By farmer decision only. If farmer chooses to retain
-        #   residue (residue_on_field=1), that's what LPJmL sees, regardless of
-        #   actual litter cover. CA certification derived in post-processing.
-        # - true: By actual litter cover. Farmers who organically meet the
-        #   threshold (>= 30% cover) get upgraded to residue_on_field=1 even if
-        #   they didn't explicitly choose it. No automatic downgrade (would
-        #   contradict farmer intent and worsen low-yield situations).
+        # How the residue component of the bundle is determined:
+        # - false: by farmer decision only. What the farmer chooses is what
+        #   LPJmL sees, and residue certification is left to post-processing,
+        #   which can combine the reported bundle with the reported litter cover.
+        # - true: by realised litter cover, following the FAO definition. A farm
+        #   counts as retaining residue when the median of its recent cover
+        #   reaches ca_cover_threshold, and stops counting when it falls below.
+        #   The label is then a measurement of the field rather than a statement
+        #   of intent, and costs stay with intent: a farm that reaches the
+        #   threshold without choosing to keeps selling straw at the baseline
+        #   rate, so it neither pays the opportunity cost nor draws the subsidy,
+        #   while a farm that has to leave its residue to get there pays both.
+        #
+        #   The median over min_observation_years, read on the re-evaluation
+        #   cadence rather than annually. Cover moves with the harvest, and a
+        #   label read off one season would follow the weather - each flip
+        #   redates the label and re-keys the slot the performance memory
+        #   records under, so rainfall alone could stop a farm ever building up
+        #   experience of anything.
         residue_status_by_cover: true
 
 # Exploration constraints for random bundle exploration
@@ -151,14 +163,14 @@ agroecological_clustering:
 # Note: Values are per hectare to match LPJmL spatial resolution
 # Average farm sizes vary: USA ~180 ha, EU median ~5 ha (Our World in Data, 2020)
 #
-# FAO BASELINE + DEVIATIONS CAPITAL DYNAMICS MODEL
+# CAPITAL DYNAMICS: FAO ENDOWMENT + OWN DEVIATIONS
 # -------------------------------------------------
-# FAO provides the baseline capital dynamics. We track DEVIATIONS:
+# FAO sets the initial stock, and from then on it moves by what this farm earns
+# and spends relative to its own starting point:
 #
-#   K_{t+1} = K × (1 + i - δ) + Δrevenue - Δcosts
+#   K_{t+1} = K + Δrevenue - Δcosts
 #
 # where:
-#   - i - δ = FAO net rate (investment - depreciation, typically +2-7%/year)
 #   - Δrevenue = current_revenue - baseline_revenue
 #   - Δcosts = cost difference between current and baseline bundle
 #
@@ -166,26 +178,31 @@ agroecological_clustering:
 #   - baseline_revenue: Average over historic period (2015-2025 LPJmL data)
 #   - baseline_bundle: Initial practice bundle at simulation start
 #
-# KEY BEHAVIORS:
-#   - If Δrevenue = 0 and Δcosts = 0: farmer follows FAO baseline exactly
-#   - Better yields (Δrevenue > 0): capital grows faster than baseline
-#   - Worse yields (Δrevenue < 0): capital grows slower than baseline
-#   - CA with higher costs: Δcosts > 0 → reduces capital vs baseline
-#   - CA with savings (no-till): Δcosts < 0 → increases capital vs baseline
-#
-# WHY THIS WORKS:
-#   FAO (i - δ) already captures everything at sector average: depreciation,
-#   reinvestment, subsidies, loans, typical yields/costs. We don't model
-#   these explicitly - just the deviations from this baseline.
+# A farm that neither earns nor spends more than it used to holds its stock
+# steady; better yields or the running savings of no-till grow it, and worse
+# yields or the added cost of a practice shrink it.
 #
 # References:
-#   - Solow (1956). Capital accumulation framework
-#   - OECD (2009). Measuring Capital Manual
-#   - FAO (2023). FAOSTAT Capital Stock
+#   - FAO (2023). FAOSTAT Capital Stock (initial endowment)
 #   - Farm Financial Scorecard (CFFM, University of Minnesota)
 #   - Davis, J. (2022). "Farm's Target for Working Capital." SDSU Extension.
 #
 farm_economics:
+    # Whether the capital stock may block a change the farmer wants to make:
+    # the survival gate, the forced deselection of practices that have become
+    # unaffordable, and the trimming of a target bundle to what the stock can
+    # buy. Switched off, capital is still tracked and still drives profit, but
+    # nothing is refused for lack of it - credit is assumed available whenever a
+    # practice pays off, and adoption is then limited only by whether it does
+    # (PBC) and by the behavioural side.
+    #
+    # A stock of productive capital is only a proxy for access to finance: a
+    # change that pays for itself is normally financed, so refusing it because
+    # this year's equipment stock is thin overstates the barrier. Where it does
+    # bind is the poorest countries, whose credit markets fail. Kept on by
+    # default so that case is represented, and exposed here so the assumption
+    # can be tested rather than assumed.
+    capital_constraints: true
     # Minimum capital buffer as fraction of initial capital.
     # Below this threshold, farmers are forced to deselect practices.
     # Farm liquidity research shows working capital is typically 15-30% of total
@@ -196,15 +213,11 @@ farm_economics:
     # Note: FAO NCS excludes land (SNA 2008 definition), so this fraction
     # applies to productive capital (machinery, equipment, buildings).
     min_capital_fraction: 0.70
-    # The FAO rates (i - δ) capture the NET capital change at sector level,
-    # including: depreciation, reinvestment, subsidies, loans, average costs.
-    # This is our baseline - what happens to capital at sector average.
-    fao_capital_baseline: false
 
 # Practice costs (USD per hectare)
-# Costs are scaled by farmer's capital intensity relative to reference (US).
-# Each cost has [min, max] range; actual cost = interpolated by capital ratio.
-#   cost = min + (max - min) × clamp(capital_per_ha / reference_capital, 0, 1)
+# Each cost is a [min, max] range interpolated by where the country's GDP per
+# capita falls between the global 10th and 90th percentiles:
+#   cost = min + (max - min) × gdp_cost_ratio,  gdp_cost_ratio in [0, 1]
 #
 # Cost components are additive - code sums all entries in 'costs' dict.
 # For cover_crop/residue_on_field: positive = annual cost when practice is active.
@@ -240,12 +253,75 @@ farm_economics:
 #        Burndown herbicide: +$9.33/acre = $23/ha for no-till.
 #   [11] Bowman et al. (2024). Herbicide use for conservation tillage adoption.
 #        PLOS One 19(11), e0311960. Herbicide: +$6/acre = $15/ha baseline.
+#   [12] Myers, Weber & Tellatin (2019). Cover Crop Economics: Opportunities to
+#        Improve Your Bottom Line in Row Crops. SARE Technical Bulletin.
+#        Where herbicide-resistant weeds are substantial to severe, cover crops
+#        save $27/acre = $67/ha: $12/acre = $30/ha from one fewer post-emergence
+#        pass (product $4.50 + application $7.50 per acre) and $15/acre = $37/ha
+#        from switching to a cheaper residual chemistry.
+#   [13] Myers (2026). Managing Cover Crops Profitably, Ch. 2. SARE.
+#        Cereal rye before soybean where resistance is an issue: herbicide
+#        savings of $10-20/acre = $25-50/ha.
+#   [14] Buckles et al. (eds., 1998). Cover Crops in West Africa: Contributing
+#        to Sustainable Agriculture. IDRC/IITA/Sasakawa Global 2000.
+#        Mucuna fallow on the Adja Plateau (Benin) cut Imperata cylindrica from
+#        270 to 32 plants/m2; fields that needed an estimated 60-80 person-days
+#        /ha to clear the weed then needed a fraction of that labour. Mucuna
+#        seed is largely saved and exchanged between farms rather than bought.
+#   [15] Soil Health Exchange (2026). Fall Cover Crops: Rates, Costs and
+#        Nitrogen Credits. Drilled pure-stand rates against a retail price
+#        snapshot of Aug 2026: cereal rye $0.30/lb at 60-120 lb/ac, hairy vetch
+#        $2.20/lb at 15-20 lb/ac, crimson clover $2.20/lb.
+#   [16] Schnitkey & Sellars (2018). Understanding Budget Implications of Cover
+#        Crops. farmdoc daily 8(112), University of Illinois. Central Illinois
+#        budget: seed $0.25/lb for cereal rye and $2.24/lb for hairy vetch,
+#        giving $15/acre for rye at 60 lb and $45/acre for a 15 lb vetch +
+#        45 lb rye blend, before the $13.40/acre drilling charge.
+#   [17] HELCOM (2024). Experiences on economic incentives in the Baltic Sea
+#        region to enhance nutrient recycling and reduce nutrient losses.
+#        Sweden taxed mineral fertiliser nitrogen at SEK 1.80/kgN (EUR 0.18)
+#        from 1995 to 2009; Denmark levies DKK 5/kgN, with registered users
+#        exempt. Both are taxes on nitrogen bought, not on nitrogen lost.
+#   [18] Le Goffe (2013). The Nitrates Directive: incentives, cost-effectiveness
+#        and the Dutch MINAS. Notre Europe / Jacques Delors Institute. MINAS
+#        (1998-2005) charged nitrogen losses above a levy-free surplus at
+#        EUR 0.68/kgN, raised to EUR 2.53-5.07/kgN in 2002 to a level at which
+#        eliminating the loss always beat paying the penalty.
+#   [19] Keeler et al. (2016). The social costs of nitrogen. Science Advances
+#        2(10), e1600219. Damage from nitrogen leaching to groundwater in the
+#        US Corn Belt, $0.60-13/kgN depending on the receiving water.
+#   [20] Rennert et al. (2022). Comprehensive evidence implies a higher social
+#        cost of CO2. Nature 610, 687-692. Mean SC-CO2 of $185/tCO2 (2020 USD,
+#        2% near-term discount rate), 5-95% range $44-413.
+#   [21] Schulte-Uebbing & de Vries (2021). Assessment of spatially explicit
+#        actual, required and critical nitrogen inputs in EU-27 agriculture.
+#        Wageningen University. Critical N leaching computed as the
+#        precipitation surplus times 11.3 mgN/l, the 50 mg NO3/l drinking-water
+#        limit expressed as N; 2.5 mgN/l is used where surface waters are the
+#        receptor. The Nitrates Directive itself sets no leaching limit - its
+#        170 kgN/ha is a cap on manure applied, not on nitrogen lost. Finds
+#        the surface-water threshold binding (43% input cut needed) and the
+#        groundwater one close to actual inputs.
+#   [22] Rockstrom et al. (2023). Safe and just Earth system boundaries.
+#        Nature 619, 102-111, with Schulte-Uebbing et al. (2022). The nitrogen
+#        boundary rests on a critical surface-water concentration of 2.5 mgN/l
+#        to prevent eutrophication, tolerance range 1-4 mgN/l.
+#   [23] Umweltbundesamt (2024). Critical Limits for Acidification and
+#        Nutrient Nitrogen. The EU Drinking Water Directive guide value of
+#        25 mg NO3/l, i.e. 5.6 mgN/l, used as a precautionary upper bound.
+#   [24] USDA NRCS. Environmental Quality Incentives Programme (EQIP), under
+#        the Food Security Act 1985 sec. 1240B(d). Payments are a share of
+#        costs incurred and income foregone, capped at 75% for most producers
+#        and 90% for historically underserved ones. Cover crop practice
+#        payments run $34-75/acre = $84-185/ha.
+#   [25] USDA NRCS Conservation Stewardship Programme (CSP), residue and
+#        tillage management enhancements, $5-25/ha; and Regulation (EU)
+#        2021/2115 Arts. 31 and 70, under which eco-scheme and agri-environment
+#        payments compensate "additional costs incurred and income foregone",
+#        in practice EUR 20-50/ha for soil cover and EUR 40-165/ha for wider
+#        soil conservation.
 #
 practice_costs:
-    # Reference country for cost scaling - costs are scaled relative to this country's
-    # capital per ha from FAO data. USA used because literature values originate there.
-    reference_capital_country: "USA"
-
     tillage:
         # ONE-TIME TRANSITION COST (equipment)
         # US literature value: $66/ha (no-till planter amortized) [1]
@@ -297,10 +373,32 @@ practice_costs:
         # ANNUAL OPERATING COSTS
         # Costs are positive, subsidies are NEGATIVE (reduce net cost)
         costs:
-            # Seed purchase costs
-            # USA: $20-40/acre = $50-100/ha depending on species mix [4]
-            # Low-capital: can be similar due to imports; use simpler mixes
-            seeds: [28.0, 40.0]        # $/ha/yr [4]
+            # Seed purchase costs, which is where the two cover crop types
+            # differ. Exactly one of these applies - whichever crop is in the
+            # ground - and the choice between them is made in
+            # indicate_cover_crop_type. A legume buys nitrogen fixation and a
+            # grass buys nitrogen capture, and the legume costs about twice as
+            # much per hectare to sow.
+            #
+            # Drilled US rates against a 2026 retail price snapshot [15]:
+            #   cereal rye   60-120 lb/ac @ $0.25-0.30/lb = $18-36/ac = $44-89/ha
+            #   hairy vetch  15-20  lb/ac @ $2.20-2.60/lb = $33-44/ac = $82-109/ha
+            # farmdoc's central Illinois budget separates the same two: seed
+            # alone is $15/ac for cereal rye and $45/ac for a rye/vetch blend
+            # [16]. Both sources put the legume at 2-3x the grass.
+            #
+            # High-capital sits at the low end of those drilled ranges rather
+            # than the middle, because the range is a global high-income
+            # average and not a Corn Belt one: lighter rates, broadcasting and
+            # rye-heavy blends all pull below a pure drilled stand.
+            #
+            # Low-capital: local species (oats, millet, mucuna, lablab) at
+            # lower rates, and a large share of seed saved from last year
+            # rather than bought. Farm-saved seed is commonest for the legumes
+            # - mucuna in West Africa is normally exchanged, not purchased [14]
+            # - so the cash gap between the two narrows at this end.
+            seeds_nonlegume: [18.0, 65.0]  # $/ha/yr [4,15,16]
+            seeds_legume: [30.0, 85.0]     # $/ha/yr [14,15,16]
 
             # Seeding/planting labor and fuel
             # USA: $10-15/acre = $25-37/ha for drilling [4]
@@ -312,18 +410,41 @@ practice_costs:
             # Low-capital: often mechanical termination, cheaper herbicide
             termination: [12.0, 15.0]  # $/ha/yr [4]
 
-            # SUBSIDY (NEGATIVE = reduces costs)
-            # US EQIP: $34-75/acre = $84-185/ha (typically 50-75% cost-share) [6]
-            # EU CAP eco-schemes: €40-165/ha for soil conservation practices [7]
-            # Using conservative global average (partial cost-share)
-            # [6] USDA NRCS EQIP FY2024 Payment Rates
-            # [7] European Parliament (2024) Environment and the CAP
-            subsidy: [-40.0, -60.0]    # $/ha/yr (NEGATIVE = payment to farmer)
+            # IN-SEASON WEED CONTROL SAVED (NEGATIVE = reduces costs)
+            # Cover crop biomass suppresses part of the weed pressure the
+            # following crop faces. Distinct from 'termination' above, which is
+            # the kill operation itself.
+            # Credited only under no-till (see get_bundle_direct_cost_per_ha):
+            # where the field is still tilled, cultivation already does this.
+            #
+            # High-capital: weed control runs on herbicide. USA: $67/ha saved
+            # where herbicide-resistant weeds are severe [12], $25-50/ha for
+            # cereal rye before soybean [13]. Those are the resistant-weed
+            # cases, not the average field, and suppression does not always
+            # change the spray programme, so we take about half of the single
+            # avoided post-emergence pass ($30/ha [12]).
+            # Low-capital: weed control is hand hoeing, so the saving is labour
+            # rather than chemical. Mucuna fallow in Benin freed a large share
+            # of the 60-80 person-days/ha spent clearing Imperata [14]; an
+            # off-season cover crop is far weaker than a full-year fallow, so
+            # we credit ~3 person-days/ha at rural wages of $1.5-2/day.
+            # Set to [0, 0] to switch the credit off.
+            weed_control: [-5.0, -15.0]  # $/ha/yr [12,13,14]
 
-        # NET ANNUAL COST (sum of components):
-        #   Low-capital:  28 + 15 + 12 - 40 = 15 $/ha/yr (with subsidy)
-        #   High-capital: 40 + 20 + 15 - 60 = 15 $/ha/yr (with subsidy)
-        # Without subsidy: 55-75 $/ha/yr
+        # NET ANNUAL COST (sum of components), under no-till, by type:
+        #   Low-capital,  non-legume: 18 + 15 + 12 -  5 = 40 $/ha/yr
+        #   Low-capital,  legume:     30 + 15 + 12 -  5 = 52 $/ha/yr
+        #   High-capital, non-legume: 65 + 20 + 15 - 15 = 85 $/ha/yr
+        #   High-capital, legume:     85 + 20 + 15 - 15 = 105 $/ha/yr
+        # Under conventional tillage the weed control credit does not apply,
+        # so each figure is 5-15 $/ha/yr higher.
+        #
+        # The legume is the expensive option and has to earn its seed back in
+        # fixed nitrogen. The catch crop is the cheaper one, and earns its keep
+        # by holding nitrogen that would otherwise leach - worth little on its
+        # own, and worth the difference once policy.nitrogen_charge prices the
+        # loss. A payment for holding the practice, if a scenario turns one
+        # on, is policy.practice_subsidies.cover_crop.
 
     residue_on_field:
         # Modern combines have straw choppers/spreaders as standard equipment.
@@ -335,14 +456,324 @@ practice_costs:
         # which calculates: crop_revenue × use_cost_fractions
         # Based on Singh & Schiere (1995): straw value = 10-15% of crop value.
         # This makes residue costs spatially and temporally variable with yields.
+        # No static cost components: retaining costs exactly the straw income
+        # given up. A payment for holding the practice, if a scenario turns
+        # one on, is policy.practice_subsidies.residue_on_field, or a share of
+        # this cost via policy.practice_subsidies.residue_on_field_share.
+
+# Policy instruments
+# ------------------
+# Every instrument the model has, and all of them zero by default, so the
+# model as configured is the counterfactual and any run with an instrument has
+# one to be compared against. Nothing that transfers money to or from a farm
+# on policy grounds belongs anywhere else in this file.
+#
+# Three of them, in two families. The carbon price and the nitrogen charge are
+# priced on quantities the farm's own record already carries - carbon put into
+# the soil above baseline, nitrogen actually lost - as the real instruments
+# would be written. The practice subsidies are paid for holding a practice,
+# whether or not it was just adopted: per hectare, or - for residue, whose
+# cost this model derives per farm - as a share of that cost.
+#
+# Only the part a farm can change by farming differently enters its decisions,
+# because the rest is the same whatever it chooses and cancels out of every
+# comparison. The whole bill still lands on capital, which in a ledger whose
+# other terms are deviations from baseline means a high enough charge walks
+# every farm down to the capital floor whether or not it changes practice.
+# That is harsher than reality, where a tax is paid out of gross income and not
+# out of the machinery shed, so read a run with a large nitrogen_charge as an
+# upper bound on the decapitalisation.
+policy:
+    # Payment for soil carbon accumulated above the farm's own baseline, in USD
+    # per tonne of CO2 equivalent. Rennert et al. (2022) put the social cost of
+    # carbon near $185/tCO2 with a 5-95% range of $44-413 [20]; compliance
+    # markets are lower, with the EU ETS in the EUR 60-90/tCO2 band and
+    # voluntary soil carbon contracts often below $30/tCO2. A run wanting the
+    # damage-cost framing should use the Rennert figure and one wanting the
+    # market framing something near 30.
+    #
+    # A SINGLE GLOBAL NUMBER, not a [low, high] pair like every cost above.
+    # Carbon is a global externality: a tonne is a tonne wherever it is put
+    # away, so one price is what correctly values it, and carbon markets are
+    # built that way for the same reason. Paying a low-income farm less for the
+    # same tonne would misprice it and would push sequestration towards where
+    # the price is high rather than where it is cheap - the spillover a
+    # differentiated price creates and a uniform one does not.
+    #
+    # Paid on gains and not charged on losses (see
+    # `creditable_soilc_accumulation`), which is the asymmetry real schemes
+    # carry and the reason abandoning a practice stays cheap.
+    #
+    # Suggested values:
+    #   50   compliance-market framing, between voluntary (~30) and EU ETS (~80)
+    #   185  damage-cost framing, Rennert et al. mean social cost of carbon
+    carbon_price: 0.0        # $/tCO2e [20]
+
+    # Charge on nitrogen leached below the root zone, in USD per kg N, as
+    # [low-income, high-income] and interpolated on the same GDP ratio as the
+    # practice costs. Unlike carbon, nitrogen damage is local - it depends on
+    # the aquifer and on who drinks from it - so the rate that internalises it
+    # is local too, and a country sets it against what its farms can bear.
+    #
+    # On the loss, not on the input. A charge on fertiliser applied would fall
+    # on every farm in proportion to something the model treats as exogenous,
+    # and would give a cover crop no credit for holding nitrogen in place.
+    #
+    # The Dutch MINAS levy is the precedent that matches this base, being the
+    # one scheme that charged nitrogen losses rather than purchases: EUR 0.68
+    # /kgN at introduction in 1998, raised to EUR 2.53-5.07/kgN in 2002 at
+    # which point eliminating the loss was always cheaper than paying [18].
+    # Taxes on fertiliser bought were milder - Sweden SEK 1.80/kgN (~$0.20),
+    # Denmark DKK 5/kgN (~$0.73) [17] - and had correspondingly small effects.
+    # Keeler et al. (2016) put the damage itself at $0.60-13/kgN, the spread
+    # being mostly about population downstream rather than about the nitrogen
+    # [19]. So roughly: $0.5-1 is a mild tax, $3 is MINAS at its prohibitive
+    # setting, and anything near 13 is the damage-cost ceiling and not a rate
+    # any government has levied.
+    #
+    # MINAS charged only the surplus above a levy-free allowance, and so can
+    # this - see levy_free_concentration. With that at zero every kilogram is
+    # charged and the same number bites harder here than it did in the
+    # Netherlands.
+    #
+    # Suggested values:
+    #   [0.5, 2.0]  moderate — mild at low income, meaningful at high income
+    #   [1.0, 3.0]  MINAS-level — high end is prohibitive, abatement beats paying
+    nitrogen_charge: [0.0, 0.0]   # $/kgN [17,18,19]
+
+    # Leaching below this nitrate concentration is not charged, in mgN/l. The
+    # allowance is a concentration rather than a mass because that is how a
+    # nitrate standard is written and because it is the concentration reaching
+    # the aquifer that does the damage: the same kilogram is harmless in a wet
+    # cell and not in a dry one. Each farm's allowance in mass terms is
+    # therefore its own,
+    #
+    #     allowance [gN/m2] = levy_free_concentration x runoff [mm] / 1000
+    #
+    # a millimetre over a square metre being a litre, and the charge falls on
+    # what it loses above that.
+    #
+    # Three defensible settings, and they differ by a factor of four, so this
+    # is a scenario choice and not a detail:
+    #
+    #   2.5   the planetary boundary. Critical N concentration in runoff to
+    #         surface water, set to protect aquatic ecosystems from
+    #         eutrophication; this is the limit behind the nitrogen Earth
+    #         system boundary [22] and the EU critical-N work [21], with a
+    #         tolerance range of 1-4. Allowance ~4 kgN/ha at 150 mm of
+    #         drainage, 7.5 at 300 mm, 12.5 at 500 mm.
+    #   5.6   the EU Drinking Water Directive guide value of 25 mg NO3/l,
+    #         used in critical-limits work as a precautionary upper bound
+    #         [23]. Roughly twice the allowance above.
+    #   11.3  the WHO/EU drinking-water limit of 50 mg NO3/l as nitrogen.
+    #         Allowance ~17 kgN/ha at 150 mm, 34 at 300 mm, 57 at 500 mm.
+    #
+    # Which one is a judgement about the receptor, and the two are not equally
+    # binding. The EU-27 assessment found the surface-water threshold needs a
+    # 43% cut in N inputs while the groundwater threshold is close to actual
+    # inputs and exceeded on only 18% of agricultural land [21]. So 11.3 is a
+    # standard most farms already meet: charging against it collects almost
+    # nothing and changes almost nothing, which is the argument for 2.5 if the
+    # instrument is meant to bite.
+    #
+    # Set to 5.0 below: a lenient reading of the boundary, twice the
+    # eutrophication limit and just under the drinking-water guide value.
+    # Cite it as a choice, NOT as the planetary boundary, which is 2.5. Worth
+    # a sensitivity run across 2.5 / 5.0 / 11.3, since the allowance and so
+    # the tax base move almost linearly with it.
+    #
+    # Not a [low, high] pair: the limit is a health standard, and what is safe
+    # to drink does not depend on a country's income. Only the rate above does.
+    #
+    # Do NOT set this from the MINAS allowance of 100-140 kgN/ha. That was a
+    # farm-gate surplus, inputs minus offtake, of which only a part ever
+    # leaches; used here as a leaching allowance it would exempt every farm.
+    #
+    # An allowance only, so it does nothing while nitrogen_charge is zero and
+    # the counterfactual is untouched. Set here rather than left at zero so
+    # that turning the charge on gives a tax written against a standard,
+    # rather than one that bills every kilogram lost.
+    levy_free_concentration: 5.0   # mgN/l [21,22,23]
+
+    # Annual payment for holding a practice, in USD per hectare per year, as
+    # [low-income, high-income] and interpolated on the same GDP ratio as the
+    # practice costs - a subsidy is paid out of a national budget, so what a
+    # country pays tracks what it can afford.
+    #
+    # Positive is a payment to the farmer. Paid every year the farm is
+    # committed to the practice, not only in the year it switches, which is
+    # how EQIP and the CAP eco-schemes work. Paid on commitment, not on
+    # certification: a farm whose stubble happens to clear the 30% threshold
+    # never enrolled in anything, and section 8.2 keeps the two apart
+    # everywhere else too.
+    #
+    # Literature for the calibration:
+    #   cover_crop        US EQIP $34-75/acre = $84-185/ha at 50-75%
+    #                     cost-share [24]; EU CAP eco-schemes EUR 40-165/ha for
+    #                     soil conservation [25]. Annual costs are $40/ha
+    #                     low-capital and $85/ha high-capital for a non-legume,
+    #                     $52 and $105 for a legume, so no single flat rate is a
+    #                     cost-share of both. This rate covers the catch crop
+    #                     and cover_crop_legume covers the difference.
+    #   residue_on_field  US CSP $5-25/ha for residue management, EU CAP
+    #                     eco-schemes EUR 20-50/ha [25]. Both bracket the straw
+    #                     income given up in a typical cell, which is smaller
+    #                     than it looks - see the note on the flat rate below.
+    #
+    # Zero by default, like every other instrument here.
+    #
+    # Suggested values:
+    #   cover_crop: [40, 85]             full cost-share of a catch crop
+    #   cover_crop_legume: [15, 25]      EQIP 340's multi-species tier
+    #   residue_on_field_share: 0.75     EQIP's statutory cost-share ceiling
+    practice_subsidies:
+        cover_crop: [0.0, 0.0]        # $/ha/yr [24,25]
+
+        # Paid on top of cover_crop where the crop sown is a legume, and the
+        # only rate here that separates the two crops. A tier rather than a
+        # device: EQIP 340 posts one, paying a multi-species mix above a basic
+        # single-species stand, and the CAP treats a nitrogen-fixing crop as a
+        # different category from a catch crop rather than the same one at a
+        # different price - GAEC 8 weights a catch crop at 0.3 against 1.0 for
+        # a nitrogen-fixing crop, and Greece pays EUR 50/ha for sowing legumes
+        # on arable land.
         #
-        # SUBSIDY is the only static component - applied as per-ha payment.
-        # US programs: $5-25/ha for residue management [6]
-        # EU CAP: soil conservation eco-schemes €20-50/ha [7]
-        # [6] USDA NRCS CSP FY2024 - E328L Leaving tall crop residue
-        # [7] Spanish eco-schemes for carbon capture agriculture
-        costs:
-            subsidy: [-20.0, -30.0]    # $/ha/yr (NEGATIVE = payment to farmer)
+        # EQIP is the one that posts the tier as a difference, so it sets the
+        # rate here. From the general cost list, practice 340:
+        #   basic                    $35.73/ac    multi-species  $42.73/ac
+        #   basic, underserved       $50.62/ac    multi-species  $60.53/ac
+        # so the enhancement is $7.00/ac and $9.91/ac, or $17-25/ha. Nebraska's
+        # NWQI schedule gives $7.21/ac from an entirely separate calculation.
+        #
+        # That range also clears what the enhancement has to beat to change any
+        # decision. A farm sows the legume when the yield advantage covers the
+        # extra seed; the advantage is 1-2% of yield at cell level and the seed
+        # premium is $12-20/ha (seeds_legume less seeds_nonlegume), so the two
+        # very nearly cancel and the choice is settled by noise - which is why
+        # runs land near a two-to-one split toward the catch crop whatever else
+        # is switched on. [15, 25] passes the premium at both ends without
+        # swamping the yield evidence.
+        #
+        # Note what this rate steers. cover_crop is paid whichever crop is
+        # sown, so it cancels out of the legume-versus-catch-crop comparison
+        # and can only change whether a cover crop is grown. This one does not
+        # cancel, so it is the only rate here that can change which.
+        #
+        # Suggested value:
+        #   cover_crop_legume: [15, 25]   EQIP 340's multi-species tier
+        cover_crop_legume: [0.0, 0.0]  # $/ha/yr [24,25]
+
+        # Retention is paid one of two ways, and setting both is an error.
+        #
+        # A flat rate per hectare, as [low-income, high-income]. Simple, and
+        # what CSP and the CAP eco-schemes post - but it sits badly against
+        # this model's residue cost, which is the straw income actually given
+        # up: crop revenue x 0.125 x the share of straw that region removes
+        # (Singh & Schiere 1995; MADRaT). That share runs from about 0.05 to
+        # 0.85 across cells, so the same flat rate over-pays several-fold
+        # where straw is left on the field anyway and covers a fraction of the
+        # cost where straw is genuinely traded - backwards, since the farms
+        # that need paying are the ones retention actually costs.
+        #
+        # Suggested value, if a scenario wants the flat form:
+        #   [10, 25]  ~75% of the median cost at both ends, inside the
+        #             $5-25/ha US CSP posts for residue management [25]
+        residue_on_field: [0.0, 0.0]  # $/ha/yr [25]
+
+        # Or a share of that same opportunity cost, which is the form the real
+        # schemes are written in and the one that tracks the variation above.
+        # EQIP pays a percentage of costs incurred and income foregone, and EU
+        # agri-environment payments are defined as compensation for additional
+        # costs and income foregone - and residue retention's cost is income
+        # foregone, which this model already computes per farm.
+        #
+        # A SINGLE FRACTION, not a [low, high] pair and not GDP-scaled: the
+        # cost it applies to is already local, so a share that also varied by
+        # income would count that gradient twice. EQIP's own gradient runs the
+        # other way, paying a larger share to underserved producers.
+        #
+        # Applied to the frozen baseline straw cost, the same figure a
+        # retaining farm is charged, so the number is exactly the fraction of
+        # the cost the farm does not bear.
+        #
+        # Suggested values:
+        #   0.5   the low end of EQIP's standard cost-share band [24]
+        #   0.75  EQIP's statutory ceiling for most producers, and the
+        #         default choice: retention still costs the farm a quarter,
+        #         so the practice is compensated rather than made free [24]
+        #   1.0   full compensation for income foregone, the EU upper bound
+        residue_on_field_share: 0.0   # fraction of straw opportunity cost [24,25]
+
+    # Years any instrument is in force, both inclusive: an instrument acts in
+    # start_year and still acts in end_year.
+    #
+    # BOTH DEFAULT TO THE COUPLED RUN ITSELF - start_coupling to lastyear, read
+    # off the LPJmL config - and are best left unset. A literal year here is a
+    # second copy of something the simulation already knows, and the two go out
+    # of step the moment the run period moves. Setting start_year to 2025 and
+    # later coupling from 2030 reads as "from the start", which is harmless;
+    # the other way round it back-dates an instrument into the years farms
+    # learned from, which is the one thing this must not do.
+    #
+    # So set these only to phase an instrument in or out inside the run, and
+    # prefer `windows` below when it is one instrument rather than all of them.
+    #
+    # Ending a scheme is worth doing deliberately: the practice subsidies and
+    # the carbon payment are absolute transfers, so leaving them on simply
+    # accumulates in the capital stock. Withdrawing one asks the more
+    # interesting question - whether the practice survives without it, or
+    # whether the adoption was only ever rented.
+    #
+    # start_year: 2025
+    # end_year: 2100
+
+    # Per-instrument overrides of that window, both inclusive, for scenarios
+    # that phase instruments in or out separately - a carbon price introduced
+    # late, a subsidy withdrawn early to see what sticks. Any instrument not
+    # named here uses the global window above. Keys are carbon_price,
+    # nitrogen_charge, cover_crop and residue_on_field.
+    #
+    # windows:
+    #     carbon_price: [2030, 2100]
+    #     cover_crop: [2025, 2035]
+    windows: {}
+
+# Materiality thresholds
+# ----------------------
+# Each of these replaces a bare "> 0" test. A quantity being non-zero does not
+# make it meaningful: a cell holding a few hectares of cropland is a rounding
+# artefact of the land-use input rather than a farm, and a near-zero quantity
+# amplifies the decision signal instead of normalising it, because every metric
+# enters the performance score relative to its own baseline.
+materiality:
+    # Minimum share of a cell under crops for it to carry a farmer. Expressed
+    # as a fraction rather than hectares because cell area shrinks towards the
+    # poles, so an absolute area cut would tighten with latitude.
+    min_crop_fraction: 0.01
+
+    # The level of each environmental metric at which a difference stops being
+    # worth noticing, in the metric's own physical unit. Both sides of the log
+    # deviation are offset by it, ln((v + n) / (b + n)), so a farm whose
+    # historic mean is a rounding error reports no change when nothing changed,
+    # and a swing between two physically trivial values stays small instead of
+    # being amplified into a spectacular one. See farmer.log_rate.
+    #
+    # Each is set at the point where the quantity stops mattering agronomically,
+    # not tuned: a tenth of a milligram of nitrate per litre, a hundredth of a
+    # tonne of soil carbon, a centimetre of water in the root zone.
+    negligible_yield: 10.0                # gC/m2, ~0.2 t DM/ha
+    negligible_soilc: 100.0               # gC/m2, croplands carry 1000-5000
+    negligible_moisture: 10.0             # mm
+    # gN/m2/yr (1 kgN/ha), ~5% of a typical 1-4 gN/m2 loss, in line with the
+    # offsets above. Also sets how hard a year without drainage can swing the
+    # metric: the flux really does go to zero in one, and this is what stops
+    # ln(0/baseline) from running away.
+    negligible_leaching: 0.1
+
+    # Revenue keeps a lower bound rather than an offset, because profit enters
+    # the score as asinh(delta / baseline_revenue) and so divides by revenue
+    # without taking its log. Per farm, and therefore scaled by cropped area.
+    baseline_floor_revenue_per_ha: 50.0   # $/ha/yr
 
 # TPB specifc settings and parameters
 tpb:
@@ -355,35 +786,24 @@ tpb:
     # When true, weight_profit is used; when false, weight_yield is used.
     use_profit: true  # Default: use profit rate (% improvement over baseline)
 
-    # NOTE: profit scoring no longer uses a fixed scale constant. The
-    # scale is derived automatically from data as the median per-farmer
-    # interannual profit-rate std (typical year-to-year profit fluctuation),
-    # so a sustained profit deviation is scored relative to normal profit
-    # noise - the same data-driven logic as the environmental metrics.
+    # All five metrics, profit included, are scored against scales derived from
+    # the farmer population rather than against tuning constants; see
+    # CAWorld.compute_reference_scales. A score difference of 1 therefore already
+    # means one ordinary spread of variation, which is why neither the attitude
+    # sigmoid nor the PBC ratio carries a sensitivity multiplier.
 
-    # ATTITUDE SENSITIVITY
-    # --------------------
-    # Single calibration parameter for the scoring system.
-    # Scales score differences before the attitude sigmoid.
-    #
-    # Both levels and trends are normalized to country references:
-    #   - Level: ratio to country mean (1.0 = average)
-    #   - Trend: ratio to country std of trends (z-score style)
-    #
-    # Score differences are typically small (±0.2-0.5), so this sensitivity
-    # amplifies them to produce meaningful attitude shifts via sigmoid.
-    # Higher values → more responsive to performance differences
-    # Lower values → more conservative, requires larger gaps to shift
-    #
-    attitude_sensitivity: 1
-
-    # PBC sensitivity: controls steepness of PBC response to financial impact.
-    # PBC uses sigmoid(-net_financial_impact / (baseline_revenue × planning_horizon) × pbc_sensitivity).
-    # Revenue over the planning horizon ensures consistency with net_financial_impact.
-    # - Higher values → sharper transition between low/high PBC
-    # - Lower values → more gradual response to financial changes
-    # At neutral (no financial change), PBC = pbc_base × 0.5.
-    pbc_sensitivity: 1.0
+    # Experience beyond which a peer's remembered yield difference is not
+    # counted as better evidence, in years. Two reasons to stop, not one: the
+    # yield effect of conservation agriculture saturates, rising from +5.7% at
+    # 5 years to +8.6% at 10 and still gaining slightly by 15, so past that a
+    # longer record adds no signal; and a long record also spans more climate,
+    # land-use and management history than a short one, so the extra years
+    # bring confounding rather than precision. Deliberately one value for all
+    # farmer types: it describes how long the practice takes to show itself,
+    # which is agronomy and not time preference, and keeping it uniform also
+    # lets every farmer in a country share one cached peer scan. Separate from
+    # projection_horizon, which is how far a farmer projects its own benefits.
+    max_experience_years: 15
 
     # Spreading level toggles for social learning
     # Allows enabling/disabling each level of spreading for testing or single-country runs
@@ -438,10 +858,10 @@ aftpar:
         # Based on metric dynamics: yield/moisture need maintenance (level);
         # soil carbon has legacy effects (trend matters more)
         trend_weight_yield: 0.3        # Level-dominant - absolute yields matter for income
-        trend_weight_soil: 0.7         # Trend-dominant - soil health is about trajectory
-        trend_weight_moisture: 0.2     # Very level-based - "do I have water now?"
-        trend_weight_profit: 0.4  # Level-dominant - current profitability pays bills
-        trend_weight_leaching: 0.5     # Balanced - current pollution & improvement trajectory
+        trend_weight_soil: 0.3         # Trend-dominant - soil health is about trajectory
+        trend_weight_moisture: 0.3     # Very level-based - "do I have water now?"
+        trend_weight_profit: 0.3  # Level-dominant - current profitability pays bills
+        trend_weight_leaching: 0.3     # Balanced - current pollution & improvement trajectory
 
         # Similarity weights for social learning
         weight_bundle_similarity: 0.6   # Weight for practice bundle similarity
@@ -455,12 +875,30 @@ aftpar:
         threshold_social_norm_country: 0.3  # 30% of country = neutral
         threshold_social_norm_cluster: 0.25  # 25% of climate-similar countries = neutral
 
-        # Time parameters (unified, AFT-specific)
-        # min_observation_years serves dual purpose:
-        # 1. Data quality: need enough observations for informed decisions
-        # 2. Evaluation timing: counter is randomized around this value to desynchronize farmers
+        # Time parameters (AFT-specific)
+        # How often a farmer reconsiders, how far ahead they look, and how
+        # heavily they discount are three different things and are kept apart.
+        # min_observation_years is the re-evaluation cadence only: the counter is
+        # randomised around it both to require enough observations for an
+        # informed decision and to desynchronise farmers.
         min_observation_years: 5    # Mean years between practice re-evaluations
-        confidence_years: 10        # Years to reach full confidence (linear ramp)
+
+        # How far ahead a farmer projects when judging an investment. Longer than
+        # the re-evaluation cadence because the payoff of a soil practice arrives
+        # over a decade: the measured yield gain of full conservation agriculture
+        # is negligible at 3 years, +5.7% at 5 and +8.6% at 10, so a 5-year view
+        # sees about half of it.
+        projection_horizon: 10      # Years of future benefit considered
+
+        # Annual discount rate over that horizon, benefits counted as an annuity
+        # (1 - (1+r)^-H) / r, so H=10 at r=0.1 is worth 6.14 years of benefit.
+        # Experimental estimates for credit-constrained smallholders commonly run
+        # at 15% and above, and high discounting is itself a standard explanation
+        # for under-adoption of conservation practices, so this is a conservative
+        # middle value.
+        discount_rate: 0.10
+
+        confidence_years: 15        # Years to reach full confidence (linear ramp)
         memory_decay_years: 30      # When old memories are forgotten
         fallback_years: 10          # Consecutive decline years to trigger revert
 
@@ -468,6 +906,20 @@ aftpar:
         exploration_base_prob: 0.15 # Base probability of random exploration
         poor_performance_multiplier: 2.0 # Multiplier when current_score < baseline_score
         max_exploration_prob: 0.3  # Cap on exploration probability
+
+        # Cover crop type: legume or catch crop. Held on its own terms, because
+        # the two crops differ by one to two per cent of yield against a seed
+        # premium of much the same size, so the choice is decided on peer
+        # records and those records need long, clean episodes to say anything.
+        #
+        # The commitment matches confidence_years, the span over which this
+        # farmer comes to trust an observation: a crop it would not keep that
+        # long is one it can never form a view on.
+        cover_crop_type_commitment_years: 15
+        # Over two options, not eight, so well below exploration_base_prob.
+        # Enough to keep a record of the other crop alive without leaving a
+        # standing fraction of farms on the one they judged worse.
+        cover_crop_type_exploration_prob: 0.05
 
     # AFT for pioneer farmer who more likely tends to transition to new (promising)
     #   regenerative agriculture practices
@@ -518,9 +970,12 @@ aftpar:
         threshold_social_norm_country: 0.15  # 15% of country = neutral
         threshold_social_norm_cluster: 0.12  # 12% of climate-similar countries = neutral
 
-        # Time parameters (unified, AFT-specific)
+        # Time parameters (AFT-specific). See the traditionalist block for what
+        # each one governs and why the cadence and the horizon are separate.
         min_observation_years: 3    # Pioneers re-evaluate more frequently
-        confidence_years: 8         # Pioneers trust observations sooner
+        projection_horizon: 8       # Slightly shorter view than traditionalists
+        discount_rate: 0.10         # Same rate; the horizon carries the difference
+        confidence_years: 10         # Pioneers trust observations sooner
         memory_decay_years: 25      # Pioneers forget old experiences faster
         fallback_years: 8           # Pioneers revert sooner if things go badly
 
@@ -528,3 +983,9 @@ aftpar:
         exploration_base_prob: 0.3 # Pioneers explore much more
         poor_performance_multiplier: 2.0 # Multiplier when current_score < baseline_score
         max_exploration_prob: 0.6  # Higher cap for pioneers
+
+        # Cover crop type: see the traditionalist block. Both follow the same
+        # rule - the commitment tracks confidence_years, which is shorter here,
+        # and the draw stays well under exploration_base_prob.
+        cover_crop_type_commitment_years: 10
+        cover_crop_type_exploration_prob: 0.10

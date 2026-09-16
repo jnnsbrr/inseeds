@@ -4,8 +4,6 @@ This module implements how farmers decide whether to adopt or abandon
 agricultural practices. It uses the Theory of Planned Behaviour framework
 combined with social learning and adaptive management.
 
-Overview
---------
 Each year, farmers may reconsider their practices based on:
 1. **Attitude**: "Do I think this practice is good?" (own experience + social learning)
 2. **Social Norm**: "Are my neighbors doing it?" (local + country + cluster)
@@ -17,18 +15,21 @@ farmer transitions to the new practice.
 Decision Flow
 -------------
     ┌─────────────────────────────────────────────────────────────┐
-    │                    Annual Update                             │
+    │                    Annual Update                            │
     ├─────────────────────────────────────────────────────────────┤
+    │  observe()  record outcome and refresh memory (always)      │
+    │  update()   decide, in this order:                          │
     │  1. Check if evaluation time (not every year)               │
-    │  2. Check fallback (sustained decline → revert)             │
-    │  3. Find target bundle:                                     │
+    │  2. Forced deselection if practices no longer fit the budget│
+    │  3. Check fallback (sustained decline → revert)             │
+    │  4. Find target bundle:                                     │
     │     a. Local neighbor with better performance?              │
     │     b. Country-level best bundle?                           │
     │     c. Cluster-level best bundle?                           │
     │     d. Random exploration?                                  │
-    │  4. Adjust for affordability                                │
-    │  5. Compute TPB score                                       │
-    │  6. If TPB > threshold → transition                         │
+    │  5. Adjust for affordability                                │
+    │  6. Compute TPB score                                       │
+    │  7. If TPB > threshold → transition                         │
     └─────────────────────────────────────────────────────────────┘
 
 Key Classes
@@ -49,6 +50,9 @@ Spatial Scales of Social Learning
 - **Country**: Average performance across the country
 - **Cluster**: Average across agroecologically similar countries
 
+Scales can be switched off individually; their weight is then redistributed
+to those left.
+
 References
 ----------
 .. [1] Ajzen, I. (1991). The theory of planned behavior. Organizational Behavior
@@ -64,21 +68,49 @@ ca_agroecology : Cluster-level aggregation
 """
 
 from abc import ABC, abstractmethod
-import logging
+from collections import deque
 
 import numpy as np
 
-from inseeds.components.farming.farmer import sigmoid, NON_CROPS
-
-logger = logging.getLogger(__name__)
+from inseeds.components.farming.farmer import (
+    annuity_factor,
+    sigmoid,
+    GC_M2_TO_TCO2_HA,
+    NON_CROPS,
+)
 from inseeds.components.farming.ca_management import (
+    COVER_CROP_LEGUME,
+    COVER_CROP_NONLEGUME,
+    DESELECT_ORDER,
     ManagementBundle,
+    ManagementPerformance,
     ManagementPerformanceMemory,
     ManagementPerformanceTracker,
     PRACTICE_FIELDS,
     RegionManagementPerformanceStore,
     compute_performance_score,
 )
+from inseeds.components.farming.metrics import METRICS, rates_of
+
+
+def _weighted_median(values, weights):
+    """Median of values with each observation counted weights[i] times.
+
+    Falls back to the unweighted median when no usable weight survives, so a
+    degenerate weight vector cannot silently empty the estimate.
+    """
+    v = np.asarray(values, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    usable = np.isfinite(v) & np.isfinite(w) & (w > 0)
+    if not usable.any():
+        finite = v[np.isfinite(v)]
+        return float(np.median(finite)) if finite.size else 0.0
+
+    v, w = v[usable], w[usable]
+    order = np.argsort(v)
+    v, w = v[order], w[order]
+    cumulative = np.cumsum(w)
+    return float(v[np.searchsorted(cumulative, 0.5 * cumulative[-1])])
 
 
 def _country_performance_store(country) -> RegionManagementPerformanceStore | None:
@@ -183,6 +215,16 @@ BLOCKER_TPB_LOW_ATTITUDE_SOCIAL_CLUSTER = 15  # TPB low - CLUSTER social learnin
 BLOCKER_TPB_LOW_SOCIAL_NORM_CLUSTER = 16      # TPB low - CLUSTER social norm is limiting
 BLOCKER_AFFORDABILITY_FORCED = 17   # Practices deselected due to unaffordable direct costs
 
+# Blockers that do not reset the observation counter. min_observation_years is
+# the re-evaluation cadence after a real decision. observation_years / no_target /
+# target_same mean no candidate was evaluated, so resetting would burn the full
+# wait without a decision and throttle diffusion. Counter keeps running.
+BLOCKERS_WITHOUT_DECISION = (
+    BLOCKER_OBSERVATION_YEARS,
+    BLOCKER_NO_TARGET,
+    BLOCKER_TARGET_SAME,
+)
+
 BLOCKER_NAMES = {
     BLOCKER_NONE: "none",
     BLOCKER_FALLBACK_TRIGGERED: "fallback_triggered",
@@ -245,6 +287,10 @@ DRIVER_COUNTRY_SOCIAL_NORM_CLUSTER = 25      # TPB passed, cluster social norm w
 # Forced transitions (bypass TPB)
 DRIVER_AFFORDABILITY_FORCED = 26             # Practices deselected due to unaffordable direct costs
 
+# Not a decision: the label followed the field (see reevaluate_residue_status)
+DRIVER_RESIDUE_RECLASSIFIED = 27             # Litter cover crossed the CA threshold
+DRIVER_COVER_CROP_RETYPED = 28               # Other cover crop now pays better
+
 DRIVER_NAMES = {
     DRIVER_NONE: "none",
     DRIVER_FALLBACK: "fallback",
@@ -277,6 +323,9 @@ DRIVER_NAMES = {
     DRIVER_EXPLORATION_PBC: "exploration_pbc",
     # Forced transitions
     DRIVER_AFFORDABILITY_FORCED: "affordability_forced",
+    # Not a decision
+    DRIVER_RESIDUE_RECLASSIFIED: "residue_reclassified",
+    DRIVER_COVER_CROP_RETYPED: "cover_crop_retyped",
 }
 
 
@@ -352,9 +401,19 @@ class DecisionModel(ABC):
 
         self.practice_bundle = ManagementBundle.from_practices(
             int(farmer.tillage),
-            1 if farmer.cover_crop > 0 else 0, # TODO: change to cover_crop type: 0 = none, 1 = catch crop, 2 = legume
+            1 if farmer.cover_crop > 0 else 0,
             1 if farmer.litter_cover >= ca_threshold else 0,
         )
+
+        # True only after an explicit residue-retention decision (apply_bundle).
+        # Under residue_status_by_cover, practice_bundle.residue may flip with
+        # litter cover without commitment; costs/subsidies follow commitment.
+        # Init: no transition yet → not committed, even if litter ≥ threshold.
+        self.residue_committed = False
+
+        # Year the current practice_bundle label began. Caps claimed experience
+        # duration when residue_status_by_cover relabels without a TPB decision.
+        self.bundle_since = farmer.model.lpjml.sim_year
 
         # Proposed bundle for potential transition (set by update())
         self.proposed_bundle = None
@@ -379,10 +438,15 @@ class DecisionModel(ABC):
             self.practice_bundle,
             self.performance_tracker,
             current_year,
+            type_for=self.cover_crop_type_for,
         )
 
-        # baseline_score will be set on first update (avoids init-order issues
-        # with reference_scales not being computed yet)
+        # baseline_performance will be set on first update (avoids init-order
+        # issues with reference_scales not being computed yet)
+
+        # Own score for the current year, filled on first read (see own_score)
+        self._own_score = None
+        self._own_score_year = None
 
     # -------------------------------------------------------------------------
     # Properties for external access
@@ -407,9 +471,21 @@ class DecisionModel(ABC):
             self.practice_bundle = ManagementBundle.from_id(int(value))
 
     @property
-    def proposed_bundle_label(self):
-        """Proposed bundle as human-readable name."""
-        return self.proposed_bundle.label if self.proposed_bundle else ""
+    def committed_bundle(self):
+        """Bundle used for costs, policy payments and LPJmL residue input.
+
+        Differs from ``practice_bundle`` only in the residue flag, and only when
+        ``residue_status_by_cover`` is true: the certified label follows litter
+        cover (FAO threshold), while costs follow ``residue_committed`` (explicit
+        retention decision). Uncommitted farms above the threshold keep baseline
+        straw sales, so they pay no opportunity cost and draw no retention
+        payment from ``policy.practice_subsidies`` - having enrolled in nothing.
+        """
+        if self.residue_committed == bool(self.practice_bundle.residue_on_field):
+            return self.practice_bundle
+        return self.practice_bundle.change_practices(
+            residue_on_field=int(self.residue_committed)
+        )
 
     @property
     def proposed_bundle_id(self):
@@ -438,11 +514,6 @@ class DecisionModel(ABC):
             raise ValueError(f"Invalid transition blocker value: {value}. Must be one of: {BLOCKER_NAMES.keys()}")
 
     @property
-    def transition_blocker_name(self):
-        """Human-readable name of transition blocker."""
-        return BLOCKER_NAMES.get(self.transition_blocker, "unknown")
-
-    @property
     def transition_driver(self):
         """Primary reason why a transition succeeded (numeric code).
         
@@ -463,11 +534,6 @@ class DecisionModel(ABC):
         self._transition_driver = value
         if value not in DRIVER_NAMES.keys():
             raise ValueError(f"Invalid transition driver value: {value}. Must be one of: {DRIVER_NAMES.keys()}")
-
-    @property
-    def transition_driver_name(self):
-        """Human-readable name of transition driver."""
-        return DRIVER_NAMES.get(self.transition_driver)
 
     # -------------------------------------------------------------------------
     # Memory management
@@ -506,22 +572,25 @@ class DecisionModel(ABC):
         # Remember previous bundle (for potential fallback)
         self.previous_bundle = self.practice_bundle
 
-        # Capture baseline score before resetting (for fallback comparison)
-        # This is the performance level we expect to maintain or exceed
-        baseline = (
-            compute_performance_score(self.performance_tracker, self.farmer)
-            if n_obs > 1 else 1.0  # Neutral score
-        )
+        # Capture the rates before resetting (for fallback comparison). This is
+        # the performance level we expect to maintain or exceed; it is scored on
+        # demand so that it always shares a ruler with whatever it is compared to.
+        baseline = self._snapshot_performance() if n_obs > 1 else None
 
         # Reset regression accumulators for new bundle
         self.performance_tracker = ManagementPerformanceTracker.reset_for_transition(
             farmer=self.farmer,
             current_year=current_year,
-            baseline_score=baseline
+            baseline_performance=baseline
         )
+
+        # The tracker this year's score was built from is gone, so the memo
+        # cannot stand even though the year has not turned.
+        self._own_score_year = None
 
         # Transition to new bundle
         self.practice_bundle = new_bundle
+        self.bundle_since = current_year
 
         # Reset decline counter
         self.decline_years = 0
@@ -571,6 +640,7 @@ class TPB(DecisionModel):
 
         # TPB components (updated each timestep)
         self._tpb = 0.0          # Overall intention score
+        self._tpb_bypassed = False  # Change forced, so no intention was formed
         self._attitude = 0.0     # Attitude toward behavior (combined)
         self._attitude_own_land = 0.0    # Attitude from own land performance
         self._attitude_social_learning = 0.0  # Attitude from social learning
@@ -582,13 +652,60 @@ class TPB(DecisionModel):
         min_obs = self.get_aft_param("min_observation_years")
         self._observation_years = np.random.randint(1, min_obs)
 
+        # Litter cover of the recent past, which is what the residue label is
+        # certified against. A window rather than the current year, so weather
+        # cannot flip the label; see reevaluate_residue_status.
+        self._litter_cover_record = deque(maxlen=min_obs)
+
+        # Whether the cadence elapsed this year, so the farm was due a decision.
+        # Read after the transition step, where the counter has already been
+        # decremented or reset and can no longer answer the question.
+        self.evaluated_this_year = False
+
+        # Seasons the cover crop now in the ground has been held. The type
+        # answers to its own clock, longer than the bundle cadence: the legume
+        # is bought for a yield difference of one to two per cent, against a
+        # seed premium of much the same size, so the comparison turns on peer
+        # records that only mean anything once episodes are long enough to
+        # average a few seasons of weather. Re-opening the choice every three
+        # to five years fragments those records across the two crops and leaves
+        # the estimator reading noise.
+        self._cover_crop_type_years = 0
+
     # -------------------------------------------------------------------------
     # Properties for external access to TPB components
     # -------------------------------------------------------------------------
+    def projection_weight(self):
+        """Discounted benefit-years this farmer counts when judging a switch.
+
+        Kept separate from min_observation_years, which is only the re-evaluation
+        cadence. Tying the two together meant a longer investment view could not
+        be given to a farmer without also making them reconsider less often, and
+        those are unrelated traits.
+
+        Note where this does and does not bite. In PBC it scales an annual cost
+        and revenue stream against baseline revenue, so a longer horizon has a
+        real effect. In the performance score it multiplies a trend that is then
+        divided by the cross-farmer spread of the same projected trends, so the
+        multiplier very nearly cancels and the horizon is close to irrelevant
+        there. The trend's influence is set by the trend weights, not by how far
+        ahead the farmer looks.
+        """
+        return annuity_factor(
+            self.get_aft_param("projection_horizon"),
+            self.get_aft_param("discount_rate"),
+        )
 
     @property
     def tpb(self):
-        """Overall TPB intention score."""
+        """Overall TPB intention score, 0.0 when none was formed this year.
+
+        Zero covers both farmers who did not evaluate - the observation cadence,
+        no distinct target - and the emergency paths that transition without an
+        intention. Those cases are told apart by transition_blocker and
+        transition_driver, which is where the reason belongs; what matters here
+        is that no forced transition is reported as a high willingness to change.
+        """
         return self._tpb
 
     @property
@@ -666,94 +783,227 @@ class TPB(DecisionModel):
     # =========================================================================
 
     def reevaluate_residue_status(self):
-        """Re-evaluate residue component of bundle based on actual litter cover.
+        """Set the residue component of the bundle from realised litter cover.
 
-        Only runs if config.practice_dimensions.residue.reevaluate_residue_status
-        is True (default: False).
+        Under practice_dimensions.residue.residue_status_by_cover, the residue
+        component is a measurement rather than an intention: a farm counts as
+        retaining residue when its litter cover reaches the FAO conservation
+        agriculture threshold of 30%. Reclassification is symmetric in both
+        directions.
 
-        When enabled, farmers who organically cross the CA residue threshold
-        (30% soil cover) get their bundle upgraded to residue=1.
+        Measured as the median of the recent window rather than off the current
+        year, and taken on the re-evaluation cadence rather than annually.
+        Litter cover moves with the harvest, so a single thin year would
+        otherwise decertify a farm that is retaining and one fat year certify a
+        farm that is not - and each flip re-keys the slot the memory records
+        under and redates the label, so weather alone could keep a farm from
+        ever accumulating experience of anything. The median asks whether the
+        field was covered in most years of the period, which is what a
+        persistent practice means; a mean would let one exceptional harvest
+        carry the average across the line.
 
-        - If litter_cover >= threshold AND bundle residue = 0 → upgrade to 1
+        With the flag off, the component stays as the farmer set it and residue
+        certification is left to post-processing, which can combine the reported
+        bundle with the reported litter cover.
 
-        Note: We do NOT downgrade farmers who drop below threshold. If a farmer
-        intends to retain residue (residue=1) but has low litter cover due to
-        poor yields, setting residue=0 would tell LPJmL to actively REMOVE
-        residue, which contradicts their intent and worsens the situation.
-        Stopping retention should be an explicit farmer decision (via TPB),
-        not an automatic consequence of low yields.
-
-        When disabled (default), the bundle reflects the farmer's explicit
-        decision only. CA certification can be derived in post-processing
-        by combining bundle + litter_cover data.
+        Crossing the threshold is a change of label, not of management, so it
+        leaves residue_committed alone: the farm keeps selling straw at the
+        baseline rate, and keeps paying and earning accordingly. It is reported
+        as its own driver so it cannot be mistaken for a decision, and it dates
+        the new label so that the experience the farm claims with it starts here
+        rather than being backdated to the last real transition.
         """
-        # Check if reevaluation by litter cover is enabled (default: False)
-        # When disabled, bundle reflects farmer's explicit decision only.
         residue_config = self.farmer.model.config.coupled_config.practice_dimensions.residue
         if not residue_config.residue_status_by_cover:
             return
-
-        # Evaluate residue status by actual litter cover
-        ca_threshold = residue_config.ca_cover_threshold
-        current_residue = self.practice_bundle.residue_on_field
-        litter_cover = self.farmer.litter_cover
-
-        # Upgrade to CA status if threshold is met and not already retaining
-        # Note: No downgrade - stopping retention should be an explicit decision
-        if litter_cover >= ca_threshold and current_residue == 0:
-            self.practice_bundle = self.practice_bundle.change_practices(
-                residue_on_field=1
-            )
-        elif litter_cover < ca_threshold and current_residue == 1:
-            self.practice_bundle = self.practice_bundle.change_practices(
-                residue_on_field=0
-            )
-
-    def reevaluate_cover_crop_type(self):
-        """Re-evaluate cover crop type based on fertilization and leaching.
-
-        Cover crop *type* (legume vs non-legume) is stored on the farmer,
-        not the bundle. The bundle only tracks whether cover crops are ON/OFF.
-
-        Type values:
-        - 1 = non-legume (catch crop, captures excess nutrients)
-        - 2 = legume (N-fixing, reduces fertilizer need)
-        """
-        # Only re-evaluate if cover crops are enabled
-        if self.practice_bundle.cover_crop == 0:
+        if not self._litter_cover_record:
             return
 
-        indicated_type = self.farmer.indicate_cover_crop_type()
-        current_type = self.farmer.cover_crop
+        cover = float(np.median(self._litter_cover_record))
+        retains = cover >= residue_config.ca_cover_threshold
+        if retains != bool(self.practice_bundle.residue_on_field):
+            self.practice_bundle = self.practice_bundle.change_practices(
+                residue_on_field=int(retains)
+            )
+            self.bundle_since = self.farmer.model.lpjml.sim_year
+            self.transition_driver = DRIVER_RESIDUE_RECLASSIFIED
 
-        if indicated_type != current_type:
-            self.farmer.cover_crop = indicated_type
+    def cover_crop_type_for(self, bundle):
+        """Which cover crop this farm grows, or would grow, under ``bundle``.
 
-    def update(self):
-        """Compute proposed bundle and TPB scores for this timestep.
+        For the bundle in force that is the crop actually in the ground, which
+        holds for the whole episode because only a decision changes it; for a
+        candidate it is the one the farm would plant. None where the bundle has
+        no cover crop, which is what keeps those slots on a single key.
 
-        Decision flow:
-        0. Re-evaluate residue status based on actual litter cover
-        1. Add current observation to regression accumulators
-        2. Update performance memory with current trends (for neighbour visibility)
-        3. Decay old memories (bounded rationality)
-        4. Check if minimum observation period has passed
-        5. Check fallback condition (sustained decline → revert)
-        6. Find best-performing neighbour's bundle OR explore randomly
-        7. Adjust target bundle for affordability
-        8. Compute TPB scores for the proposed bundle
-        
-        Sets transition_blocker to indicate why transition didn't happen (if applicable).
-        Sets transition_driver to indicate why transition succeeded (if applicable).
+        Certified and committed both count as in force. They differ only in the
+        residue flag, which says nothing about what was sown, so pricing the
+        committed bundle on the preference would bill a farm for a crop it did
+        not plant whenever the residue label had come apart from the decision.
+        """
+        if not bundle.cover_crop:
+            return None
+        if self.farmer.cover_crop and bundle in (
+            self.practice_bundle,
+            self.committed_bundle,
+        ):
+            return int(self.farmer.cover_crop)
+        return int(self.farmer.indicate_cover_crop_type())
+
+    def commit_bundle(self, new_bundle):
+        """Move the farm onto ``new_bundle``: file the old episode, then farm it.
+
+        The order is the point of having this in one place. ``record_transition``
+        files the outgoing episode, and the slot it goes in is keyed on the
+        cover crop in the ground, which ``apply_bundle`` is about to replace.
+        Applying first would file the legume's years under the catch crop's
+        name, in the very slots the type choice reads back.
+
+        Recording first also means ``apply_bundle`` picks the crop with the new
+        bundle already in force, so the choice is priced against the practices
+        the farm is moving to rather than the ones it is leaving.
+        """
+        self.record_transition(new_bundle)
+        self.apply_bundle(new_bundle)
+
+    def reconsider_cover_crop_type(self):
+        """Re-open the crop choice at a decision point that left the bundle alone.
+
+        The bundle is re-opened at every decision by the peer scan, but the crop
+        is not one of its fields, so a farm whose neighbours run the same bundle
+        with the other crop reads that as ``TARGET_SAME`` and stops. Without
+        this the crop would be settled once and for all at the last bundle
+        change, and a farm that had reached a bundle it was happy with would go
+        on sowing against a charge introduced afterwards.
+
+        On the cadence only, never mid-year, so the crop answers to the same
+        clock as every other practice. And only where the bundle came through
+        the decision unchanged: if it changed, ``apply_bundle`` has just chosen
+        the crop, and asking again would immediately undo its exploration draw.
+
+        A new crop is a new practice, so this ends the episode through the
+        ordinary transition path rather than a private one - the outgoing record
+        is filed under the crop that earned it and the tracker starts again.
+        """
+        if not self.practice_bundle.cover_crop:
+            return
+
+        sown = int(self.farmer.cover_crop or 0)
+        preferred = int(self.farmer.indicate_cover_crop_type())
+        if not sown or preferred == sown:
+            return
+
+        # The crop is held for its own term, which outlasts the bundle cadence.
+        # Without this the type turns over every three to five years on a
+        # comparison whose two sides differ by about a per cent of revenue, so
+        # it tracks the noise in the peer records rather than the difference
+        # between the crops.
+        if self._cover_crop_type_years < self.get_aft_param(
+            "cover_crop_type_commitment_years"
+        ):
+            return
+
+        # Filed before the crop changes: cover_crop_type_for reads what is in
+        # the ground, so the outgoing record would otherwise be keyed on the
+        # crop that replaced it.
+        self.record_transition(self.practice_bundle)
+        self.farmer.cover_crop = preferred
+        self.farmer.set_lpjml(attribute="cover_crop")
+        self._cover_crop_type_years = 0
+        self.transition_driver = DRIVER_COVER_CROP_RETYPED
+
+        # A practice changed, so the commitment period starts over, exactly as
+        # it would after a bundle transition.
+        self.reset_observation_years()
+
+    def observe(self):
+        """Record this year's outcome, whether or not a decision follows.
+
+        This year's litter cover is filed for the residue certification, the
+        year's five rates enter the regression accumulators, and the bundle
+        memory that neighbours read is refreshed and then decayed.
+
+        Separated from the decision because observing is not deciding. A farmer
+        too poor to change practice still farms, still sees the harvest, and is
+        still watched by neighbours, so every caller must call this even when it
+        skips the decision, and nothing here may presume a decision follows.
         """
         # Reset blocker, driver, and pathway at start of each update
         self.transition_blocker = BLOCKER_NONE
         self.transition_driver = DRIVER_NONE
         self.target_pathway = None
+        self._reset_tpb_components()
 
-        # Reset TPB components so they show 0.0 if not computed this year
-        # (e.g., farmer doesn't evaluate due to observation_years)
+        # -----------------------------------------------------------------
+        # Step 0: File this year's cover for the residue label
+        # -----------------------------------------------------------------
+        # Recorded every year, but read only on the cadence, so the label
+        # certifies against a run of seasons rather than the latest one.
+        self._litter_cover_record.append(self.farmer.litter_cover)
+
+        # Ages of the cover crop in place. Only while one is there: a farm with no
+        # cover crop is not serving a commitment, and must be free to pick a
+        # type the moment it adopts one.
+        if self.farmer.cover_crop:
+            self._cover_crop_type_years += 1
+        else:
+            self._cover_crop_type_years = 0
+
+        # -----------------------------------------------------------------
+        # Step 1: Add current year's observation to regression
+        # -----------------------------------------------------------------
+        # Every metric is fed as a self-referenced relative deviation, so they
+        # are dimensionless and centred at zero.
+        self.performance_tracker.add_observation(
+            rates_of(self.farmer),
+            self.farmer.model.lpjml.sim_year,
+        )
+
+        # The tracker has moved, so any score cached before this point is stale.
+        self._own_score_year = None
+
+        # Initialize the baseline snapshot on first update (deferred from init to
+        # avoid chicken-and-egg with reference_scales)
+        if (
+            self.performance_tracker.baseline_performance is None
+            and self.performance_tracker.n > 1
+        ):
+            self.performance_tracker.baseline_performance = self._snapshot_performance()
+
+        # -----------------------------------------------------------------
+        # Step 2: Update performance memory with current trends and level
+        # -----------------------------------------------------------------
+        # Keep performance memory up-to-date so neighbours see current performance
+        # The years of experience claimed for the bundle cannot exceed the years
+        # the label has been held: a transition resets the tracker and the two
+        # agree, but a relabel does not, and the accumulated record must not be
+        # presented as decades of experience with a label acquired this year.
+        year = self.farmer.model.lpjml.sim_year
+        self.performance_memory.update_current(
+            self.practice_bundle,
+            self.performance_tracker.trend,
+            self.performance_tracker.level,
+            min(self.performance_tracker.n, year - self.bundle_since + 1),
+            year,
+        )
+
+        # -----------------------------------------------------------------
+        # Step 3: Decay old memories
+        # -----------------------------------------------------------------
+        self.performance_memory.decay(
+            self.farmer.model.lpjml.sim_year,
+            self.get_aft_param("memory_decay_years"),
+        )
+
+    def _reset_tpb_components(self):
+        """Zero the reported TPB components so a stale year cannot be read.
+
+        Anything not computed this year must report 0.0 rather than last year's
+        value, whether the reason is the observation-year cadence or an
+        emergency path that bypasses the evaluation entirely.
+        """
         self._tpb = 0.0
+        self._tpb_bypassed = False
         self._attitude = 0.0
         self._attitude_own_land = 0.0
         self._attitude_social_learning = 0.0
@@ -766,99 +1016,70 @@ class TPB(DecisionModel):
         self._social_norm_cluster = 0.0
         self._pbc = 0.0
 
-        # -----------------------------------------------------------------
-        # Step 0: Re-evaluate residue status and cover crop type
-        # -----------------------------------------------------------------
-        # Farmers may cross CA threshold organically - certify/de-certify
-        self.reevaluate_residue_status()
+    def update(self):
+        """Observe this year, then decide whether to propose a new bundle.
 
-        self.reevaluate_cover_crop_type()
+        Decision flow, once observe() has recorded the year:
+        1. Has the re-evaluation cadence elapsed?
+        2. Have running costs outgrown the capital, forcing a deselection?
+        3. Has performance declined long enough to fall back?
+        4. Which bundle to target: the best-performing peer's, or a random one?
+        5. Trim that target to what can be afforded.
+        6. Score it with TPB.
 
-        # -----------------------------------------------------------------
-        # Step 1: Add current year's observation to regression
-        # -----------------------------------------------------------------
-        # Every metric is fed as a self-referenced fractional rate
-        # (value / own_baseline - 1), so all five are dimensionless and centred
-        # at zero - the same footing as profit.
-        self.performance_tracker.add_observation(
-            self.farmer.soilc_rate,
-            self.farmer.moisture_rate,
-            self.farmer.yield_rate,
-            self.farmer.model.lpjml.sim_year,
-            profit=self.farmer.profit,
-            leaching=self.farmer.leaching_rate,
-        )
+        Steps 2 and 3 are forced changes that bypass the TPB evaluation, so they
+        return with the bypass flag set rather than an intention score.
 
-        # Initialize baseline_score on first update (deferred from init to avoid
-        # chicken-and-egg with reference_scales)
-        if self.performance_tracker.baseline_score is None and self.performance_tracker.n > 1:
-            self.performance_tracker.baseline_score = compute_performance_score(
-                self.performance_tracker, self.farmer
-            )
+        Sets transition_blocker to say why no transition happened, and
+        transition_driver to say what enabled one that did.
+        """
+        self.observe()
 
-        # -----------------------------------------------------------------
-        # Step 2: Update performance memory with current trends
-        # -----------------------------------------------------------------
-        # Keep performance memory up-to-date so neighbours see current performance
-        self.performance_memory.update_current(
-            self.practice_bundle,
-            self.performance_tracker.trend,
-            self.performance_tracker.level,
-            self.performance_tracker.n,
-            self.farmer.model.lpjml.sim_year,
-        )
-
-        # -----------------------------------------------------------------
-        # Step 3: Decay old memories
-        # -----------------------------------------------------------------
-        self.performance_memory.decay(
-            self.farmer.model.lpjml.sim_year,
-            self.get_aft_param("memory_decay_years"),
-        )
-
-        # -----------------------------------------------------------------
-        # Step 4: Require minimum observation years before transitioning
-        # -----------------------------------------------------------------
+        # Step 1: Require minimum observation years before transitioning
         # Farmers record observations every year (above), but only evaluate
         # TPB once the observation period is complete. This avoids noisy
         # decisions based on single-year fluctuations.
         # After a transition, the counter resets via reset_observation_years().
 
-        if not self.should_evaluate():
+        self.evaluated_this_year = self.should_evaluate()
+        if not self.evaluated_this_year:
             self._tpb = 0.0
             self.proposed_bundle = None
             self.transition_blocker = BLOCKER_OBSERVATION_YEARS
             self.decrement_observation_years()
             return
 
-        # -----------------------------------------------------------------
-        # Step 5: Check affordability deselection
-        # -----------------------------------------------------------------
+        # The residue label is a measurement, but it is taken when the farm is
+        # being looked at rather than continuously, so it sits on the same clock
+        # as the bundle. Before the target search, which reads practice_bundle.
+        self.reevaluate_residue_status()
+
+        # -------------------------------------------------------------------------
+        # Step 2: Check affordability deselection (only if capital constrained)
+        # -------------------------------------------------------------------------
         # If current practices cost more than available capital, propose
         # a bundle with costly practices deselected (survival mechanism)
-
         if self.check_affordability_deselection():
-            # Deselection sets proposed_bundle and _tpb internally
+            # Deselection sets proposed_bundle and the bypass flag internally
             self.transition_blocker = BLOCKER_AFFORDABILITY_FORCED
             self.target_pathway = "affordability"
             return
 
-        # -----------------------------------------------------------------
-        # Step 6: Check fallback condition
-        # -----------------------------------------------------------------
+        # -------------------------------------------------------------------------
+        # Step 3: Check fallback condition
+        # -------------------------------------------------------------------------
         # If performance has declined for FALLBACK_YEARS consecutive years,
         # propose reverting to the previous bundle (adaptive management)
 
         if self.check_fallback():
-            # Fallback sets proposed_bundle and _tpb internally
-            # Blocker will be set by should_transition() if TPB too low
+            # Fallback sets proposed_bundle and the bypass flag internally
             self.transition_blocker = BLOCKER_FALLBACK_TRIGGERED
             self.target_pathway = "fallback"  # Track pathway for transition_driver
             return
 
-        # -----------------------------------------------------------------
-        # Step 7: Find target bundle (neighbour imitation or exploration)
-        # -----------------------------------------------------------------
+        # -------------------------------------------------------------------------
+        # Step 4: Find target bundle (neighbour imitation or exploration)
+        # -------------------------------------------------------------------------
 
         # First, try to imitate best-performing neighbour (local)
         target_bundle = self.most_promising_bundle_local()
@@ -892,11 +1113,10 @@ class TPB(DecisionModel):
             self.transition_blocker = BLOCKER_TARGET_SAME
             return
 
-        # -----------------------------------------------------------------
-        # Step 8: Adjust for affordability
-        # -----------------------------------------------------------------
+        # -------------------------------------------------------------------------
+        # Step 5: Adjust for affordability (only if capital constrained)
+        # -------------------------------------------------------------------------
         # If farmer can't afford full target bundle, find affordable subset
-
         affordable_bundle = self.affordable_bundle(target_bundle)
 
         # If affordable bundle is same as current, no change
@@ -906,9 +1126,9 @@ class TPB(DecisionModel):
             self.transition_blocker = BLOCKER_TARGET_UNAFFORDABLE
             return
 
-        # -----------------------------------------------------------------
-        # Step 9: Compute TPB scores for proposed bundle
-        # -----------------------------------------------------------------
+        # -------------------------------------------------------------------------
+        # Step 6: Compute TPB scores for proposed bundle
+        # -------------------------------------------------------------------------
         self.proposed_bundle = affordable_bundle
         self.compute_tpb_for_bundle(affordable_bundle)
 
@@ -923,10 +1143,14 @@ class TPB(DecisionModel):
         with practices deselected in order of cost (most expensive first) until
         direct costs are within the affordable range.
 
-        Like fallback, this is an emergency response that bypasses TPB (sets
-        _tpb = 1.0) because the farmer has no choice but to abandon costly
-        practices to survive. However, the transition still goes through the
-        normal pathway for proper recording.
+        Like fallback, this is an emergency response that bypasses TPB, because
+        the farmer has no choice but to abandon costly practices to survive.
+        However, the transition still goes through the normal pathway for proper
+        recording.
+
+        Does nothing when farm_economics.capital_constraints is off, since a
+        farmer who can always borrow is never forced to abandon a practice for
+        lack of cash.
 
         Returns
         -------
@@ -934,21 +1158,22 @@ class TPB(DecisionModel):
             True if deselection is needed (sets proposed_bundle internally).
         """
         farmer = self.farmer
+        if not farmer.capital_constrained:
+            return False
+
         available_capital = farmer.capital - farmer.min_capital
 
-        # Calculate current annual direct costs
-        bundle = self.practice_bundle
+        # Deselect only committed practices (cost-bearing). Certified residue
+        # from litter cover alone has no direct cost to shed.
+        bundle = self.committed_bundle
         current_direct_costs = farmer.get_bundle_direct_costs(bundle=bundle)
 
         # No action needed if costs are within budget
         if current_direct_costs <= available_capital:
             return False
 
-        # Deselection order (most expensive first)
-        deselect_order = ["cover_crop", "residue_on_field", "tillage"]
-
         # Find affordable bundle by deselecting practices
-        for practice_name in deselect_order:
+        for practice_name in DESELECT_ORDER:
             if getattr(bundle, practice_name) == 0:
                 continue
 
@@ -966,58 +1191,111 @@ class TPB(DecisionModel):
                     break
 
         # No change needed if bundle didn't change
-        if bundle == self.practice_bundle:
+        if bundle == self.committed_bundle:
             return False
 
         # Propose the deselected bundle
         self.proposed_bundle = bundle
 
         # Bypass TPB: this is an emergency survival response, not a planned
-        # behavior change. Set intention directly to 1.0.
-        self._tpb = 1.0
+        # behaviour change, so no intention was formed.
+        self._tpb_bypassed = True
 
         return True
+
+    # =========================================================================
+    # BASELINE ANCHOR
+    # =========================================================================
+
+    def _snapshot_performance(self):
+        """Freeze the tracker's current rates as a scoreable snapshot.
+
+        Rates, not the score they currently produce: the scoring rulers move
+        between years, so a score frozen today would not be comparable to one
+        computed later. See ManagementPerformanceTracker.baseline_performance.
+        """
+        return ManagementPerformance.from_tracker(
+            self.performance_tracker.trend,
+            self.performance_tracker.level,
+            self.performance_tracker.n,
+            self.farmer.model.lpjml.sim_year,
+        )
+
+    def baseline_score(self):
+        """Score the baseline snapshot with the CURRENT rulers.
+
+        Returns None while no anchor exists yet. Scoring on demand is what keeps
+        the comparison honest: both the baseline and the score it is compared to
+        are divided by the same rulers, so only the farm can move the difference.
+        """
+        baseline = self.performance_tracker.baseline_performance
+        if baseline is None:
+            return None
+        return compute_performance_score(baseline, self.farmer)
+
+    def own_score(self):
+        """This farm's current performance score, computed once per year.
+
+        Bundle-independent, so it is the same number for every candidate a
+        farmer weighs in a year, yet it is read by all four attitude channels
+        and by the fallback and exploration checks. Without memoising, those
+        reads rebuild the same five z-scores once per candidate bundle.
+
+        Keyed on the simulation year because both inputs move annually and
+        together: the tracker gains its observation at the start of the update,
+        and the rulers are recalibrated once a year. Same idiom as the country
+        effect cache.
+        """
+        year = self.farmer.model.lpjml.sim_year
+        if self._own_score_year != year:
+            self._own_score = compute_performance_score(
+                self.performance_tracker, self.farmer
+            )
+            self._own_score_year = year
+        return self._own_score
 
     # =========================================================================
     # FALLBACK MECHANISM (Adaptive Management)
     # =========================================================================
 
     def check_fallback(self):
-        """Check if farmer should revert to previous bundle due to sustained decline.
+        """Propose revert to ``previous_bundle`` after sustained own-farm decline.
 
-        Implements adaptive management: if outcomes have declined for
-        fallback_years consecutive years, propose reverting to the
-        previous practice bundle.
+        Trigger: ``own_score()`` below ``baseline_score()`` (performance at the
+        last transition) for ``fallback_years`` consecutive years. One year at
+        or above the anchor resets the counter. Comparison is own-farm only —
+        peer-informed exit uses the normal re-evaluation path.
+
+        Background decline can look like practice failure; two bounds limit that:
+        consecutive years are required (interannual noise often resets the
+        count), and the anchor is rescored with current rulers so a widening
+        cross-farmer spread does not freeze an ever-harder bar.
 
         Returns
         -------
         bool
-            True if fallback is triggered (sets proposed_bundle internally).
+            True if fallback triggers (sets ``proposed_bundle``).
         """
         # Can't fall back if no previous bundle
         if self.previous_bundle is None:
             return False
 
-        # -----------------------------------------------------------------
-        # Compare current performance to baseline at transition time
-        # -----------------------------------------------------------------
-        # baseline_score captures the performance score at time of transition.
-        # If current score is worse than baseline, we're declining.
-        baseline = self.performance_tracker.baseline_score
-        if baseline is None:
-            return False  # Can't compare without baseline
+        # -------------------------------------------------------------------------
+        # Compare current performance to the state left behind at the switch
+        # -------------------------------------------------------------------------
+        reference = self.baseline_score()
+        if reference is None:
+            return False  # Nothing to compare against
 
-        current_score = compute_performance_score(self.performance_tracker, self.farmer)
-
-        # Track consecutive years of decline
-        if current_score < baseline:
+        # Track consecutive years of being worse off than before the switch
+        if self.own_score() < reference:
             self.decline_years += 1
         else:
-            self.decline_years = 0  # Reset if performance improves
+            self.decline_years = 0  # Reset if we are ahead again
 
-        # -----------------------------------------------------------------
+        # -------------------------------------------------------------------------
         # Trigger fallback after sustained decline
-        # -----------------------------------------------------------------
+        # -------------------------------------------------------------------------
         fallback_years = self.get_aft_param("fallback_years")
         if self.decline_years >= fallback_years:
             # Mark current bundle as "failed" (reduces future exploration)
@@ -1027,9 +1305,9 @@ class TPB(DecisionModel):
             self.proposed_bundle = self.previous_bundle
 
             # Fallback bypasses TPB: this is an emergency response, not a
-            # planned behavior change. Set intention directly to 1.0.
-            # TPB factors are left unchanged (not meaningful for fallback).
-            self._tpb = 1.0
+            # planned behaviour change, so no intention was formed and the TPB
+            # components stay at zero.
+            self._tpb_bypassed = True
 
             return True
 
@@ -1039,35 +1317,66 @@ class TPB(DecisionModel):
     # RANDOM EXPLORATION (Innovation Diffusion)
     # =========================================================================
 
+    def explores_cover_crop_type(self):
+        """Whether this farm sows the cover crop it did not prefer.
+
+        The type decision is an economic comparison between two crops, and it
+        can only be made on peers who have grown each. Left to itself the
+        cheaper seed wins wherever there is no evidence, no farm sows the
+        other, and the absence of evidence becomes permanent - the estimator
+        would be reading a record its own answer had written.
+
+        So the same impulse that has farms try unfamiliar bundles has them try
+        the other cover crop, drawn once, by ``apply_bundle``, as the crop goes
+        in the ground.
+
+        On its own rate rather than the bundle's. Bundle exploration picks one
+        of eight, so a fifteen per cent draw perturbs a farm's trajectory
+        slightly. Here the draw is over two, so the same rate would have
+        fifteen to thirty per cent of farms permanently growing the crop they
+        judged worse - not a probe but a standing randomisation, and a large
+        one next to a legume advantage worth about a per cent of revenue.
+
+        Draws its own random number rather than reusing the bundle draw,
+        because a farm that has just changed bundle is not thereby more likely
+        to change crop as well.
+
+        Returns
+        -------
+        bool
+            True if the farm should sow the crop it did not prefer.
+        """
+        return bool(
+            np.random.random()
+            < self.get_aft_param("cover_crop_type_exploration_prob")
+        )
+
     def maybe_explore_bundle(self):
         """Randomly explore a new bundle (innovation diffusion).
 
         Some farmers try new practices without neighbour influence:
         - "Pioneers" explore more frequently
         - Poor performers explore more (searching for better options)
-        - Longer experience increases willingness to try new things
-        - Bundles that failed before are avoided
+        - Bundles that failed repeatedly are excluded, and bundles already tried
+          are drawn less often than untried ones
+        - Bundles closer to the current one are drawn more often
 
         Returns
         -------
-        tuple or None
+        ManagementBundle or None
             Random valid bundle to try, or None if no exploration.
         """
-        # -----------------------------------------------------------------
         # Determine exploration probability
-        # -----------------------------------------------------------------
 
         # Base probability depends on farmer type (from config)
         # Pioneers (innovators) are more willing to experiment
         base_prob = self.get_aft_param("exploration_base_prob")
 
         # Poor performers explore more (searching for better options)
-        # Score < baseline_score means declining from when we started this practice
-        baseline = self.performance_tracker.baseline_score
-        if baseline is not None:
-            current_score = compute_performance_score(self.performance_tracker, self.farmer)
-            if current_score < baseline:
-                base_prob *= self.get_aft_param("poor_performance_multiplier")
+        # Score below baseline means declining from when we started this practice
+        baseline = self.baseline_score()
+        if baseline is not None and self.own_score() < baseline:
+            base_prob *= self.get_aft_param("poor_performance_multiplier")
 
         # Cap exploration probability
         explore_prob = min(base_prob, self.get_aft_param("max_exploration_prob"))
@@ -1082,7 +1391,7 @@ class TPB(DecisionModel):
         # Select valid bundle to explore (biased toward incremental changes)
         # -----------------------------------------------------------------
         exploration = self.farmer.model.config.coupled_config.exploration
-        max_failures = getattr(exploration, "max_failures", 2)
+        max_failures = exploration.max_failures
 
         # Generate all possible bundles with their "distance" from current
         current = self.practice_bundle
@@ -1125,23 +1434,33 @@ class TPB(DecisionModel):
     def should_transition(self):
         """Determine if farmer should transition to proposed bundle.
 
-        Compares TPB intention score to threshold.
-        Hysteresis (avoiding flip-flopping) is handled by min_observation_years:
-        after transitioning, the performance tracker resets (n=1), so farmers
-        need min_observation_years of new data before reconsidering.
+        Compares the TPB intention score to the threshold, unless the change was
+        forced by an emergency path (affordability deselection or fallback),
+        which proceeds regardless because no intention was formed to compare.
+        Those paths set _tpb_bypassed rather than a high intention, so a forced
+        retreat is not reported as the strongest possible willingness to change.
 
-        Thresholds are non-AFT-specific (from config.tpb).
-        Behavioral differences between AFTs come from weights and PBC.
+        Flip-flopping is prevented by min_observation_years: after a transition
+        the performance tracker resets, so a farmer needs a commitment period of
+        new harvests before reconsidering.
+
+        The threshold is the same for every AFT; behavioural differences between
+        them come from the score weights and from PBC.
 
         Returns
         -------
         bool
-            True if TPB exceeds threshold and transition should occur.
+            True if the change was forced, or TPB exceeds the threshold.
         """
+        if self._tpb_bypassed:
+            return True
+
         tpb_config = self.farmer.model.config.coupled_config.tpb
         threshold = tpb_config.transition_threshold
 
-        return self._tpb > threshold
+        # bool(): the scores are numpy floats wherever they come from cell
+        # data, and a numpy bool is not a bool to callers that test its type.
+        return bool(self._tpb > threshold)
 
     def _get_enabled_spreading_levels(self):
         """Get which spreading levels are enabled from config.
@@ -1151,14 +1470,8 @@ class TPB(DecisionModel):
         tuple[bool, bool, bool]
             (enable_local, enable_country, enable_cluster)
         """
-        spreading_config = getattr(
-            self.farmer.model.config.coupled_config, "tpb", None
-        )
-        enable_local = getattr(spreading_config, "enable_local", True) if spreading_config else True
-        enable_country = getattr(spreading_config, "enable_country", True) if spreading_config else True
-        enable_cluster = getattr(spreading_config, "enable_cluster", True) if spreading_config else True
-        return enable_local, enable_country, enable_cluster
-
+        tpb = self.farmer.model.config.coupled_config.tpb
+        return tpb.enable_local, tpb.enable_country, tpb.enable_cluster
 
 
     def set_tpb_transition_blocker(self):
@@ -1384,33 +1697,48 @@ class TPB(DecisionModel):
         bundle : Bundle
             Practice bundle (tillage, cover_crop, residue_on_field), each 0 or 1.
         """
-        # -----------------------------------------------------------------
         # Tillage: 0 = no-till (CA), 1 = conventional tillage
         # Directly maps to LPJmL's with_tillage
-        # -----------------------------------------------------------------
         self.farmer.tillage = bundle.tillage
 
         # -----------------------------------------------------------------
-        # Cover crop: 0 = none, 1/2 = type based on conditions
+        # Cover crop: 0 = none, 1 = non-legume (catch crop), 2 = legume.
         # -----------------------------------------------------------------
+
+        # Settled here and nowhere else, so the crop holds for as long as the
+        # bundle does and the episode the tracker measures is one crop
+        # throughout. Occasionally the farm sows the other one to keep the
+        # comparison fed; see explores_cover_crop_type.
         if bundle.cover_crop == 1:
-            # Determine cover crop type based on environmental conditions
-            # 1 = non-legume (catch crop), 2 = legume (N-fixing)
-            self.farmer.cover_crop = self.farmer.indicate_cover_crop_type()
+            choice = int(self.farmer.indicate_cover_crop_type())
+            if self.explores_cover_crop_type():
+                choice = (
+                    COVER_CROP_NONLEGUME
+                    if choice == COVER_CROP_LEGUME
+                    else COVER_CROP_LEGUME
+                )
+            # Only a different crop starts a new term. A farm that changes
+            # bundle without changing crop keeps the seasons it has already
+            # served, so moving between bundles cannot be used to shorten the
+            # commitment.
+            if choice != int(self.farmer.cover_crop or 0):
+                self._cover_crop_type_years = 0
+            self.farmer.cover_crop = choice
         else:
             self.farmer.cover_crop = 0
+            self._cover_crop_type_years = 0
 
         # -----------------------------------------------------------------
-        # Residue retention: 0 = baseline, 1 = retain all residue
+        # Residue retention: baseline value, 1 = retain all residue
         # -----------------------------------------------------------------
-        # When farmer decides to retain (bundle.residue_on_field == 1), they
-        # leave all residue on field (residue_on_field = 1.0 for LPJmL).
-        # Whether this meets CA threshold (30% cover) is determined separately.
-        if bundle.residue_on_field == 1:
-            # Farmer decided to retain residue - leave everything on field
+
+        # Residue: apply_bundle is the only commitment path. Retain → leave all
+        # residue for LPJmL (fraction 1). Else → baseline removal rate.
+        # Relabel via residue_status_by_cover does not set residue_committed.
+        self.residue_committed = bundle.residue_on_field == 1
+        if self.residue_committed:
             self.farmer.residue_on_field = 1.0
         else:
-            # Not retaining - use baseline residue behavior
             self.farmer.residue_on_field = self.farmer.residue_baseline
 
         # -----------------------------------------------------------------
@@ -1453,6 +1781,39 @@ class TPB(DecisionModel):
 
         return best_neighbour.behaviour.practice_bundle
 
+    def _best_bundle_in_store(self, store):
+        """Highest-scoring bundle in a region store, if it beats the farm's own.
+
+        Shared by the country and cluster searches, which put the same question
+        to different populations and differ only in which store they read.
+
+        Parameters
+        ----------
+        store : RegionManagementPerformanceStore or None
+            Aggregate performance by bundle for the region.
+
+        Returns
+        -------
+        ManagementBundle or None
+            None when the region is unknown or nothing on offer scores better
+            than what the farm already runs.
+        """
+        if store is None:
+            return None
+
+        best_bundle = None
+        best_score = self.own_score()  # Must beat our current score
+
+        for bundle, perf in store.items():
+            if bundle == self.practice_bundle:
+                continue
+            bundle_score = compute_performance_score(perf, self.farmer)
+            if bundle_score > best_score:
+                best_score = bundle_score
+                best_bundle = bundle
+
+        return best_bundle
+
     def most_promising_bundle_country(self):
         """Find best-performing bundle at COUNTRY level (if better than current).
 
@@ -1461,42 +1822,15 @@ class TPB(DecisionModel):
         Country stats are already merged with neighbouring countries (configured
         via neighbour_country_weight) at the country level.
 
-        Uses unified performance scoring with proper normalization and
-        metric-specific trend/level weighting.
-
         Returns
         -------
-        tuple or None
+        ManagementBundle or None
             Best country-level bundle, or None if no bundle performs better
             than current practice or if country data is unavailable.
         """
-        country = self.farmer.cell.country
-        store = _country_performance_store(country)
-        if store is None:
-            return None
-
-        # Compute own performance using unified scoring
-        own_score = compute_performance_score(
-            self.performance_tracker, self.farmer
+        return self._best_bundle_in_store(
+            _country_performance_store(self.farmer.cell.country)
         )
-
-        # Find best performing bundle at country level
-        best_bundle = None
-        best_score = own_score  # Must beat our current score
-
-        for bundle, perf in store.items():
-            # Skip our own bundle
-            if bundle == self.practice_bundle:
-                continue
-
-            bundle_score = compute_performance_score(perf, self.farmer)
-
-            # Track the best bundle (highest unified score)
-            if bundle_score > best_score:
-                best_score = bundle_score
-                best_bundle = bundle
-
-        return best_bundle
 
     def most_promising_bundle_cluster(self):
         """Find best-performing bundle at CLUSTER level (if better than current).
@@ -1505,87 +1839,16 @@ class TPB(DecisionModel):
         is better, farmers may look to successful practices in agroecologically
         similar countries (same temperature, precipitation, PET patterns).
 
-        Uses unified performance scoring with proper normalization and
-        metric-specific trend/level weighting.
-
         Returns
         -------
-        tuple or None
+        ManagementBundle or None
             Best cluster-level bundle, or None if no bundle performs better
             than current practice or if cluster data is unavailable.
         """
-        country = self.farmer.cell.country
-        cluster_id = getattr(country, "agroecological_cluster", -1)
-
-        if cluster_id < 0:
-            return None
-
-        # Access via country._world which works on both driver and workers
-        cluster_stats = self.farmer.cell.country._world.statistic.get(
-            "cluster_management_performance", {}
-        )
-        store = cluster_stats.get(cluster_id)
-        if not isinstance(store, RegionManagementPerformanceStore):
-            return None
-
-        # Compute own performance using unified scoring
-        own_score = compute_performance_score(
-            self.performance_tracker, self.farmer
-        )
-
-        # Find best performing bundle at cluster level
-        best_bundle = None
-        best_score = own_score  # Must beat our current score
-
-        for bundle, perf in store.items():
-            # Skip our own bundle
-            if bundle == self.practice_bundle:
-                continue
-
-            bundle_score = compute_performance_score(perf, self.farmer)
-
-            # Track the best bundle (highest unified score)
-            if bundle_score > best_score:
-                best_score = bundle_score
-                best_bundle = bundle
-
-        return best_bundle
-
-    def is_better_performing(self, neighbour):
-        """Check if neighbour is performing better than self.
-
-        Uses unified performance scoring with proper normalization and
-        metric-specific trend/level weighting. A neighbor is better if their
-        unified score exceeds ours.
-
-        Parameters
-        ----------
-        neighbour : Farmer
-            neighbouring farmer to compare.
-
-        Returns
-        -------
-        bool
-            True if neighbour's unified score exceeds self's score.
-        """
-
-        my_score = compute_performance_score(
-            self.performance_tracker, self.farmer
-        )
-        their_score = compute_performance_score(
-            neighbour.behaviour.performance_tracker, self.farmer
-        )
-
-        # if self.farmer.cell.output.cell.item() == 8:
-        #     breakpoint()
-        # self.farmer.world.statistic.get("reference_scales")
-        return their_score > my_score
+        return self._best_bundle_in_store(self._cluster_performance_store())
 
     def performance_gap(self, neighbour):
         """Compute positive performance score difference (neighbour - self).
-
-        Uses unified performance scoring with proper normalization and
-        metric-specific trend/level weighting.
 
         Parameters
         ----------
@@ -1597,16 +1860,26 @@ class TPB(DecisionModel):
         float
             Positive score gap (0 if neighbour has lower or equal score).
         """
-
-        my_score = compute_performance_score(
-            self.performance_tracker, self.farmer
-        )
         their_score = compute_performance_score(
             neighbour.behaviour.performance_tracker, self.farmer
         )
-
         # Return positive gap only (0 if neighbor is not better)
-        return max(0.0, their_score - my_score)
+        return max(0.0, their_score - self.own_score())
+
+    def is_better_performing(self, neighbour):
+        """Check if neighbour is performing better than self.
+
+        Parameters
+        ----------
+        neighbour : Farmer
+            neighbouring farmer to compare.
+
+        Returns
+        -------
+        bool
+            True if neighbour's unified score exceeds self's score.
+        """
+        return self.performance_gap(neighbour) > 0.0
 
     # =========================================================================
     # CROP SIMILARITY
@@ -1686,152 +1959,226 @@ class TPB(DecisionModel):
 
         return w_bundle * bundle_sim + w_crop * crop_sim
 
-    # =========================================================================
-    # TPB COMPONENT: ATTITUDE (Own Land)
-    # =========================================================================
+    def _shrink_to_neutral(self, score, evidence):
+        """Shrink a [0,1] component score toward 0.5 when evidence is thin.
 
-    def compute_attitude_own_land(self):
-        """Compute attitude from own land performance vs baseline.
+        Without this, one farm-year and a large sample enter the TPB sum with
+        equal authority (e.g. a single early adopter dominating a country
+        aggregate). Linear ramp: full weight at ``confidence_years`` observations
+        (years or contributing farms — both count as independent observations).
+        Pioneers use a shorter ``confidence_years``.
 
-        "Am I doing worse than when I started this practice?"
-        Compares current performance score to baseline_score (captured at transition).
-        Declining performance → high attitude → more willing to transition
-        Improving performance → low attitude → less willing to transition
-
-        Uses compute_performance_score for consistency with social learning.
+        Parameters
+        ----------
+        score : float
+            Component in [0, 1].
+        evidence : float
+            Observation years or contributing farms behind the score.
 
         Returns
         -------
         float
-            Attitude score in [0, 1].
+            ``0.5 + (evidence/confidence_years clipped to 1) * (score - 0.5)``.
         """
-        # Baseline not yet set (first update not happened) → neutral
-        baseline = self.performance_tracker.baseline_score
+        full = self.get_aft_param("confidence_years")
+        if full <= 0:
+            return score
+        confidence = min(1.0, max(0.0, evidence / full))
+        return 0.5 + confidence * (score - 0.5)
 
-        # Get sensitivity from config
-        tpb_config = self.farmer.model.config.coupled_config.tpb
-        sensitivity = tpb_config.attitude_sensitivity
+    # =========================================================================
+    # TPB COMPONENT: ATTITUDE (Own Land)
+    # =========================================================================
 
-        # Compare current score to baseline (score at time of transition)
-        current_score = compute_performance_score(self.performance_tracker, self.farmer)
+    def compute_attitude_own_land(self, new_bundle):
+        """Own-land attitude toward ``new_bundle`` in [0, 1].
 
-        # score_diff: positive = improving, negative = declining
-        score_diff = current_score - baseline
+        Compares a reference performance score to current ``own_score()``;
+        ``sigmoid(reference - own)`` raises attitude when the reference is
+        better (motivates change).
 
-        # For attitude: declining → high attitude (want to change)
-        # So we negate: -score_diff → declining becomes positive → high sigmoid
-        return sigmoid(-score_diff * sensitivity)
+        Reference choice
+        ----------------
+        1. If ``performance_memory`` has duration > 0 for ``new_bundle``: use
+           that remembered score (direct experience of the candidate). Floor
+           0.0 — a tried bundle may argue for or against switching.
+        2. Otherwise: use ``baseline_score()`` at the last transition (status
+           quo dissatisfaction). Bundle-independent. Floored at 0.5 so good
+           current performance does not veto an untried practice; only
+           degradation below the pre-transition anchor raises attitude.
+
+        Peer evidence is excluded here (belongs in social learning); including
+        it would double-count. Short evidence is shrunk toward 0.5 via
+        ``_shrink_to_neutral``. Baseline is stored as rates and rescored each
+        year so scores stay comparable under the current population rulers.
+
+        Parameters
+        ----------
+        new_bundle : ManagementBundle
+            Candidate bundle.
+
+        Returns
+        -------
+        float
+            Attitude in [0, 1].
+        """
+        remembered = self.performance_memory[new_bundle]
+        if remembered.duration > 0:
+            reference = compute_performance_score(remembered, self.farmer)
+            evidence = remembered.duration
+            floor = 0.0  # tried bundle: two-sided
+        else:
+            reference = self.baseline_score()
+            if reference is None:
+                return 0.5  # no pre-transition anchor yet
+            evidence = self.performance_tracker.n
+            floor = 0.5  # untried: dissatisfaction only, not a veto when thriving
+
+        # Positive when reference beats current performance → higher attitude
+        return self._shrink_to_neutral(
+            max(floor, sigmoid(reference - self.own_score())), evidence
+        )
 
     # =========================================================================
     # TPB COMPONENT: ATTITUDE (Social Learning)
     # =========================================================================
 
     def compute_attitude_social_learning_local(self, new_bundle):
-        """Compute attitude from LOCAL neighbours using the proposed bundle.
+        """Local social-learning attitude from neighbours on ``new_bundle``.
 
-        Evaluates neighbours using unified performance scoring with proper
-        normalization and metric-specific trend/level weighting, weighted by
-        similarity and confidence.
+        Pairwise score gaps vs ``own_score()``, weighted by bundle+crop
+        similarity (homophily). Normalised by similarity sum only; neighbour
+        confidence (``n / confidence_years``) stays in the numerator so thin
+        experience attenuates the signal toward 0.5 — limits early-cascade
+        overweighting of recent adopters. Region channels average aggregates
+        and cannot apply pairwise similarity.
 
-        Scientific basis:
-        - Social comparison theory (Festinger 1954): relative performance evaluation
-        - Homophily (McPherson et al. 2001): similarity-weighted learning
-        - Adaptive learning (Boyd & Richerson 1985): filter out worse performers
-        - Yield gap analysis (van Ittersum et al. 2013): normalized comparisons
-
-        This is the LOCAL component - uses direct neighbour comparisons with
-        full similarity weighting. See compute_attitude_social_learning_country()
-        for the country-level component.
+        References: Festinger (1954); McPherson et al. (2001); Boyd & Richerson
+        (1985); van Ittersum et al. (2013).
 
         Parameters
         ----------
-        new_bundle : tuple
-            Bundle being evaluated.
+        new_bundle : ManagementBundle
+            Candidate bundle (used for similarity to each neighbour's practice).
 
         Returns
         -------
         float
-            Attitude score in [0, 1].
+            Attitude in [0, 1]; 0.5 if no usable neighbours.
         """
         if not self.farmer.neighbourhood:
             return 0.5  # Neutral without neighbours
 
-        # Get parameters from config
         confidence_years = self.get_aft_param("confidence_years")
+        my_score = self.own_score()
 
-        # My unified performance score
-        my_score = compute_performance_score(
-            self.performance_tracker, self.farmer
-        )
-
-        # Accumulate weighted score differences
         weighted_score_diff = 0.0
-        total_weight = 0.0
+        similarity_weight = 0.0
 
         for neighbour in self.farmer.neighbourhood:
             # How similar is neighbour? (bundle + crop similarity)
             similarity = self.total_similarity(new_bundle, neighbour)
-
             if similarity == 0:
                 continue  # Skip completely different neighbours
 
             n_tracker = neighbour.behaviour.performance_tracker
 
-            # Confidence: more observations → more reliable information
-            n_obs = n_tracker.n
-            confidence = min(1.0, n_obs / confidence_years)
-
-            # Compute neighbour's unified performance score
-            neighbour_score = compute_performance_score(
-                n_tracker, self.farmer
+            # Confidence: more observations -> more reliable information
+            confidence = (
+                min(1.0, n_tracker.n / confidence_years)
+                if confidence_years > 0
+                else 1.0
             )
 
             # Score difference: positive if neighbour is better
-            score_diff = neighbour_score - my_score
+            score_diff = (
+                compute_performance_score(n_tracker, self.farmer) - my_score
+            )
 
-            # if neighbour.cell.output.cell.item() == 8:
-            #     breakpoint()
+            # similarity selects; confidence scales magnitude (not cancelled)
+            weighted_score_diff += similarity * confidence * score_diff
+            similarity_weight += similarity
 
-            # Weight = similarity × confidence
-            weight = similarity * confidence
-
-            # Accumulate weighted score differences
-            weighted_score_diff += weight * score_diff
-            total_weight += weight
-
-        if total_weight == 0:
+        if similarity_weight == 0:
             return 0.5  # Neutral if no relevant neighbours
 
-        # Normalize by total weight to get average score difference
-        avg_score_diff = weighted_score_diff / total_weight
+        # Similarity normalises out, confidence does not (see above).
+        avg_score_diff = weighted_score_diff / similarity_weight
 
-        # Scale by attitude_sensitivity before sigmoid
-        # This single parameter controls how strongly score differences translate
-        # to attitudes (both level and trend are already normalized to country refs)
-        tpb_config = self.farmer.model.config.coupled_config.tpb
-        sensitivity = tpb_config.attitude_sensitivity
+        # Sigmoid maps to (0, 1) attitude score. The score difference is already
+        # in units of the cross-farmer spread, so it needs no extra scaling.
+        return sigmoid(avg_score_diff)
 
-        # Sigmoid maps to (0, 1) attitude score
-        return sigmoid(avg_score_diff * sensitivity)
+    def _cluster_performance_store(self):
+        """Aggregate performance store for this farm's agroecological cluster.
+
+        Reached through country._world, which resolves on both the driver and
+        the workers. Returns None when the country belongs to no cluster or the
+        cluster carries no store yet, so callers get one "nothing to learn from
+        here" answer rather than three separate guards.
+        """
+        country = self.farmer.cell.country
+        cluster_id = getattr(country, "agroecological_cluster", -1)
+        if cluster_id < 0:
+            return None
+
+        cluster_stats = country._world.statistic.get(
+            "cluster_management_performance", {}
+        )
+        store = cluster_stats.get(cluster_id)
+        return store if isinstance(store, RegionManagementPerformanceStore) else None
+
+    def _attitude_from_region(self, store, new_bundle):
+        """Attitude from a region's aggregate experience with a bundle.
+
+        The country and cluster channels ask one question of two different
+        populations - how does this bundle's aggregate performance compare to
+        mine - so they share the arithmetic and differ only in which store they
+        read. Neither weights by similarity: the aggregate is already grouped by
+        bundle, which makes it O(1) rather than the O(n²) of pairwise local
+        comparison.
+
+        Shrinking by the number of contributing farms is what keeps a region
+        that has three adopters from speaking like one that has three hundred.
+
+        Parameters
+        ----------
+        store : RegionManagementPerformanceStore or None
+            Aggregate performance by bundle for the region.
+        new_bundle : ManagementBundle
+            Bundle being evaluated.
+
+        Returns
+        -------
+        float
+            Attitude score in [0, 1], neutral when the region says nothing.
+        """
+        if store is None:
+            return 0.5
+
+        perf = store.get(new_bundle)
+        if perf.count == 0:
+            return 0.5  # No farm in this region runs the bundle
+
+        # Positive when the bundle outperforms this farm.
+        score_diff = compute_performance_score(perf, self.farmer) - self.own_score()
+        return self._shrink_to_neutral(sigmoid(score_diff), perf.count)
 
     def compute_attitude_social_learning_country(self, new_bundle):
         """Compute attitude from COUNTRY-LEVEL bundle performance.
 
-        Uses unified performance scoring with proper normalization and
-        metric-specific trend/level weighting to compare own performance
-        against average performance of farmers using the proposed bundle.
+        Compares own performance against the aggregate of farmers in the same
+        country running the proposed bundle. See _attitude_from_region for the
+        shared arithmetic.
 
         Scientific basis:
         - Social comparison theory (Festinger 1954): relative performance evaluation
         - Adaptive learning (Boyd & Richerson 1985): filter out worse strategies
         - Yield gap analysis (van Ittersum et al. 2013): normalized comparisons
 
-        No similarity weighting at country level - uses simpler bundle-based
-        grouping for computational efficiency (O(1) vs O(n²)).
-
         Parameters
         ----------
-        new_bundle : tuple
+        new_bundle : ManagementBundle
             Bundle being evaluated.
 
         Returns
@@ -1839,50 +2186,24 @@ class TPB(DecisionModel):
         float
             Attitude score in [0, 1].
         """
-        country = self.farmer.cell.country
-        store = _country_performance_store(country)
-        if store is None:
-            return 0.5  # Neutral if no country data
-
-        perf = store.get(new_bundle)
-        if perf.count == 0:
-            return 0.5  # Neutral if no data for this bundle
-
-        # Compute performance scores using unified scoring
-        my_score = compute_performance_score(
-            self.performance_tracker, self.farmer
-        )
-        bundle_score = compute_performance_score(perf, self.farmer)
-
-        # Score difference as attitude input
-        # Positive if bundle is better (higher score), negative if worse
-        score_diff = bundle_score - my_score
-
-        # Scale by attitude_sensitivity before sigmoid
-        tpb_config = self.farmer.model.config.coupled_config.tpb
-        sensitivity = getattr(tpb_config, "attitude_sensitivity", 4.0)
-
-        # Sigmoid maps to (0, 1) attitude score
-        return sigmoid(score_diff * sensitivity)
+        store = _country_performance_store(self.farmer.cell.country)
+        return self._attitude_from_region(store, new_bundle)
 
     def compute_attitude_social_learning_cluster(self, new_bundle):
         """Compute attitude from AGROECOLOGICAL CLUSTER-level bundle performance.
 
         Cross-border social learning: farmers learn from countries with similar
-        agroecological conditions. Uses unified performance scoring with proper
-        normalization and metric-specific trend/level weighting.
+        agroecological conditions, using cluster aggregates computed from peer
+        countries. See _attitude_from_region for the shared arithmetic.
 
         Scientific basis:
         - Social comparison theory (Festinger 1954): relative performance evaluation
         - Adaptive learning (Boyd & Richerson 1985): filter out worse strategies
         - Yield gap analysis (van Ittersum et al. 2013): normalized comparisons
 
-        Uses aggregated cluster statistics from world.statistic (computed from
-        peer countries in the same agroecological cluster).
-
         Parameters
         ----------
-        new_bundle : tuple
+        new_bundle : ManagementBundle
             Bundle being evaluated.
 
         Returns
@@ -1890,52 +2211,64 @@ class TPB(DecisionModel):
         float
             Attitude score in [0, 1].
         """
-        country = self.farmer.cell.country
-        cluster_id = getattr(country, "agroecological_cluster", -1)
-
-        if cluster_id < 0:
-            return 0.5  # Neutral if no cluster
-
-        # Access via country._world which works on both driver and workers
-        cluster_stats = country._world.statistic.get("cluster_management_performance", {})
-        store = cluster_stats.get(cluster_id)
-        if not isinstance(store, RegionManagementPerformanceStore):
-            return 0.5  # Neutral if no cluster data
-
-        perf = store.get(new_bundle)
-        if perf.count == 0:
-            return 0.5  # Neutral if no data for this bundle
-
-        # Compute performance scores using unified scoring
-        my_score = compute_performance_score(
-            self.performance_tracker, self.farmer
+        return self._attitude_from_region(
+            self._cluster_performance_store(), new_bundle
         )
-        bundle_score = compute_performance_score(perf, self.farmer)
-
-        # Score difference as attitude input
-        # Positive if bundle is better (higher score), negative if worse
-        score_diff = bundle_score - my_score
-
-        # Scale by attitude_sensitivity before sigmoid
-        tpb_config = self.farmer.model.config.coupled_config.tpb
-        sensitivity = getattr(tpb_config, "attitude_sensitivity", 4.0)
-
-        # Sigmoid maps to (0, 1) attitude score
-        return sigmoid(score_diff * sensitivity)
 
     # =========================================================================
     # TPB COMPONENT: SOCIAL NORM
     # =========================================================================
 
+    def _social_norm_from_region(self, store, new_bundle, threshold_param):
+        """Descriptive norm from a region's share of farmers running a bundle.
+
+        Shared by the country and cluster channels: both ask what fraction of a
+        population runs the bundle and compare it to the adoption level at which
+        it starts to feel normative (Granovetter 1978). Thresholds are
+        AFT-specific, pioneers responding to a smaller share, and are set higher
+        than the local threshold because a regional statistic is more abstract
+        than watching the neighbours.
+
+        Unlike the local norm there is no similarity weighting, since a regional
+        aggregate carries no information about who its farmers are.
+
+        Parameters
+        ----------
+        store : RegionManagementPerformanceStore or None
+            Aggregate performance and bundle counts for the region.
+        new_bundle : ManagementBundle
+            Bundle being evaluated.
+        threshold_param : str
+            Name of the AFT parameter holding this region's norm threshold.
+
+        Returns
+        -------
+        float
+            Social norm score in [0, 1], neutral when the region says nothing.
+        """
+        # A single farm is its own region, and cannot tell anyone what is normal.
+        if store is None or store.total_farmers < 2:
+            return 0.5
+
+        uptake = store.bundle_counts.get(new_bundle, 0) / store.total_farmers
+        return sigmoid(uptake - self.get_aft_param(threshold_param))
+
     def compute_social_norm_local(self, new_bundle):
         """Compute social norm based on LOCAL neighbourhood practice distribution.
 
-        Social norm reflects "what others are doing" (descriptive norm).
-        Uses similarity-weighted average: higher if neighbours use similar
-        bundles and grow similar crops.
+        Social norm reflects "what others are doing" (descriptive norm), so the
+        quantity has to be local uptake of the bundle, on the same share-of-
+        neighbours scale the AFT threshold is calibrated for. Bundle similarity
+        supplies that uptake in graded form, since a neighbour already running
+        no-till but no cover crop counts partially towards the full bundle
+        feeling normal.
 
-        Follows the simple approach from tillage_farmer.py: fraction of
-        neighbours using the practice → sigmoid transformation.
+        Crop similarity enters as the WEIGHT on each neighbour rather than as a
+        second addend: it says whose behaviour is comparable, because a wheat
+        grower learns little from a rice grower's choices. Added instead of
+        weighted it would substitute for uptake, letting a farmer whose
+        neighbours merely share a crop feel more normed towards conservation
+        agriculture than one who has neighbours actually practising it.
 
         Parameters
         ----------
@@ -1950,13 +2283,23 @@ class TPB(DecisionModel):
         if not self.farmer.neighbourhood:
             return 0.5  # Neutral without neighbours
 
-        # Average similarity to neighbours for this bundle
-        # High similarity = neighbours use similar bundles and crops
-        total_similarity = sum(
-            self.total_similarity(new_bundle, n)
-            for n in self.farmer.neighbourhood
-        )
-        avg_similarity = total_similarity / len(self.farmer.neighbourhood)
+        # Graded local uptake of the bundle, weighted by whose practice is
+        # comparable. Neighbours growing a different dominant crop carry zero
+        # weight, matching how they are skipped in social learning.
+        weighted_uptake = 0.0
+        total_weight = 0.0
+        for neighbour in self.farmer.neighbourhood:
+            relevance = self.crop_similarity(neighbour)
+            if relevance == 0:
+                continue
+            uptake = new_bundle.similarity(neighbour.behaviour.practice_bundle)
+            weighted_uptake += relevance * uptake
+            total_weight += relevance
+
+        if total_weight == 0:
+            return 0.5  # No comparable neighbours, so the norm says nothing
+
+        local_uptake = weighted_uptake / total_weight
 
         # Shifted sigmoid: adoption threshold acts as the neutrality point
         # (Granovetter 1978 heterogeneous-threshold diffusion model).
@@ -1964,7 +2307,7 @@ class TPB(DecisionModel):
         # Threshold is AFT-specific: pioneers feel "normed" at lower adoption,
         # traditionalists require broader local uptake to feel normative.
         threshold = self.get_aft_param("threshold_social_norm_local")
-        return sigmoid(avg_similarity - threshold)
+        return sigmoid(local_uptake - threshold)
 
     def compute_social_norm_country(self, new_bundle):
         """Compute social norm based on COUNTRY-LEVEL practice distribution.
@@ -1987,23 +2330,11 @@ class TPB(DecisionModel):
         float
             Social norm score in [0, 1].
         """
-        store = _country_performance_store(self.farmer.cell.country)
-        if store is None or store.total_farmers < 2:
-            return 0.5  # Neutral if no country data
-
-        bundle_count = store.bundle_counts.get(new_bundle, 0)
-        total_farmers = store.total_farmers
-
-        # Fraction of farmers using this bundle
-        bundle_fraction = bundle_count / total_farmers
-
-        # Shifted sigmoid: threshold = country-adoption level at which this
-        # bundle feels normative (Granovetter 1978). Thresholds differ per
-        # AFT (pioneers adopt the country signal earlier) and are typically
-        # higher than the local threshold, because country adoption is more
-        # abstract/statistical than direct observation of neighbours.
-        threshold = self.get_aft_param("threshold_social_norm_country")
-        return sigmoid(bundle_fraction - threshold)
+        return self._social_norm_from_region(
+            _country_performance_store(self.farmer.cell.country),
+            new_bundle,
+            "threshold_social_norm_country",
+        )
 
     def compute_social_norm_cluster(self, new_bundle):
         """Compute social norm from AGROECOLOGICAL CLUSTER-level practice distribution.
@@ -2018,7 +2349,7 @@ class TPB(DecisionModel):
 
         Parameters
         ----------
-        new_bundle : tuple
+        new_bundle : ManagementBundle
             Bundle being evaluated.
 
         Returns
@@ -2026,31 +2357,11 @@ class TPB(DecisionModel):
         float
             Social norm score in [0, 1].
         """
-        country = self.farmer.cell.country
-        cluster_id = getattr(country, "agroecological_cluster", -1)
-
-        if cluster_id < 0:
-            return 0.5  # Neutral if no cluster
-
-        # Access via country._world which works on both driver and workers
-        cluster_stats = country._world.statistic.get("cluster_management_performance", {})
-        store = cluster_stats.get(cluster_id)
-        if not isinstance(store, RegionManagementPerformanceStore):
-            return 0.5  # Neutral if no cluster data
-
-        total_in_cluster = store.total_farmers
-        bundle_adopters = store.bundle_counts.get(new_bundle, 0)
-
-        if total_in_cluster == 0:
-            return 0.5  # Neutral if no peer farmers
-
-        # Adoption rate in cluster
-        adoption_rate = bundle_adopters / total_in_cluster
-
-        # Shifted sigmoid with AFT-specific threshold
-        threshold = getattr(self.farmer, "threshold_social_norm_cluster", 0.1)
-        return sigmoid(adoption_rate - threshold)
-
+        return self._social_norm_from_region(
+            self._cluster_performance_store(),
+            new_bundle,
+            "threshold_social_norm_cluster",
+        )
 
     # =========================================================================
     # AFFORDABILITY ADJUSTMENTMENT BASED ON CAPITAL
@@ -2061,6 +2372,10 @@ class TPB(DecisionModel):
 
         If farmer can't afford full target bundle, add changes cheapest-first
         to maximize what can be adopted within capital constraints.
+
+        Returns the target untouched when farm_economics.capital_constraints is
+        off: the transition cost is then assumed financeable, and whether it is
+        worth financing is PBC's question, not this one.
 
         See farmer.get_practice_transition_cost() for per-practice cost logic.
 
@@ -2074,21 +2389,20 @@ class TPB(DecisionModel):
         Bundle
             Affordable bundle (may equal current if nothing affordable).
         """
+        if not self.farmer.capital_constrained:
+            return target_bundle
+
         current = self.practice_bundle
         total_cost = self.farmer.get_bundle_transition_costs(
             self.practice_bundle,
             target_bundle,
         )
 
-        # -----------------------------------------------------------------
         # Check if full target is affordable
-        # -----------------------------------------------------------------
         if self.farmer.capital >= total_cost:
             return target_bundle
 
-        # -----------------------------------------------------------------
         # Build affordable subset: add changes cheapest-first
-        # -----------------------------------------------------------------
         changes = []
         for field in PRACTICE_FIELDS:
             old_val = getattr(current, field)
@@ -2118,138 +2432,390 @@ class TPB(DecisionModel):
     # TPB COMPONENT: PERCEIVED BEHAVIORAL CONTROL (PBC)
     # =========================================================================
 
-    def anticipated_delta_yield(self, current_bundle, target_bundle):
-        """Estimate yield change from switching bundles based on peer experience.
+    def anticipated_relative_yield_change(
+        self, current_bundle, target_bundle, min_peers=3
+    ):
+        """Expected fractional yield change from switching bundles (0.1 = +10%).
 
-        Searches for farmers who have experience with BOTH bundles and computes
-        the average yield difference. Searches in order: cluster → country → local,
-        using the first level with sufficient data.
+        The yield case of ``anticipated_change``, kept as its own name because
+        it is what PBC asks for: the revenue side of the switch.
+        """
+        return self.anticipated_change(
+            "yield", current_bundle, target_bundle, min_peers=min_peers
+        )
+
+    def anticipated_change(
+        self, metric, current_bundle, target_bundle, min_peers=3
+    ):
+        """Expected fractional change in one metric from switching bundles.
+
+        From peers that have run *both* bundles: within-peer difference of the
+        remembered rates of ``metric``, then experience-weighted median.
+        Within-peer differencing removes site confounding (cohort averages would
+        compare farms, not practices). Search order: local then country
+        (homophily; first level with ``min_peers`` dual-experience farms).
+
+        The same estimator serves every metric because they are all stored the
+        same way, as self-referenced log deviations. What differs is what the
+        answer is used for: yield feeds PBC as a revenue change, and a priced
+        metric would need converting to its physical unit first, which a log
+        deviation cannot do on its own (see ``metrics.MetricSpec``).
+
+        Feeds PBC only (financial feasibility). Desirability uses social
+        learning; routing the same peer evidence through both would double-count.
+
+        Notes
+        -----
+        Remembered levels are log deviations, so differences are log ratios;
+        ``expm1`` converts to a fraction. Aggregation in log space is the
+        geometric mean of peer ratios. Experience weight =
+        ``min(dur_current, dur_target, max_experience_years)`` — soil benefits
+        saturate ~15 yr; longer records add climate/LU confounding.
 
         Parameters
         ----------
-        current_bundle : ManagementBundle
-            The bundle currently being used.
-        target_bundle : ManagementBundle
-            The bundle being considered.
+        metric : str
+            Key in ``metrics.METRICS``.
+        current_bundle, target_bundle : ManagementBundle
+        min_peers : int
+            Minimum dual-experience peers before a spatial level is used.
 
         Returns
         -------
         float
-            Estimated yield change (same units as farmer.cropyield), positive if
-            target yields more. Returns 0.0 if no farmers have experience with
-            both bundles.
-
-        Notes
-        -----
-        Remembered yields are stored as self-referenced fractional rates
-        (yield / own_baseline - 1). The peer-averaged rate difference is
-        converted back to absolute units using the EVALUATING farmer's own
-        baseline yield, so downstream revenue anticipation stays in absolute
-        yield units.
+            Fractional change in the metric, or 0.0 if insufficient peers.
         """
         if current_bundle == target_bundle:
             return 0.0
 
-        # Get enabled spreading levels
-        enable_local, enable_country, enable_cluster = self._get_enabled_spreading_levels()
+        # Peers are read at the cover crop this farm would grow, not the one
+        # they grew. A legume's record says nothing about a catch crop.
+        return self.anticipated_change_between(
+            metric,
+            self.performance_memory.key(current_bundle),
+            self.performance_memory.key(target_bundle),
+            min_peers,
+        )
 
-        # Search cluster first (most data), then country, then local
-        farmer_lists = []
+    def anticipated_change_between(self, metric, current_key, target_key, min_peers=3):
+        """The estimator proper, on two explicit ``(bundle, type)`` keys.
 
-        if enable_cluster:
-            # Get farmers in same agroecological cluster
-            cluster_farmers = self._get_cluster_farmers()
-            if cluster_farmers:
-                farmer_lists.append(cluster_farmers)
+        Separated from ``anticipated_change`` because not every comparison the
+        model makes is between two bundles. Choosing which cover crop to sow
+        holds the bundle still and moves only the type, and that comparison
+        needs the same within-peer differencing, the same experience weighting
+        and the same country cache as any other.
 
-        if enable_country:
-            # Get farmers in same country
-            country_farmers = list(self.farmer.cell.country.farmers)
-            if country_farmers:
-                farmer_lists.append(country_farmers)
+        Parameters
+        ----------
+        metric : str
+            Key in ``metrics.METRICS``.
+        current_key, target_key : tuple
+            ``(bundle, cover_crop_type)`` pairs to difference between.
+        min_peers : int
+            Minimum dual-experience peers before a spatial level is used.
 
-        if enable_local:
-            # Get local neighbors
-            local_farmers = list(self.farmer.neighbourhood)
-            if local_farmers:
-                farmer_lists.append(local_farmers)
+        Returns
+        -------
+        float
+            Fractional change in the metric, or 0.0 if insufficient peers.
+        """
+        if current_key == target_key:
+            return 0.0
 
-        # Search each level until we find sufficient data
-        for farmers in farmer_lists:
-            delta_yields = []
-            for f in farmers:
-                if f is self.farmer:
-                    continue
-                if not hasattr(f, 'behaviour') or not hasattr(f.behaviour, 'performance_memory'):
-                    continue
+        spec = METRICS[metric]
+        enable_local, enable_country, _ = self._get_enabled_spreading_levels()
+        tpb = self.farmer.model.config.coupled_config.tpb
+        max_experience = tpb.max_experience_years
+        effect = None
 
-                mem = f.behaviour.performance_memory
-                current_exp = mem[current_bundle]
-                target_exp = mem[target_bundle]
+        # Local first: closer climates / soils transfer better
+        if enable_local and self.farmer.neighbourhood:
+            neighbours = [f for f in self.farmer.neighbourhood if f is not self.farmer]
+            _, deltas, weights = self._collect_effects(
+                metric, neighbours, current_key, target_key, max_experience
+            )
+            if len(deltas) >= min_peers:
+                effect = self._reduce_effects(spec, deltas, weights)
 
-                # Both must have experience (duration > 0)
-                if current_exp.duration > 0 and target_exp.duration > 0:
-                    # Difference of fractional rates (dimensionless)
-                    delta = target_exp.level_yield - current_exp.level_yield
-                    delta_yields.append(delta)
+        if effect is None and enable_country:
+            index, deltas, weights, reduced = self._country_effects(
+                metric, current_key, target_key, max_experience
+            )
+            own = index.get(id(self.farmer))
+            if len(index) - (1 if own is not None else 0) >= min_peers:
+                # Cached country median includes self if dual-experienced;
+                # drop own index so the farm does not learn from itself.
+                effect = (
+                    reduced
+                    if own is None
+                    else self._reduce_effects(spec, deltas, weights, skip=own)
+                )
 
-            # If we found at least 3 farmers with dual experience, use this level
-            if len(delta_yields) >= 3:
-                mean_delta_rate = float(sum(delta_yields) / len(delta_yields))
-                # Convert relative rate difference to absolute yield units using
-                # the evaluating farmer's own baseline yield.
-                return mean_delta_rate * self.farmer.baseline_yield
+        return 0.0 if effect is None else float(np.expm1(effect))
 
-        # No sufficient data at any level
-        return 0.0
+    def anticipated_absolute_change(self, metric, current_bundle, target_bundle):
+        """Expected change in one metric in its own physical unit.
 
-    def _get_cluster_farmers(self):
-        """Get all farmers in the same agroecological cluster."""
+        The relative estimate scaled by what the farm actually has::
+
+            delta_absolute = baseline_physical * expm1(delta_log)
+
+        An instrument is owed a quantity, not a ratio: a carbon payment is on
+        tonnes and a nitrogen charge on kilograms, and the same 5% means a
+        different amount on a carbon-rich soil than on a poor one. Converting
+        here rather than at each call site keeps the baseline and the deviation
+        from being paired up differently in three places.
+
+        The conversion is against the farm's own baseline because that is what
+        the deviation was taken about. It is a first-order estimate: the peer
+        median is a ratio observed on other farms, applied to this farm's stock.
+
+        Parameters
+        ----------
+        metric : str
+            Key in ``metrics.METRICS``. Must be one with a physical counterpart.
+        current_bundle, target_bundle : ManagementBundle
+
+        Returns
+        -------
+        float
+            Change in ``spec.physical_unit``, positive meaning more of it.
+
+        Raises
+        ------
+        ValueError
+            If the metric has no physical counterpart to be measured in.
+        """
+        spec = METRICS[metric]
+        if not spec.priceable:
+            raise ValueError(
+                f"metric {metric!r} has no physical counterpart, so there is "
+                "nothing to express an absolute change in. Give it a "
+                "physical_attr in metrics.METRICS first."
+            )
+
+        relative = self.anticipated_change(metric, current_bundle, target_bundle)
+        baseline = getattr(self.farmer, spec.physical_baseline_attr)
+        return float(baseline) * relative
+
+    def anticipated_policy_transfer(self, new_bundle, benefit_years):
+        """Cash a switch is expected to draw from policy, over the horizon.
+
+        Positive is money in. Zero when no instrument is in force, which is why
+        a run without one is unchanged by any of this.
+
+        Without this the instruments would reach the farm only through the
+        outturn, and a farm would have to adopt a practice before discovering
+        it was being paid for it. Peers already know: they have been running it
+        under the same instrument, and the estimator reads their record.
+
+        Parameters
+        ----------
+        new_bundle : ManagementBundle
+            The bundle being weighed.
+        benefit_years : float
+            Discounted years the farm projects the switch over.
+
+        Returns
+        -------
+        float
+            Expected net transfer over the planning horizon, USD per farm.
+        """
+        settings = self.farmer.policy
+        if settings is None:
+            return 0.0
+
+        farm_size = self.farmer.farm_size
+        transfer = 0.0
+
+        if settings.carbon_price:
+            # What the farm is paid each year is the increment; what it can
+            # know in advance is the total, because peers remember carbon
+            # levels rather than the year-by-year gains that built them. The
+            # two agree: peers holding 5% more carbon on a 2000 gC/m2 baseline
+            # is +100 gC/m2, which arrives as maybe 10 gC/m2/yr for ten years
+            # and pays exactly that 100 over the period. So the horizon must
+            # not multiply this - it is already the sum over one - whereas it
+            # must multiply the nitrogen term below, which really does repeat.
+            #
+            # Floored to match what is actually paid out: a switch expected to
+            # lose carbon draws no invoice, so it must not read as one here.
+            delta_stock = self.anticipated_absolute_change(
+                "soilc", self.practice_bundle, new_bundle
+            )
+            transfer += (
+                max(0.0, delta_stock)
+                * GC_M2_TO_TCO2_HA
+                * settings.carbon_price
+                * farm_size
+            )
+
+        if settings.nitrogen_charge:
+            # Leaching is a flow, so this is a change in the annual loss and
+            # the horizon does apply. A negative delta is less nitrogen lost,
+            # so a smaller bill every year, so cash in.
+            #
+            # Priced as the difference between two bills rather than as the
+            # delta times a rate, because an allowance makes the charge kinked:
+            # a farm already under the threshold saves nothing by going lower,
+            # and one above it saves only down as far as the threshold. Reading
+            # the rate straight off would promise both of them money that the
+            # tax office would never hand over.
+            delta_flux = self.anticipated_absolute_change(
+                "leaching", self.practice_bundle, new_bundle
+            )
+            saving = self.farmer.nitrogen_charge_for(
+                self.farmer.leaching
+            ) - self.farmer.nitrogen_charge_for(self.farmer.leaching + delta_flux)
+            transfer += saving * benefit_years
+
+        if (
+            settings.cover_crop_subsidy
+            or settings.residue_subsidy
+            or settings.residue_subsidy_share
+        ):
+            # The one term here the farm does not need peers to tell it about:
+            # the rate is posted, so the payment for a bundle is known exactly
+            # rather than estimated from what neighbours have earned. A flow,
+            # paid for every year the practice is held, so the horizon applies.
+            transfer += (
+                self.farmer.practice_subsidy_for(new_bundle)
+                - self.farmer.practice_subsidy_for(self.practice_bundle)
+            ) * benefit_years
+
+        return transfer
+
+    @staticmethod
+    def _collect_effects(
+        metric, farmers, current_key, target_key, max_experience
+    ):
+        """Within-peer deltas in one metric between two episodes, with weights.
+
+        ``current_key`` and ``target_key`` are ``(bundle, cover_crop_type)``
+        pairs resolved by the *asking* farm, so a peer only contributes where it
+        has run the same practice this farm is weighing, cover crop and all.
+
+        Skips peers missing either episode. Weight =
+        ``min(duration_current, duration_target, max_experience)``: thinner
+        record limits the comparison; ``max_experience_years`` caps so longer
+        histories do not overweight climate/LU confounding after yield/soil
+        effects saturate (~15 yr).
+
+        Returns
+        -------
+        contributor_index : dict
+            ``id(farmer) →`` index in deltas/weights (for dropping self).
+        deltas, weights : list
+            Log-rate differences and experience weights.
+        """
+        contributor_index = {}
+        deltas = []
+        weights = []
+
+        for f in farmers:
+            if not hasattr(f, "behaviour") or not hasattr(
+                f.behaviour, "performance_memory"
+            ):
+                continue
+
+            mem = f.behaviour.performance_memory
+            current_exp = mem.get(current_key)
+            target_exp = mem.get(target_key)
+
+            # Both must have experience (duration > 0)
+            if current_exp.duration <= 0 or target_exp.duration <= 0:
+                continue
+
+            contributor_index[id(f)] = len(deltas)
+            deltas.append(target_exp.level[metric] - current_exp.level[metric])
+            weights.append(
+                min(current_exp.duration, target_exp.duration, max_experience)
+            )
+
+        return contributor_index, deltas, weights
+
+    @staticmethod
+    def _reduce_effects(spec, deltas, weights, skip=None):
+        """Experience-weighted median of the per-peer differences.
+
+        Median rather than mean because the pool can be as small as three peers,
+        where one distorted memory would otherwise set the estimate on its own;
+        clipping to the metric's bounds guards these rates as the region
+        aggregates do. Weighting counts peers who have run the practice long
+        enough for its benefits to show for more than recent converts; see
+        _collect_effects.
+        """
+        if skip is not None:
+            deltas = [v for i, v in enumerate(deltas) if i != skip]
+            weights = [w for i, w in enumerate(weights) if i != skip]
+
+        lo, hi = spec.clip_bounds
+        return _weighted_median(np.clip(deltas, lo, hi), weights)
+
+    def _country_effects(self, metric, current_key, target_key, max_experience):
+        """Country-wide effects on one metric this year, computed once and shared.
+
+        Every farmer in a country scans the same peers and reaches the same
+        answer, apart from leaving itself out, so the scan is done once and
+        shared. This is purely a saving: the estimate is the same over the same
+        peers, and a contributing farmer is still removed from its own. Early in
+        a run it is the dominant cost, when local peers are too few and the
+        country level is always the one taken.
+
+        The metric, the cover crop types and the experience cap are all in the
+        key. The metric because the same bundle pair has a different answer for
+        each - a carbon estimate reading the yield entry would be wrong and
+        would look right. The types because two farms weighing the same bundle
+        pair with different cover crops in mind are reading different peers.
+        The cap because it is one value for all farmer types today, and a
+        per-AFT cap would otherwise silently share one type's answer with
+        another.
+        """
         country = self.farmer.cell.country
-        cluster_id = getattr(country, 'cluster_id', -1)
-        if cluster_id < 0:
-            return []
+        year = self.farmer.model.lpjml.sim_year
 
-        # Get all countries in this cluster
-        world = country._world
-        cluster_countries = getattr(world, '_cluster_countries', {}).get(cluster_id, [])
+        # Memories move every year, so last year's scan is stale.
+        if getattr(country, "_effect_cache_year", None) != year:
+            country._effect_cache = {}
+            country._effect_cache_year = year
 
-        farmers = []
-        for c in cluster_countries:
-            farmers.extend(list(c.farmers))
-        return farmers
+        key = (metric, current_key, target_key, max_experience)
+        entry = country._effect_cache.get(key)
+        if entry is None:
+            index, deltas, weights = self._collect_effects(
+                metric, country.farmers, current_key, target_key, max_experience
+            )
+            spec = METRICS[metric]
+            reduced = self._reduce_effects(spec, deltas, weights) if deltas else None
+            entry = (index, deltas, weights, reduced)
+            country._effect_cache[key] = entry
+
+        return entry
 
     def pbc_for_bundle(self, new_bundle):
-        """Compute Perceived Behavioral Control for a bundle.
+        """Compute Perceived Behavioural Control for a bundle.
 
-        PBC reflects "can I actually do this?" - lower when net financial
-        impact is high relative to annual income (baseline revenue).
+        PBC answers "can I actually do this?", and falls as the net financial
+        impact of the switch grows against the income available to absorb it::
 
-        Formula: PBC = pbc_base × sigmoid(ratio × pbc_sensitivity)
+            PBC   = pbc_base * 2 * sigmoid(-ratio),  capped at 1
+            ratio = net_financial_impact / (baseline_revenue * benefit_years)
 
-        Where:
-        - pbc_base: AFT-specific baseline (pioneers higher, traditionalists lower)
-        - ratio = -net_financial_impact / (baseline_revenue × planning_horizon)
-          (positive when profitable, negative when costly)
-        - pbc_sensitivity: config parameter controlling response steepness
+        The net impact is the one-time transition cost, plus the change in annual
+        direct costs and minus the anticipated revenue gain, the latter two over
+        the discounted benefit-years the farmer projects. It is compared against
+        income over that same view, so the ratio is dimensionless and answers
+        whether the switch is affordable across the period it pays back over.
 
-        Using revenue over the planning horizon as reference ensures consistency:
-        net_financial_impact includes planning_horizon, so we compare to income
-        over the same period. Farmers assess "can I afford this over 5 years?"
-        by comparing total costs/gains to expected income over those 5 years.
+        2 * sigmoid(-ratio) is 1 - tanh(ratio), which anchors a cost-neutral
+        switch at the AFT base and lets the base move both ways: a costly switch
+        (ratio >> 0) drives PBC to 0, a profitable one (ratio < 0) raises it
+        above the base until the cap. It is bounded and monotone throughout, so
+        a very large anticipated gain cannot flip its sign.
 
-        Sigmoid maps the financial ratio to [0, 1]:
-        - ratio = 0 (neutral): PBC = pbc_base × 0.5
-        - ratio >> 0 (profitable): PBC → pbc_base
-        - ratio << 0 (costly): PBC → 0
-
-        Net financial impact considers:
-        - One-time transition costs
-        - Change in annual direct costs over planning horizon
-        - Anticipated change in revenue (from yield differences)
-
-        AFT differences in risk aversion are captured via pbc_base, not as a
-        separate multiplicative factor (avoids double-counting).
+        pbc_base carries the difference in risk tolerance between farmer types,
+        and is the only place that difference enters PBC.
 
         References
         ----------
@@ -2266,11 +2832,9 @@ class TPB(DecisionModel):
         Returns
         -------
         float
-            PBC score in [0, pbc_base].
+            PBC score in [0, 1].
         """
-        # -----------------------------------------------------------------
         # Calculate cost impact of transitioning
-        # -----------------------------------------------------------------
 
         # One-time transition costs
         transition_costs = self.farmer.get_bundle_transition_costs(
@@ -2279,68 +2843,53 @@ class TPB(DecisionModel):
         )
 
         # Change in annual direct costs (new bundle vs current bundle)
-        # Positive = new bundle costs more, Negative = new bundle saves money
+        # Positive = new bundle costs more, Negative = new bundle saves money.
+        # Measured against the costs the farm actually bears, so a farm holding
+        # a residue label it never bought sees the true added cost of committing.
         delta_direct_costs = (
             self.farmer.get_bundle_direct_costs(bundle=new_bundle)
-            - self.farmer.get_bundle_direct_costs(bundle=self.practice_bundle)
+            - self.farmer.get_bundle_direct_costs(bundle=self.committed_bundle)
         )
 
-        # -----------------------------------------------------------------
         # Calculate anticipated revenue change from yield difference
-        # -----------------------------------------------------------------
-        # Peer experience gives the anticipated absolute yield change (in
-        # cropyield units, gC/m2). Convert it to a whole-farm USD revenue change
-        # on the SAME footing as baseline_revenue and the cost terms below:
-        # express it as a fraction of the farmer's own baseline yield, then
-        # apply that fraction to baseline revenue. This implicitly carries the
-        # farmer's real crop/price mix and area (already embedded in
-        # baseline_revenue), avoiding a separate gC->tonnes and area conversion
-        # and a plain price average.
-        delta_yield = self.anticipated_delta_yield(self.practice_bundle, new_bundle)
-        if self.farmer.baseline_yield > 0:
-            delta_revenue = (
-                delta_yield / self.farmer.baseline_yield
-            ) * self.farmer.baseline_revenue  # $/farm/yr
-        else:
-            delta_revenue = 0.0
+        # Peer experience gives the anticipated yield change as a fraction of
+        # own yield. Applying that fraction to baseline revenue turns it into a
+        # whole-farm USD change on the SAME footing as baseline_revenue and the
+        # cost terms below, and implicitly carries the farmer's real crop/price
+        # mix and area (already embedded in baseline_revenue), avoiding a
+        # separate gC->tonnes and area conversion and a plain price average.
+        relative_yield_change = self.anticipated_relative_yield_change(
+            self.practice_bundle, new_bundle
+        )
+        delta_revenue = relative_yield_change * self.farmer.baseline_revenue  # $/farm/yr
+
         # -----------------------------------------------------------------
         # Total financial impact over planning horizon
         # -----------------------------------------------------------------
+
         # Positive = net outflow (costs exceed revenue gain)
         # Negative = net inflow (revenue gain exceeds costs)
-        planning_horizon = self.farmer.behaviour.get_aft_param("min_observation_years")
+        # Discounted benefit-years, not the re-evaluation cadence: the recurring
+        # cost and the revenue gain are both annual streams over the planning
+        # view, while the transition cost is paid once and is not discounted.
+        benefit_years = self.projection_weight()
         net_financial_impact = (
             transition_costs
-            + delta_direct_costs * planning_horizon
-            - delta_revenue * planning_horizon  # Revenue is subtracted (inflow)
+            + delta_direct_costs * benefit_years
+            - delta_revenue * benefit_years  # Revenue is subtracted (inflow)
+            - self.anticipated_policy_transfer(new_bundle, benefit_years)
         )
 
         # -----------------------------------------------------------------
         # PBC: smooth, bounded affordability factor from financial impact
         # -----------------------------------------------------------------
-        # Scale financial impact by revenue over the planning horizon for a
-        # dimensionless ratio (net_financial_impact already includes the
-        # horizon). Farmers assess affordability by comparing total costs/gains
-        # to expected income over that period.
-        #
-        #   ratio = net_financial_impact / revenue_over_horizon
-        #   ratio > 0 → costly switch,  ratio < 0 → profitable switch
-        #
-        # The affordability factor uses the tanh sigmoid, anchored so a
-        # cost-neutral switch (ratio = 0) gives factor = 1 (PBC = pbc_base):
-        #
-        #   financial_factor = 2 · sigmoid(-ratio) = 1 - tanh(ratio)  ∈ (0, 2)
-        #
-        # This matches the previous 1/(1+ratio) response to first order in the
-        # normal operating range, but is bounded and monotone everywhere: it has
-        # no pole and no sign flip when the anticipated gain is very large (the
-        # old form went negative and collapsed PBC to 0 for gains > ~100%).
-        # - costly (ratio ≫ 0):     factor → 0,  PBC → 0
-        # - neutral (ratio = 0):    factor = 1,  PBC = pbc_base
-        # - profitable (ratio < 0): factor > 1,  PBC → pbc_base·2, capped at 1.0
-        # -----------------------------------------------------------------
-        # Guard against division by zero when baseline_revenue is 0 (e.g., no crops)
-        revenue_over_horizon = max(self.farmer.baseline_revenue * planning_horizon, 1.0)
+
+        # Numerator and denominator both scale with benefit_years, so the
+        # horizon cancels out of the recurring terms and survives only on the
+        # one-time transition cost. A longer view amortises the switch over more
+        # years rather than inflating the future gain. The floor of 1.0 guards
+        # against a cell with no crops and hence no baseline revenue.
+        revenue_over_horizon = max(self.farmer.baseline_revenue * benefit_years, 1.0)
         ratio = net_financial_impact / revenue_over_horizon
         financial_factor = 2.0 * sigmoid(-ratio)
 
@@ -2403,7 +2952,7 @@ class TPB(DecisionModel):
         # Attitude: own experience + social learning (local + country + cluster)
         # -----------------------------------------------------------------
         # Own land attitude (always computed - it's your own observation)
-        self._attitude_own_land = self.compute_attitude_own_land()
+        self._attitude_own_land = self.compute_attitude_own_land(new_bundle)
 
         # Social learning: compute only enabled levels
         self._attitude_social_learning_local = (

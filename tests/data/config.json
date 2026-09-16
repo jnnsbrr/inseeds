@@ -15454,6 +15454,14 @@
       }
     },
     {
+      "id": "nleaching_agr",
+      "file": {
+        "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/nleaching_agr.nc4",
+        "timestep": "annual",
+        "fmt": "cdf"
+      }
+    },
+    {
       "id": "n2o_denit",
       "file": {
         "name": "/p/projects/open/Jannes/copan_core/test/output/coupled_test/n2o_denit.nc4",

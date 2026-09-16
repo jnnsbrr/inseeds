@@ -16,6 +16,80 @@ def test_path():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+#: Cell-level outputs the CA farmer reads that the pickled output predates,
+#: with a plausible constant in the variable's own unit. Only their presence is
+#: under test; the numbers are not calibrated against anything.
+CA_CELL_VARIABLES = {
+    "litcover_agr": 0.35,  # fraction
+    # Whole-cell leaching, consistent with the boundaries package measurement.
+    "leaching": 2.0,  # gN/m2 of cell
+    "nleaching_agr": 2.0,  # gN/m2 of cell (kept for backward compatibility)
+    "runoff": 100.0,  # mm
+    "irrig": 50.0,  # mm
+    "nfert_agr": 10.0,  # gN/m2
+}
+
+#: Harvest per crop band the CA farmer prices, gC/m2.
+CA_PFT_HARVESTC = 250.0
+
+
+def _repair_band_coords(data):
+    """Point each per-variable band coordinate at its own dimension.
+
+    The pickled output was written when every band coordinate still carried the
+    plain 'band' dimension, so 'band' claims 32 entries for cftfrac and 1 for
+    harvestc at once. xarray only notices once a dimension recalculation, such
+    as the isel that builds the cell views, forces the sizes to agree.
+    """
+    import xarray as xr
+
+    for name in list(data.coords):
+        coord = data[name]
+        if (
+            str(name).startswith("band (")
+            and coord.dims == ("band",)
+            and str(name) in data.sizes
+        ):
+            data._variables[name] = xr.Variable((str(name),), coord.values)
+    return data
+
+
+def _add_ca_variables(data):
+    """Add the outputs the CA farmer reads and the pickled output lacks.
+
+    The fixture was recorded for the tillage realisation, which reads a single
+    aggregate harvest, while the CA farmer reads harvest per crop band plus the
+    water and nitrogen outputs its scoring is built on.
+    """
+    import numpy as np
+    import xarray as xr
+
+    ncell = data.sizes["cell"]
+    ntime = data.sizes.get("time", 1)
+
+    for name, value in CA_CELL_VARIABLES.items():
+        if name not in data.data_vars:
+            data[name] = xr.DataArray(
+                np.full((ncell, ntime), value, dtype=np.float32),
+                dims=["cell", "time"],
+                coords={"cell": data.coords["cell"], "time": data.coords["time"]},
+            )
+
+    if "pft_harvestc" not in data.data_vars and "band (cftfrac)" in data.coords:
+        bands = data.coords["band (cftfrac)"].values
+        data["pft_harvestc"] = xr.DataArray(
+            np.full((ncell, len(bands), ntime), CA_PFT_HARVESTC, dtype=np.float32),
+            dims=["cell", "band (pft_harvestc)", "time"],
+            coords={
+                "cell": data.coords["cell"],
+                "band (pft_harvestc)": bands,
+                "time": data.coords["time"],
+            },
+        )
+
+    return data
+
+
 def _patch_lpjml_for_testing(lpjml_obj, test_path):
     """Patch lpjml object with read_input/read_output that read from pickle
     files."""
@@ -34,26 +108,14 @@ def _patch_lpjml_for_testing(lpjml_obj, test_path):
         import xarray as xr
 
         with open(f"{test_path}/data/lpjml_output.pkl", "rb") as out:
-            data = pickle.load(out)
+            data = _repair_band_coords(pickle.load(out))
         # Fill NaN in harvestc so farmer.get_from_earth does not raise
         if "harvestc" in data.data_vars:
             harvestc = data["harvestc"]
             vals = harvestc.values
             if np.any(np.isnan(vals)):
                 harvestc.values[:] = np.nan_to_num(vals, nan=0.0)
-        # Add litcover_agr if not present (for CA model tests)
-        # Directly set the data variable to avoid xarray dimension alignment issues
-        if "litcover_agr" not in data.data_vars:
-            ncell = data.sizes["cell"]
-            ntime = data.sizes.get("time", 1)
-            litcover_da = xr.DataArray(
-                np.ones((ncell, ntime), dtype=np.float32) * 0.35,
-                dims=["cell", "time"],
-                coords={"cell": data.coords["cell"], "time": data.coords["time"]},
-            )
-            # Use internal method to bypass dimension alignment
-            data._variables["litcover_agr"] = litcover_da.variable
-        return data
+        return _add_ca_variables(data)
 
     lpjml_obj.read_input = read_input
     lpjml_obj.read_output = read_output
@@ -159,22 +221,31 @@ def minimal_model_instance(lpjml_data):
     return model
 
 
-@pytest.fixture(scope="module")
-def ca_model_instance(test_path):
-    """Create Conservation Agriculture model instance for CA farmer tests.
-    
-    This fixture creates its own lpjml_data copy to avoid polluting the shared
-    session-scoped lpjml_data fixture used by other model tests.
-    
-    Uses module scope so all CA integration tests share the same model instance,
-    avoiding repeated file operations that cause HDF locking issues.
-    
-    This fixture:
-    1. Loads fresh lpjml pickle data (separate from session fixture)
-    2. Loads the CA config.yaml using pycopanlpjml's read_yaml
-    3. Adds dummy coupled input variables (tillage, cover_crop, residue)
-    4. Sets up FAO dummy data
-    5. Creates the model with proper config
+def build_ca_model(test_path, seed=None, output_transform=None):
+    """Build a Conservation Agriculture model on the pickled test fixture.
+
+    Kept as a plain function rather than only a fixture so a test that needs a
+    private, freshly seeded model of its own (the golden trajectory) builds it
+    the same way the shared fixture does.
+
+    Parameters
+    ----------
+    test_path : str
+        Directory holding the pickled LPJmL fixture and the sim path.
+    seed : int, optional
+        Seeds the global numpy RNG before the model is built. AFT assignment and
+        the initial observation offsets are drawn there, so a model is only
+        reproducible if the seed is set before construction, not after.
+    output_transform : callable, optional
+        Applied to the LPJmL output before the model sees it, for both the
+        historic read that sets the baselines and the runtime read. A test that
+        needs a fixture value at a different magnitude has to change both, or
+        the baseline and the runtime value stop being comparable.
+
+    Returns
+    -------
+    Model
+        Conservation agriculture model, initialised but not stepped.
     """
     from pathlib import Path
     import xarray as xr
@@ -189,20 +260,21 @@ def ca_model_instance(test_path):
 
     # Path to the CA config.yaml
     config_path = Path(__file__).parent.parent / "inseeds" / "realisations" / "conservation_agriculture" / "config.yaml"
-    
+
     # Use test data directory for simulation
     sim_path = Path(test_path) / "data" / "ca_test_sim"
     sim_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Load the config using pycopanlpjml's proper config loading
     coupled_config = read_yaml(str(config_path), CoupledConfig)
-    
+
     # Set config on this fixture's lpjml_data (not the shared one)
     lpjml_data.config.coupled_config = coupled_config
     lpjml_data.config.sim_path = sim_path
-    
+
     # Add dummy coupled variables to lpjml input data
     original_read_input = lpjml_data.read_input
+
     def patched_read_input():
         data = original_read_input()
         ncell = data.sizes['cell']
@@ -219,13 +291,48 @@ def ca_model_instance(test_path):
                 dims=['cell', 'time']
             )
         return data
-    
+
     lpjml_data.read_input = patched_read_input
-    
+
+    if output_transform is not None:
+        original_read_output = lpjml_data.read_output
+
+        def patched_read_output():
+            return output_transform(original_read_output())
+
+        lpjml_data.read_output = patched_read_output
+        lpjml_data.read_historic_output = patched_read_output
+
+    if seed is not None:
+        np.random.seed(seed)
+
     # Create model - config is already set on lpjml_data.config
-    model = Model(lpjml=lpjml_data)
-    
-    return model
+    return Model(lpjml=lpjml_data)
+
+
+@pytest.fixture(scope="module")
+def ca_model_builder(test_path):
+    """Factory for a private CA model, for tests that must not share one."""
+
+    def _build(seed=None, output_transform=None):
+        return build_ca_model(
+            test_path, seed=seed, output_transform=output_transform
+        )
+
+    return _build
+
+
+@pytest.fixture(scope="module")
+def ca_model_instance(test_path):
+    """Create Conservation Agriculture model instance for CA farmer tests.
+
+    This fixture creates its own lpjml_data copy to avoid polluting the shared
+    session-scoped lpjml_data fixture used by other model tests.
+
+    Uses module scope so all CA integration tests share the same model instance,
+    avoiding repeated file operations that cause HDF locking issues.
+    """
+    return build_ca_model(test_path)
 
 
 def pytest_configure(config):

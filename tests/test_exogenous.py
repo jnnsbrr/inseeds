@@ -126,7 +126,7 @@ class TestExogenousAccessor:
         world_exo = Exogenous(world, datasets=mock_datasets, sources=mock_sources)
         
         country = MagicMock()
-        country.code = "NLD"
+        country.country_code = "NLD"
         # No grid attribute = not a cell
         del country.grid
         
@@ -141,14 +141,30 @@ class TestExogenousAccessor:
         world_exo = Exogenous(world, datasets=mock_datasets, sources=mock_sources)
         
         cell = MagicMock()
-        cell.grid.cell.item.return_value = 1
-        cell.country = MagicMock()
-        cell.country.code = "DEU"
+        cell.local_index = 1
+        cell.country_code = "DEU"
         
         cell_exo = Exogenous.for_entity(cell, world_exo)
         
         residue = cell_exo.residue
         assert residue["frac_burnt"].values.tolist() == [0.3, 0.4]
+    
+    def test_first_cell_of_a_country_keeps_its_position(
+        self, mock_datasets, mock_sources
+    ):
+        """Position 0 is a position like any other, not a missing one."""
+        world = MagicMock()
+        world_exo = Exogenous(world, datasets=mock_datasets, sources=mock_sources)
+        
+        cell = MagicMock()
+        cell.local_index = 0
+        cell.country_code = "DEU"
+        cell.grid.cell.item.return_value = 1
+        
+        cell_exo = Exogenous.for_entity(cell, world_exo)
+        
+        residue = cell_exo.residue
+        assert residue["frac_burnt"].values.tolist() == [0.1, 0.2]
     
     def test_raises_for_unknown_dataset(self, mock_datasets, mock_sources):
         """Should raise AttributeError for unknown dataset names."""

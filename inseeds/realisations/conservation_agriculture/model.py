@@ -4,8 +4,6 @@ from pycopancore.data_model.master_data_model.dimensions_and_units import (
     DimensionsAndUnits as DAU,
 )
 
-import xarray as xr
-
 from inseeds.components import base
 from inseeds.components import farming
 from inseeds.components.farming import ConservationAgricultureFarmer
@@ -14,7 +12,10 @@ from inseeds.components.farming.ca_world import CAWorld
 from inseeds.components.farming.farmer import AFT
 from inseeds.components import lpjml
 from inseeds.components.exogenous import load_all as load_exogenous
-from inseeds.components.farming.ca_management import ManagementBundle
+from inseeds.components.farming.ca_management import (
+    ManagementBundle,
+    log_active_score_weights,
+)
 from inseeds.components.farming.ca_behaviour import BLOCKER_NAMES, DRIVER_NAMES
 from inseeds.components.farming.farmer import NON_CROPS, avg_hdate
 from inseeds.components.farming.ca_agroecology import (
@@ -26,6 +27,7 @@ from inseeds.components.farming.ca_agroecology import (
 # Custom unit for millions of dollars
 MEGADOLLARS = Unit("megadollars", symbol="M$")
 CONCENTRATION = Unit("mgN/l", symbol="mgN/l")
+N_FLUX = Unit("gN/m2", symbol="gN/m2")
 
 # Mapping from bundle ID (0-7) to display name
 BUNDLE_ID_TO_NAME = {
@@ -73,11 +75,20 @@ class Farmer(ConservationAgricultureFarmer):
         ),
         cover_crop=Variable(
             "cover crop option",
-            "0=none, 1=non-legumes, 2=legumes",
+            "which cover crop is in the ground, as LPJmL needs it to pick the "
+            "PFT: 0=none, 1=non-legume catch crop, 2=legume. Whether one is "
+            "grown at all follows the bundle, and which one it is is settled "
+            "with it at apply_bundle, so 1 against 2 is a decision about "
+            "nitrogen and seed cost and not a property of the bundle",
         ),
         residue_on_field=Variable(
             "residue on field",
-            "residue on field fraction (0-1)",
+            "share of this year's residue left on the field (0-1), which is "
+            "what LPJmL is told. Not the bundle dimension of the same name: "
+            "that one is binary, and a farm reading below 1 here may be either "
+            "an uncommitted farm at its own removal rate or a committed one in "
+            "a year it left less. Read behaviour.residue_committed for the "
+            "commitment itself",
         ),
         capital=Variable(
             "farm capital",
@@ -90,15 +101,107 @@ class Farmer(ConservationAgricultureFarmer):
             "farm size in hectares (sum of cftfrac * area)",
             unit=DAU.ha,
         ),
-        profit=Variable(
-            "profit",
-            "profit of agent land",
+        baseline_revenue=Variable(
+            "baseline revenue",
+            "historic average revenue frozen at sim start ($ for whole farm); "
+            "the anchor delta_revenue is measured against",
             unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        current_revenue=Variable(
+            "current revenue",
+            "this year's harvest valued at producer prices ($ for whole farm)",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        delta_revenue=Variable(
+            "delta revenue",
+            "revenue change from baseline ($ for whole farm); "
+            "= current_revenue - baseline_revenue",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        delta_costs=Variable(
+            "delta costs",
+            "cost change from baseline bundle ($ for whole farm); positive "
+            "when current bundle costs more than baseline",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        carbon_payment=Variable(
+            "carbon payment",
+            "payment for soil C sequestration above baseline ($ for whole farm)",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        practice_subsidy=Variable(
+            "practice subsidy",
+            "payment for holding CA practices ($ for whole farm)",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        nitrogen_charge=Variable(
+            "nitrogen charge",
+            "charge on nitrogen leaching above allowance ($ for whole farm)",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        raw_profit=Variable(
+            "raw profit",
+            "delta_revenue - delta_costs + transfers ($ for whole farm); the "
+            "year's change in capital net of transition_cost and "
+            "residue_sale_income",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        residue_opportunity_cost=Variable(
+            "residue opportunity cost",
+            "this year's straw priced at current revenue ($ for whole farm); "
+            "the dynamic figure, against which baseline_residue_cost is frozen",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        baseline_residue_cost=Variable(
+            "baseline residue cost",
+            "straw value frozen on baseline revenue ($ for whole farm); what "
+            "retention is charged and the cost-share subsidy is paid on",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        transition_cost=Variable(
+            "transition cost",
+            "one-off cost of this year's practice change ($ for whole farm); "
+            "charged to capital outside raw_profit",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
+        ),
+        residue_sale_income=Variable(
+            "residue sale income",
+            "cash from selling standing straw on a forced deselection ($ for "
+            "whole farm); credited to capital outside raw_profit",
+            unit=MEGADOLLARS,
+            output_scale=1e-6,
         ),
         leaching=Variable(
             "leaching",
-            "leaching of agent land (mgN/l)",
+            "nitrogen lost below the root zone of agent land (gN/m2/yr); the "
+            "quantity the model tracks and scores",
+            unit=N_FLUX,
+        ),
+        leaching_concentration=Variable(
+            "leaching concentration",
+            "nitrate concentration of the leachate (mgN/l), for comparison "
+            "against a nitrate standard; nothing decides on it, and it reads "
+            "0.0 in a year too dry for a concentration to be defined",
             unit=CONCENTRATION,
+        ),
+        taxable_leaching=Variable(
+            "taxable leaching",
+            "nitrogen lost above the levy-free allowance (gN/m2/yr), the base "
+            "the nitrogen charge is actually levied on; equals leaching when "
+            "policy.levy_free_concentration is 0, and 0 for a farm draining "
+            "cleaner than the standard",
+            unit=N_FLUX,
         ),
 
         # TPB decision model outputs (accessed via behaviour.X)
@@ -110,6 +213,14 @@ class Farmer(ConservationAgricultureFarmer):
             "behaviour.proposed_bundle_id": Variable(
                 "proposed bundle",
                 "bundle being evaluated (-1 if none)",
+            ),
+            "behaviour.residue_committed": Variable(
+                "residue commitment",
+                "whether the farm undertook to leave whatever residue grows, "
+                "as against leaving some because that is what it always did. "
+                "The commitment is what carries the opportunity cost and draws "
+                "the subsidy, and it is not recoverable from residue_on_field",
+                datatype=bool,
             ),
             "behaviour.tpb": Variable(
                 "TPB score",
@@ -230,6 +341,10 @@ class Model(lpjml.Model):
         # Must be done AFTER farmers exist but BEFORE simulation starts
         self.world.compute_reference_scales()
 
+        # Put the weights that actually reached the score on the record, so a
+        # finished run can be attributed to a scenario
+        log_active_score_weights(self.config.coupled_config)
+
         # Cut off historical data (from_earth) to only the most recent year
         self.cutoff_historical_data()
 
@@ -253,6 +368,11 @@ class Model(lpjml.Model):
 
     def init_farmers(self, farmer_class, **kwargs):
         """Initialize farmers for cells with crops, sorted by harvest date."""
+        # A cell needs a material share of cropland to represent a farm, not
+        # merely a non-zero one: a few hectares inside a half-degree cell is a
+        # rounding artefact of the land-use input.
+        min_crop_fraction = self.config.coupled_config.materiality.min_crop_fraction
+
         # Collect cells with crops and their harvest dates
         cells_with_hdate = []
         for cell in self.world.cells:
@@ -260,15 +380,18 @@ class Model(lpjml.Model):
                 cell.from_earth.cftfrac
                 .drop_sel(band=NON_CROPS)
                 .sum("band")
-                .isel(time=[-1]) > 0
+                .isel(time=[-1]) > min_crop_fraction
             )
             if not has_crops:
                 continue
             hdate = avg_hdate(cell, self)
             cells_with_hdate.append((cell, hdate))
 
-        # Sort by harvest date for deterministic ordering
-        cells_with_hdate.sort(key=lambda x: x[1])
+        # Sort by harvest date for deterministic ordering, with the cell index
+        # breaking ties. Farmers are created in this order and draw their AFT
+        # and their first observation offset as they go, so an order left to
+        # object identity would give a different population from the same seed.
+        cells_with_hdate.sort(key=lambda pair: (pair[1], int(pair[0].cell_index)))
 
         # Create farmers
         farmers = []
@@ -285,6 +408,12 @@ class Model(lpjml.Model):
 
     def update(self, t):
         """Update all countries and LPJmL for year ``t``."""
+        # Rescale before anyone decides, so every farmer in this year is scored
+        # against the same ruler. The level ruler is the cross-farmer spread of
+        # the rates, which lengthens as pools like soil carbon drift apart, so it
+        # has to track the population rather than stay frozen at init.
+        self.world.compute_reference_scales()
+
         self.update_countries(t)
 
         # Aggregate country stats for cross-border social learning
@@ -311,9 +440,9 @@ class Model(lpjml.Model):
         """Collect all countries' management_performance for cross-border learning.
 
         Stores a dict mapping country_code -> management_performance in
-        world.statistic["countries_management_performance"]. This allows
-        workers in parallel mode to access neighbouring countries' stats
-        for blended social learning (own country + adjacent countries).
+        world.statistic["countries_management_performance"], which gives every
+        farmer the stats of its own country and the adjacent ones for blended
+        social learning.
         """
         countries_stats = {}
         for country in self.world.countries:

@@ -63,8 +63,13 @@ class Country(Region):
                 ind for ind in self.individuals
                 if any("Farmer" in c.__name__ for c in ind.__class__.__mro__)
             }
-            # Sort once by avg_hdate for deterministic order
-            self._farmers_cache = sorted(farmers_set, key=lambda f: f.avg_hdate)
+            # Sort once by avg_hdate for deterministic order. The cell index
+            # breaks ties, so that farms harvesting on the same day are not left
+            # in whatever order object identity gave the set.
+            self._farmers_cache = sorted(
+                farmers_set,
+                key=lambda f: (f.avg_hdate, int(f.cell.cell_index)),
+            )
         return self._farmers_cache
 
     @property

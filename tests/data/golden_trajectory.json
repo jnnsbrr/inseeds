@@ -1,0 +1,3922 @@
+{
+ "anticipation": {
+  "2023": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2024": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2025": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2026": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2027": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2028": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2029": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  },
+  "2030": {
+   "conservation->notill_residue": 0.0,
+   "conventional->conservation": 0.0,
+   "conventional->notill": 0.0,
+   "notill_residue->conservation": 0.0
+  }
+ },
+ "farmers": {
+  "2023": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 958072233.4855582,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 442472755.5159075,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 223522615.8667953,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 99866561.13115558,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1169752477.2540379,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1395881404.5418193,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 220455239.64611003,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 142686008.93759075,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 713328597.9438831,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 644944735.0104092,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1672215466.8718219,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 865133924.652667,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1452744087.573378,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 974665846.3294858,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 818983283.0797887,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 735185717.9081028,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 965416694.5958781,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "notill_residue",
+    "capital": 1387081795.678533,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1099793263.3170085,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 954851091.2120553,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1106774990.0889735,
+    "level": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    },
+    "n": 1,
+    "own_score": 1.0,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   }
+  ],
+  "2024": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 959744635.8126477,
+    "level": {
+     "leaching": 0.009255052968439982,
+     "moisture": -0.07090182336945189,
+     "profit": 0.009807659628374142,
+     "soilc": 0.011696637376908141,
+     "yield": 0.009343204931534333
+    },
+    "n": 2,
+    "own_score": -3.466058382029492,
+    "trend": {
+     "leaching": 0.018510105936879965,
+     "moisture": -0.14180364673890378,
+     "profit": 0.019615319256748285,
+     "soilc": 0.023393274753816282,
+     "yield": 0.018686409863068666
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 445884976.37696034,
+    "level": {
+     "leaching": 0.046687380123041716,
+     "moisture": 0.037454450298803295,
+     "profit": 0.05129334568448757,
+     "soilc": 0.005735359610469465,
+     "yield": 0.0471157797600257
+    },
+    "n": 2,
+    "own_score": 19.984856967925186,
+    "trend": {
+     "leaching": 0.09337476024608343,
+     "moisture": 0.07490890059760659,
+     "profit": 0.10258669136897514,
+     "soilc": 0.01147071922093893,
+     "yield": 0.0942315595200514
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 224325797.5746011,
+    "level": {
+     "leaching": 0.020506486362639527,
+     "moisture": 0.03311560985172075,
+     "profit": 0.021972358526143085,
+     "soilc": 0.009928441479116317,
+     "yield": 0.02069961962031632
+    },
+    "n": 2,
+    "own_score": 10.705338644014843,
+    "trend": {
+     "leaching": 0.041012972725279054,
+     "moisture": 0.0662312197034415,
+     "profit": 0.04394471705228617,
+     "soilc": 0.019856882958232635,
+     "yield": 0.04139923924063264
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 100927149.04045798,
+    "level": {
+     "leaching": 0.05648313359621224,
+     "moisture": 0.1210908184130749,
+     "profit": 0.06262313454082942,
+     "soilc": 0.0034590977311312835,
+     "yield": 0.056996467302277296
+    },
+    "n": 2,
+    "own_score": 32.287833520789086,
+    "trend": {
+     "leaching": 0.11296626719242447,
+     "moisture": 0.2421816368261498,
+     "profit": 0.12524626908165884,
+     "soilc": 0.006918195462262567,
+     "yield": 0.11399293460455459
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1169141743.6758218,
+    "level": {
+     "leaching": -0.003341050618918652,
+     "moisture": -0.017334256337394213,
+     "profit": -0.0034963399143786225,
+     "soilc": 0.004350981702319556,
+     "yield": -0.003373245942517413
+    },
+    "n": 2,
+    "own_score": -1.7070955191097723,
+    "trend": {
+     "leaching": -0.006682101237837304,
+     "moisture": -0.034668512674788425,
+     "profit": -0.006992679828757245,
+     "soilc": 0.008701963404639112,
+     "yield": -0.006746491885034826
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1390973770.2711816,
+    "level": {
+     "leaching": -0.01841067730877579,
+     "moisture": -0.0583011978587279,
+     "profit": -0.018975120237976463,
+     "soilc": 0.004158677101977999,
+     "yield": -0.01859107151798559
+    },
+    "n": 2,
+    "own_score": -10.621904995287647,
+    "trend": {
+     "leaching": -0.03682135461755158,
+     "moisture": -0.1166023957174558,
+     "profit": -0.037950240475952926,
+     "soilc": 0.008317354203955999,
+     "yield": -0.03718214303597118
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 224814617.49186265,
+    "level": {
+     "leaching": 0.10689927768415218,
+     "moisture": 0.06940493715552312,
+     "profit": 0.12387474450449482,
+     "soilc": 0.007481618051596093,
+     "yield": 0.10782382046317024
+    },
+    "n": 2,
+    "own_score": 44.26114636597672,
+    "trend": {
+     "leaching": 0.21379855536830436,
+     "moisture": 0.13880987431104624,
+     "profit": 0.24774948900898963,
+     "soilc": 0.014963236103192185,
+     "yield": 0.21564764092634048
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 142402042.8835602,
+    "level": {
+     "leaching": -0.010502425625858637,
+     "moisture": -0.014293191687204186,
+     "profit": -0.010911670471694217,
+     "soilc": 0.010009756867996945,
+     "yield": -0.010604488018185552
+    },
+    "n": 2,
+    "own_score": -3.2397441248377,
+    "trend": {
+     "leaching": -0.021004851251717273,
+     "moisture": -0.028586383374408372,
+     "profit": -0.021823340943388433,
+     "soilc": 0.02001951373599389,
+     "yield": -0.021208976036371105
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 707645823.7347698,
+    "level": {
+     "leaching": -0.04879893089744066,
+     "moisture": 0.007979971072810475,
+     "profit": -0.04874061023179048,
+     "soilc": 0.00189644091887562,
+     "yield": -0.04929202097932018
+    },
+    "n": 2,
+    "own_score": -11.939462381382038,
+    "trend": {
+     "leaching": -0.09759786179488132,
+     "moisture": 0.01595994214562095,
+     "profit": -0.09748122046358096,
+     "soilc": 0.00379288183775124,
+     "yield": -0.09858404195864036
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 645610481.2985865,
+    "level": {
+     "leaching": 0.005378752504824893,
+     "moisture": 0.05438645184133453,
+     "profit": 0.005678100611025041,
+     "soilc": 0.008972602830259201,
+     "yield": 0.005430234985502774
+    },
+    "n": 2,
+    "own_score": 8.97712865001889,
+    "trend": {
+     "leaching": 0.010757505009649787,
+     "moisture": 0.10877290368266906,
+     "profit": 0.011356201222050081,
+     "soilc": 0.017945205660518403,
+     "yield": 0.010860469971005548
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1666578378.0264013,
+    "level": {
+     "leaching": -0.01886048782771967,
+     "moisture": -0.02566012177532069,
+     "profit": -0.019429771462691675,
+     "soilc": 0.0026478265180420115,
+     "yield": -0.019045337808370946
+    },
+    "n": 2,
+    "own_score": -7.238122412922809,
+    "trend": {
+     "leaching": -0.03772097565543934,
+     "moisture": -0.05132024355064138,
+     "profit": -0.03885954292538335,
+     "soilc": 0.005295653036084023,
+     "yield": -0.03809067561674189
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 859626899.0210936,
+    "level": {
+     "leaching": -0.03411860237297169,
+     "moisture": 0.007101695516557755,
+     "profit": -0.034601951858003736,
+     "soilc": 0.002090017741152434,
+     "yield": -0.03445822735111267
+    },
+    "n": 2,
+    "own_score": -7.995819410263836,
+    "trend": {
+     "leaching": -0.06823720474594339,
+     "moisture": 0.01420339103311551,
+     "profit": -0.06920390371600747,
+     "soilc": 0.004180035482304868,
+     "yield": -0.06891645470222534
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1457541470.2372549,
+    "level": {
+     "leaching": 0.020218666834284724,
+     "moisture": 0.004804435165090052,
+     "profit": 0.0216578995799658,
+     "soilc": 0.005171127032351098,
+     "yield": 0.020409156812028737
+    },
+    "n": 2,
+    "own_score": 7.929231848202767,
+    "trend": {
+     "leaching": 0.04043733366856945,
+     "moisture": 0.009608870330180104,
+     "profit": 0.0433157991599316,
+     "soilc": 0.010342254064702195,
+     "yield": 0.040818313624057474
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 971495687.0101666,
+    "level": {
+     "leaching": -0.017127872337229073,
+     "moisture": 0.004371549460142871,
+     "profit": -0.01767603596056721,
+     "soilc": 0.008671108702260179,
+     "yield": -0.01729544170482195
+    },
+    "n": 2,
+    "own_score": -3.1803112944993988,
+    "trend": {
+     "leaching": -0.03425574467445815,
+     "moisture": 0.008743098920285741,
+     "profit": -0.03535207192113442,
+     "soilc": 0.017342217404520358,
+     "yield": -0.0345908834096439
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 827767438.6877612,
+    "level": {
+     "leaching": 0.06190181100278468,
+     "moisture": 0.08464764688111384,
+     "profit": 0.06897269605635163,
+     "soilc": 0.002355869382029193,
+     "yield": 0.06246135090862503
+    },
+    "n": 2,
+    "own_score": 24.45415567926292,
+    "trend": {
+     "leaching": 0.12380362200556937,
+     "moisture": 0.16929529376222768,
+     "profit": 0.13794539211270326,
+     "soilc": 0.004711738764058386,
+     "yield": 0.12492270181725006
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 726611598.7998625,
+    "level": {
+     "leaching": -0.07717262415751289,
+     "moisture": -0.06488939486583586,
+     "profit": -0.0748081150555451,
+     "soilc": 0.007971486260560025,
+     "yield": -0.0779756164153137
+    },
+    "n": 2,
+    "own_score": -20.41942226033975,
+    "trend": {
+     "leaching": -0.15434524831502577,
+     "moisture": -0.12977878973167173,
+     "profit": -0.1496162301110902,
+     "soilc": 0.01594297252112005,
+     "yield": -0.1559512328306274
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 976093958.9496841,
+    "level": {
+     "leaching": 0.05222295266478877,
+     "moisture": 0.0023346901184189838,
+     "profit": 0.0576721434744485,
+     "soilc": 0.006188925967006551,
+     "yield": 0.052699583298658606
+    },
+    "n": 2,
+    "own_score": 16.410505425302453,
+    "trend": {
+     "leaching": 0.10444590532957754,
+     "moisture": 0.0046693802368379675,
+     "profit": 0.115344286948897,
+     "soilc": 0.012377851934013102,
+     "yield": 0.10539916659731721
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1371609752.6754496,
+    "level": {
+     "leaching": -0.13256251382859197,
+     "moisture": -0.13485311804261552,
+     "profit": -0.10717313356756973,
+     "soilc": 0.02496042610055418,
+     "yield": -0.10897646624122097
+    },
+    "n": 1,
+    "own_score": -4.7250531721252464,
+    "trend": {
+     "leaching": 0.0,
+     "moisture": 0.0,
+     "profit": 0.0,
+     "soilc": 0.0,
+     "yield": 0.0
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1100504820.8551998,
+    "level": {
+     "leaching": 0.003900375235784114,
+     "moisture": 0.02539595570368966,
+     "profit": 0.004111373346810741,
+     "soilc": 0.005312535696633356,
+     "yield": 0.003937741557579033
+    },
+    "n": 2,
+    "own_score": 5.1904929326470395,
+    "trend": {
+     "leaching": 0.007800750471568228,
+     "moisture": 0.05079191140737932,
+     "profit": 0.008222746693621483,
+     "soilc": 0.010625071393266712,
+     "yield": 0.007875483115158066
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 945965872.0378251,
+    "level": {
+     "leaching": -0.05976486444453686,
+     "moisture": -0.09362782750724641,
+     "profit": -0.05901067699210569,
+     "soilc": 0.007310800053532275,
+     "yield": -0.060375676914537005
+    },
+    "n": 2,
+    "own_score": -18.81063536770148,
+    "trend": {
+     "leaching": -0.11952972888907372,
+     "moisture": -0.18725565501449282,
+     "profit": -0.11802135398421137,
+     "soilc": 0.01462160010706455,
+     "yield": -0.12075135382907401
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1105183576.0427854,
+    "level": {
+     "leaching": -0.008424362622243541,
+     "moisture": 0.017564510752414903,
+     "profit": -0.008771034524834471,
+     "soilc": 0.007018364652120094,
+     "yield": -0.008506064164422981
+    },
+    "n": 2,
+    "own_score": 1.5166237358042842,
+    "trend": {
+     "leaching": -0.016848725244487082,
+     "moisture": 0.035129021504829806,
+     "profit": -0.017542069049668943,
+     "soilc": 0.014036729304240188,
+     "yield": -0.017012128328845962
+    }
+   }
+  ],
+  "2025": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 964965977.0551493,
+    "level": {
+     "leaching": 0.025066758218796018,
+     "moisture": -0.10855962827145614,
+     "profit": 0.026940412716568208,
+     "soilc": 0.021429211725717354,
+     "yield": 0.025302091435180658
+    },
+    "n": 3,
+    "own_score": 1.1586182285722444,
+    "trend": {
+     "leaching": 0.028345084359754042,
+     "moisture": -0.0919376190377323,
+     "profit": 0.03060295944647817,
+     "soilc": 0.020447180211667897,
+     "yield": 0.028609932221236645
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 451696932.50658756,
+    "level": {
+     "leaching": 0.08251939844341329,
+     "moisture": 0.06709016876530753,
+     "profit": 0.09224837066583229,
+     "soilc": 0.010511286331909743,
+     "yield": 0.0832626590144316
+    },
+    "n": 3,
+    "own_score": 2.8547042622216496,
+    "trend": {
+     "leaching": 0.07709171754207822,
+     "moisture": 0.063180802849158,
+     "profit": 0.08707921031426084,
+     "soilc": 0.010031569887395148,
+     "yield": 0.07777820876162173
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 225341821.50937083,
+    "level": {
+     "leaching": 0.030872713833998228,
+     "moisture": 0.05191661309833023,
+     "profit": 0.033174669394433316,
+     "soilc": 0.01819309698742023,
+     "yield": 0.03116263479964453
+    },
+    "n": 3,
+    "own_score": 2.163011373539747,
+    "trend": {
+     "leaching": 0.025802584388357818,
+     "moisture": 0.04475930979577461,
+     "profit": 0.027789645565506893,
+     "soilc": 0.017361204002014033,
+     "yield": 0.02604433257915047
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 102743146.87465404,
+    "level": {
+     "leaching": 0.09975328087404019,
+     "moisture": 0.2077139038324959,
+     "profit": 0.11287928322246447,
+     "soilc": 0.006340573923340409,
+     "yield": 0.1006398544315656
+    },
+    "n": 3,
+    "own_score": 3.8007075162568946,
+    "trend": {
+     "leaching": 0.09314678771484809,
+     "moisture": 0.1904800373356691,
+     "profit": 0.10669579029286731,
+     "soilc": 0.006051763153879331,
+     "yield": 0.09396331434507109
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1162774562.6626651,
+    "level": {
+     "leaching": -0.026213741560597716,
+     "moisture": -0.04936322828087952,
+     "profit": -0.02661026128213255,
+     "soilc": 0.007974746972893243,
+     "yield": -0.02647439803936733
+    },
+    "n": 3,
+    "own_score": 0.3972786659967635,
+    "trend": {
+     "leaching": -0.03597956172197792,
+     "moisture": -0.05671058608392507,
+     "profit": -0.036419052008820195,
+     "soilc": 0.007611138757020307,
+     "yield": -0.03633835111653357
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1383926728.907383,
+    "level": {
+     "leaching": -0.030042927673228206,
+     "moisture": -0.09643986163728042,
+     "profit": -0.03081014241100305,
+     "soilc": 0.007622374513640089,
+     "yield": -0.03033875159593404
+    },
+    "n": 3,
+    "own_score": 0.1599440755128925,
+    "trend": {
+     "leaching": -0.02665371420106653,
+     "moisture": -0.08635859459719271,
+     "profit": -0.027240093378528108,
+     "soilc": 0.007274884668482136,
+     "yield": -0.026917055875915474
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 231548906.8440854,
+    "level": {
+     "leaching": 0.17577329761024907,
+     "moisture": 0.11318516338997853,
+     "profit": 0.20845259884609554,
+     "soilc": 0.013710378772482218,
+     "yield": 0.1772511103344765
+    },
+    "n": 3,
+    "own_score": 4.8541680628267265,
+    "trend": {
+     "leaching": 0.1567606687312215,
+     "moisture": 0.1003728079294447,
+     "profit": 0.1888041537646484,
+     "soilc": 0.013083950107127236,
+     "yield": 0.15805284503854453
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 141987887.40473267,
+    "level": {
+     "leaching": -0.01726310017280597,
+     "moisture": -0.023579478263377415,
+     "profit": -0.01788304826652236,
+     "soilc": 0.01834181923886877,
+     "yield": -0.017431350063021444
+    },
+    "n": 3,
+    "own_score": 0.8294244258719552,
+    "trend": {
+     "leaching": -0.015392224633350313,
+     "moisture": -0.021076025707861934,
+     "profit": -0.015912901928089317,
+     "soilc": 0.01750297199030622,
+     "yield": -0.015542537076346619
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 698137679.9367117,
+    "level": {
+     "leaching": -0.0889011982796691,
+     "moisture": 0.005636914117484807,
+     "profit": -0.08670751620115535,
+     "soilc": 0.003476460501601197,
+     "yield": -0.08982094457694902
+    },
+    "n": 3,
+    "own_score": -0.25744927508662646,
+    "trend": {
+     "leaching": -0.084552866522063,
+     "moisture": 0.00047540010341673547,
+     "profit": -0.08132066406994255,
+     "soilc": 0.003318249833526176,
+     "yield": -0.08543939588610334
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 648683897.4063658,
+    "level": {
+     "leaching": 0.019827131395598826,
+     "moisture": 0.1016050909636037,
+     "profit": 0.021253072035083875,
+     "soilc": 0.01644178274714742,
+     "yield": 0.020013861712912584
+    },
+    "n": 3,
+    "own_score": 2.0323707523363206,
+    "trend": {
+     "leaching": 0.02436194458857334,
+     "moisture": 0.09802118460407105,
+     "profit": 0.026201507441600772,
+     "soilc": 0.01569007129046193,
+     "yield": 0.024590557583866097
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1657655935.7168446,
+    "level": {
+     "leaching": -0.032700254350193574,
+     "moisture": -0.04401438489637072,
+     "profit": -0.0334478546213505,
+     "soilc": 0.004853665854183088,
+     "yield": -0.03302304917542568
+    },
+    "n": 3,
+    "own_score": 0.33595222513097583,
+    "trend": {
+     "leaching": -0.03018989369757069,
+     "moisture": -0.040361455569235365,
+     "profit": -0.030742010469334075,
+     "soilc": 0.004632672263232621,
+     "yield": -0.030489235954767574
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 852873735.9605321,
+    "level": {
+     "leaching": -0.050861082785509555,
+     "moisture": 0.017817616655159737,
+     "profit": -0.05134444707913791,
+     "soilc": 0.00383122358442139,
+     "yield": -0.051369693691768505
+    },
+    "n": 3,
+    "own_score": 0.37188027048125405,
+    "trend": {
+     "leaching": -0.04217302180529264,
+     "moisture": 0.01962472946618185,
+     "profit": -0.042414718760703164,
+     "soilc": 0.0036568176354796512,
+     "yield": -0.04259631318654011
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1464944790.991151,
+    "level": {
+     "leaching": 0.03405784691643247,
+     "moisture": 0.00835562907937309,
+     "profit": 0.03671063907083295,
+     "soilc": 0.009477727426169561,
+     "yield": 0.034376686237059924
+    },
+    "n": 3,
+    "own_score": 1.705722732193918,
+    "trend": {
+     "leaching": 0.030868103540363973,
+     "moisture": 0.007729008453969582,
+     "profit": 0.033408059026283625,
+     "soilc": 0.009045464106903248,
+     "yield": 0.031155872543561152
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 968203871.46099,
+    "level": {
+     "leaching": -0.023283234992904217,
+     "moisture": 0.012532130073874015,
+     "profit": -0.024020065681463424,
+     "soilc": 0.015888893471575273,
+     "yield": -0.02351111517780295
+    },
+    "n": 3,
+    "own_score": 0.8962213358989912,
+    "trend": {
+     "leaching": -0.01779698015212725,
+     "moisture": 0.014426645650668153,
+     "profit": -0.018354062561627926,
+     "soilc": 0.01516223150510273,
+     "yield": -0.017971231061882476
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 841417246.7200499,
+    "level": {
+     "leaching": 0.1033712295037978,
+     "moisture": 0.14136720137103445,
+     "profit": 0.11711908697656549,
+     "soilc": 0.00431854515870912,
+     "yield": 0.10428862186563163
+    },
+    "n": 3,
+    "own_score": 3.088561347623461,
+    "trend": {
+     "leaching": 0.09315503325291206,
+     "moisture": 0.1274031551754379,
+     "profit": 0.10670593440849659,
+     "soilc": 0.004121948356034486,
+     "yield": 0.09397158188982241
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 714223673.7598752,
+    "level": {
+     "leaching": -0.12860845348407332,
+     "moisture": -0.1081749035630241,
+     "profit": -0.12164081944163684,
+     "soilc": 0.014607501566162326,
+     "yield": -0.12997963758262218
+    },
+    "n": 3,
+    "own_score": -0.38105160595141424,
+    "trend": {
+     "leaching": -0.11574005606859712,
+     "moisture": -0.09737296047870025,
+     "profit": -0.1076531141069101,
+     "soilc": 0.013939766088683461,
+     "yield": -0.11699383995861956
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 986598638.9283932,
+    "level": {
+     "leaching": 0.06909583306368065,
+     "moisture": -0.013890782716540649,
+     "profit": 0.07627740267948552,
+     "soilc": 0.0113425640316282,
+     "yield": 0.06972669656328677
+    },
+    "n": 3,
+    "own_score": 2.0495519981272112,
+    "trend": {
+     "leaching": 0.051420796930732204,
+     "moisture": -0.02317086419322996,
+     "profit": 0.05674396054477978,
+     "soilc": 0.010824920080435748,
+     "yield": 0.05189046154627153
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1348379609.6332211,
+    "level": {
+     "leaching": -0.16667412296675688,
+     "moisture": -0.1718418720296771,
+     "profit": -0.1678476965919061,
+     "soilc": 0.0304272444119962,
+     "yield": -0.14351681731884042
+    },
+    "n": 2,
+    "own_score": -1.0114781693080537,
+    "trend": {
+     "leaching": -0.06822321827632977,
+     "moisture": -0.07397750797412311,
+     "profit": -0.12134912604867276,
+     "soilc": 0.010933636622884046,
+     "yield": -0.06908070215523887
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1098135992.2917666,
+    "level": {
+     "leaching": -0.006205340495535721,
+     "moisture": 0.02966055995879599,
+     "profit": -0.006382762084481724,
+     "soilc": 0.009736887676328182,
+     "yield": -0.006266239467333754
+    },
+    "n": 3,
+    "own_score": 1.1246122211551266,
+    "trend": {
+     "leaching": -0.013208385979087698,
+     "moisture": 0.01909488423450432,
+     "profit": -0.013685516473533325,
+     "soilc": 0.009292795817858919,
+     "yield": -0.013337100758579664
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 933768907.0238707,
+    "level": {
+     "leaching": -0.09584653953180627,
+     "moisture": -0.1521471086880468,
+     "profit": -0.09323442611975025,
+     "soilc": 0.013397915710662345,
+     "yield": -0.0968406431453235
+    },
+    "n": 3,
+    "own_score": -0.32913077109145744,
+    "trend": {
+     "leaching": -0.08400494485317256,
+     "moisture": -0.13459283552482373,
+     "profit": -0.08084096218751968,
+     "soilc": 0.01278607351246124,
+     "yield": -0.08488528780344824
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1102523351.4823952,
+    "level": {
+     "leaching": -0.015058241501300787,
+     "moisture": 0.028264249257755208,
+     "profit": -0.015620959947998428,
+     "soilc": 0.012861690947312439,
+     "yield": -0.015204809699872182
+    },
+    "n": 3,
+    "own_score": 1.3668408074598246,
+    "trend": {
+     "leaching": -0.014162999629707637,
+     "moisture": 0.024831863134217896,
+     "profit": -0.014660405397163165,
+     "soilc": 0.012274171768848569,
+     "yield": -0.014301150385385292
+    }
+   }
+  ],
+  "2026": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 970992355.5537136,
+    "level": {
+     "leaching": 0.035087985958122306,
+     "moisture": -0.14514447958388743,
+     "profit": 0.03786234841288487,
+     "soilc": 0.03163399193803587,
+     "yield": 0.03541605114744118
+    },
+    "n": 4,
+    "own_score": 1.2845218296674,
+    "trend": {
+     "leaching": 0.02336350703109316,
+     "moisture": -0.08067686919001052,
+     "profit": 0.02534750661417126,
+     "soilc": 0.02042460833944938,
+     "yield": 0.02358072454320729
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 459804437.20355636,
+    "level": {
+     "leaching": 0.1141605173587045,
+     "moisture": 0.09329589751513687,
+     "profit": 0.12963935115882175,
+     "soilc": 0.01552251138750978,
+     "yield": 0.11517109026817604
+    },
+    "n": 4,
+    "own_score": 2.4621870766989633,
+    "trend": {
+     "leaching": 0.06880602971518072,
+     "moisture": 0.056719195639458445,
+     "profit": 0.07970086071729177,
+     "soilc": 0.010026098021678104,
+     "yield": 0.06940140100914202
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 227290812.53361264,
+    "level": {
+     "leaching": 0.047343295873226623,
+     "moisture": 0.07576374446290571,
+     "profit": 0.05149819753580131,
+     "soilc": 0.026862461335871127,
+     "yield": 0.04778232981491419
+    },
+    "n": 4,
+    "own_score": 2.2208397545452656,
+    "trend": {
+     "leaching": 0.03008573220241719,
+     "moisture": 0.0465202815558004,
+     "profit": 0.033104091995844354,
+     "soilc": 0.017347718818946683,
+     "yield": 0.030361367049983778
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 105101835.36246899,
+    "level": {
+     "leaching": 0.13377479730567293,
+     "moisture": 0.27986563613910626,
+     "profit": 0.15359976481229484,
+     "soilc": 0.009365082478200178,
+     "yield": 0.1349442620372016
+    },
+    "n": 4,
+    "own_score": 3.059857386712305,
+    "trend": {
+     "leaching": 0.07808453480389857,
+     "moisture": 0.16277409370220006,
+     "profit": 0.09154289402494338,
+     "soilc": 0.006050115527383456,
+     "yield": 0.07875061486479165
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1155318547.7722323,
+    "level": {
+     "leaching": -0.04086037698164001,
+     "moisture": -0.07204056304226458,
+     "profit": -0.04127420321012341,
+     "soilc": 0.011777667399252064,
+     "yield": -0.04126867773149044
+    },
+    "n": 4,
+    "own_score": 0.5792277405549495,
+    "trend": {
+     "leaching": -0.03196778719404193,
+     "moisture": -0.049897036147232086,
+     "profit": -0.03216435111711711,
+     "soilc": 0.007607960014438714,
+     "yield": -0.03228847607716116
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1376331229.668618,
+    "level": {
+     "leaching": -0.036926676298864584,
+     "moisture": -0.12648345310403733,
+     "profit": -0.037786503209446445,
+     "soilc": 0.011257410209831618,
+     "yield": -0.037291073402768014
+    },
+    "n": 4,
+    "own_score": 0.5036265273184942,
+    "trend": {
+     "leaching": -0.018921984031190265,
+     "moisture": -0.07059574759898535,
+     "profit": -0.019267670309543312,
+     "soilc": 0.007271996702822689,
+     "yield": -0.019109608518566957
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 241329030.7914401,
+    "level": {
+     "leaching": 0.23892714628396802,
+     "moisture": 0.15426459522054445,
+     "profit": 0.29022723603176437,
+     "soilc": 0.020244754088497637,
+     "yield": 0.24087168074622656
+    },
+    "n": 4,
+    "own_score": 3.9567098968641163,
+    "trend": {
+     "leaching": 0.13848888590095135,
+     "moisture": 0.08944444136845701,
+     "profit": 0.1736512261286621,
+     "soilc": 0.013074830422069398,
+     "yield": 0.13956582250951782
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 141339333.78401917,
+    "level": {
+     "leaching": -0.0251065165048261,
+     "moisture": -0.033617870247045135,
+     "profit": -0.025868770836095165,
+     "soilc": 0.027081560665272612,
+     "yield": -0.02535252972501055
+    },
+    "n": 4,
+    "own_score": 0.9949192229920303,
+    "trend": {
+     "leaching": -0.01556898945176428,
+     "moisture": -0.020476480663546036,
+     "profit": -0.015948027854723094,
+     "soilc": 0.017488878507807105,
+     "yield": -0.01572243042492557
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 686177193.7849911,
+    "level": {
+     "leaching": -0.12112403060595138,
+     "moisture": 0.006387914258379307,
+     "profit": -0.11604902551373562,
+     "soilc": 0.005135148331108167,
+     "yield": -0.12239941793092313
+    },
+    "n": 4,
+    "own_score": 0.13847441795201312,
+    "trend": {
+     "leaching": -0.07248854540036391,
+     "moisture": 0.0010913602104400926,
+     "profit": -0.06773807680307338,
+     "soilc": 0.003317725328818835,
+     "yield": -0.0732699263792103
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 654070608.6879426,
+    "level": {
+     "leaching": 0.03584347667376423,
+     "moisture": 0.14639865839430405,
+     "profit": 0.038879523406075936,
+     "soilc": 0.024276707374493965,
+     "yield": 0.03617690943925074
+    },
+    "n": 4,
+    "own_score": 1.9847851650323696,
+    "trend": {
+     "leaching": 0.028964392169227814,
+     "moisture": 0.09296075475846884,
+     "profit": 0.03163234462183078,
+     "soilc": 0.01567793806900063,
+     "yield": 0.029231880305152242
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1643446578.8373466,
+    "level": {
+     "leaching": -0.049014389307731054,
+     "moisture": -0.06423764997629952,
+     "profit": -0.049541254686433236,
+     "soilc": 0.007169142494184254,
+     "yield": -0.04950400537172419
+    },
+    "n": 4,
+    "own_score": 0.5037315251493344,
+    "trend": {
+     "leaching": -0.031652919428073266,
+     "moisture": -0.040412500323608734,
+     "profit": -0.0316088842658329,
+     "soilc": 0.004631640873294448,
+     "yield": -0.03197284181746525
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 845611996.2860485,
+    "level": {
+     "leaching": -0.06089474447865001,
+     "moisture": 0.03181489087028798,
+     "profit": -0.06130854789163741,
+     "soilc": 0.005659018094563784,
+     "yield": -0.061505314173901815
+    },
+    "n": 4,
+    "own_score": 0.677172509848299,
+    "trend": {
+     "leaching": -0.02890960275388561,
+     "moisture": 0.024646620844626637,
+     "profit": -0.028922808479280637,
+     "soilc": 0.003656080466362731,
+     "yield": -0.029201269853176014
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1473232836.7211778,
+    "level": {
+     "leaching": 0.04275971651433335,
+     "moisture": 0.008074986522043156,
+     "profit": 0.04622968760649006,
+     "soilc": 0.013997073608936192,
+     "yield": 0.04315877576917644
+    },
+    "n": 4,
+    "own_score": 1.5345344228006144,
+    "trend": {
+     "leaching": 0.022789484933626647,
+     "moisture": 0.002754832312791915,
+     "profit": 0.02478608185330198,
+     "soilc": 0.009041401062081256,
+     "yield": 0.02300085645596428
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 960407771.2117739,
+    "level": {
+     "leaching": -0.03907411081865274,
+     "moisture": 0.009276172779516348,
+     "profit": -0.03972685087401,
+     "soilc": 0.02345951179185496,
+     "yield": -0.03946217668172734
+    },
+    "n": 4,
+    "own_score": 0.946334891305425,
+    "trend": {
+     "leaching": -0.026067843051749133,
+     "moisture": 0.001863509507038058,
+     "profit": -0.02618976725570707,
+     "soilc": 0.015149634586376715,
+     "yield": -0.026329766229462277
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 862136029.815466,
+    "level": {
+     "leaching": 0.1451984342397762,
+     "moisture": 0.1966066443302263,
+     "profit": 0.16805536623892348,
+     "soilc": 0.006378826077619117,
+     "yield": 0.14645586591051035
+    },
+    "n": 4,
+    "own_score": 2.663403306045004,
+    "trend": {
+     "leaching": 0.08745465898433884,
+     "moisture": 0.1172485936212054,
+     "profit": 0.10380590887822824,
+     "soilc": 0.004121116445105792,
+     "yield": 0.0881893256097834
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 699222004.023605,
+    "level": {
+     "leaching": -0.16845722955814085,
+     "moisture": -0.14094761385747848,
+     "profit": -0.15618560888792277,
+     "soilc": 0.021568495161957642,
+     "yield": -0.17028921520810666
+    },
+    "n": 4,
+    "own_score": 0.33465827997429876,
+    "trend": {
+     "leaching": -0.09411455371631985,
+     "moisture": -0.07827643654482533,
+     "profit": -0.0845149929783072,
+     "soilc": 0.013929098750427759,
+     "yield": -0.09516902913402925
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1001115389.8029838,
+    "level": {
+     "leaching": 0.08669391649952606,
+     "moisture": -0.02530256335027198,
+     "profit": 0.09634041446823756,
+     "soilc": 0.016750216264615363,
+     "yield": 0.08747983540703927
+    },
+    "n": 4,
+    "own_score": 1.8997737000107295,
+    "trend": {
+     "leaching": 0.04168601889530736,
+     "moisture": -0.022962482437769577,
+     "profit": 0.04677319836441436,
+     "soilc": 0.010819150711758893,
+     "yield": 0.042059951231011625
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1321617548.7537014,
+    "level": {
+     "leaching": -0.1915654143930395,
+     "moisture": -0.19965197659494505,
+     "profit": -0.19941109206753893,
+     "soilc": 0.0364124996606618,
+     "yield": -0.16873055472845913
+    },
+    "n": 3,
+    "own_score": 0.09109857581755804,
+    "trend": {
+     "leaching": -0.05439274170850646,
+     "moisture": -0.06020953384143265,
+     "profit": -0.07768237472561738,
+     "soilc": 0.011711292028719419,
+     "yield": -0.05509078165323781
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1095991310.981314,
+    "level": {
+     "leaching": -0.010625751916202703,
+     "moisture": 0.03780951936273384,
+     "profit": -0.01098248233466598,
+     "soilc": 0.014379804457695777,
+     "yield": -0.010729552703628355
+    },
+    "n": 4,
+    "own_score": 1.1467648219531508,
+    "trend": {
+     "leaching": -0.010587848096435454,
+     "moisture": 0.01741670497852716,
+     "profit": -0.010993870889634438,
+     "soilc": 0.009288618464784681,
+     "yield": -0.010690816186985388
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 919340654.7460536,
+    "level": {
+     "leaching": -0.1223976395008553,
+     "moisture": -0.19824988500681645,
+     "profit": -0.11765878691124007,
+     "soilc": 0.019784375484857564,
+     "yield": -0.12368205151332386
+    },
+    "n": 4,
+    "own_score": 0.35701269728591706,
+    "trend": {
+     "leaching": -0.06546329790412789,
+     "moisture": -0.10916046579245312,
+     "profit": -0.061645617824795676,
+     "soilc": 0.012778181134018763,
+     "yield": -0.06616380516297973
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1100491909.9907162,
+    "level": {
+     "leaching": -0.016683179253170987,
+     "moisture": 0.04181112993237696,
+     "profit": -0.01731365608819569,
+     "soilc": 0.01899193242854311,
+     "yield": -0.0168454887028513
+    },
+    "n": 4,
+    "own_score": 1.5266052714409275,
+    "trend": {
+     "leaching": -0.007615125154127289,
+     "moisture": 0.02618900206323326,
+     "profit": -0.007895397527101975,
+     "soilc": 0.012265958485016232,
+     "yield": -0.007689274957729059
+    }
+   }
+  ],
+  "2027": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 978898819.4442241,
+    "level": {
+     "leaching": 0.04499806026011758,
+     "moisture": -0.17908833837166951,
+     "profit": 0.048811294271393024,
+     "soilc": 0.04279586841971755,
+     "yield": 0.045416505641188896
+    },
+    "n": 5,
+    "own_score": 1.3862240257471863,
+    "trend": {
+     "leaching": 0.021591827817541844,
+     "moisture": -0.07428229338278733,
+     "profit": 0.02362269916559379,
+     "soilc": 0.02137418065140638,
+     "yield": 0.021790816765351363
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 469974919.64830875,
+    "level": {
+     "leaching": 0.1425234879037197,
+     "moisture": 0.11653264279301485,
+     "profit": 0.1640532396777865,
+     "soilc": 0.02100740445423784,
+     "yield": 0.14376578828439904
+    },
+    "n": 5,
+    "own_score": 2.4609339169599114,
+    "trend": {
+     "leaching": 0.06276598540260561,
+     "moisture": 0.05159634309760719,
+     "profit": 0.07426431887761062,
+     "soilc": 0.010497942077567109,
+     "yield": 0.063295398520794
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 229956721.14456204,
+    "level": {
+     "leaching": 0.06389768963439577,
+     "moisture": 0.09928867378178882,
+     "profit": 0.07027751510610647,
+     "soilc": 0.03634915984138292,
+     "yield": 0.06448339772310942
+    },
+    "n": 5,
+    "own_score": 2.3749147891403903,
+    "trend": {
+     "leaching": 0.03159725986237774,
+     "moisture": 0.04678507009678332,
+     "profit": 0.03533136356822734,
+     "soilc": 0.018160557914985134,
+     "yield": 0.03188175143318711
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 108237246.52975677,
+    "level": {
+     "leaching": 0.167566864698587,
+     "moisture": 0.3497938838692781,
+     "profit": 0.19551900976200284,
+     "soilc": 0.012676625463249713,
+     "yield": 0.16900413343522863
+    },
+    "n": 5,
+    "own_score": 3.0188995215661243,
+    "trend": {
+     "leaching": 0.07283433479486337,
+     "moisture": 0.15131529458127196,
+     "profit": 0.08769069196217963,
+     "soilc": 0.006336600748741261,
+     "yield": 0.07343517883042285
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1146703925.402543,
+    "level": {
+     "leaching": -0.05241787247776195,
+     "moisture": -0.09116910745587525,
+     "profit": -0.052714541159712636,
+     "soilc": 0.015940678809696,
+     "yield": -0.052943978700637606
+    },
+    "n": 5,
+    "own_score": 0.6291939905437719,
+    "trend": {
+     "leaching": -0.027541389093142923,
+     "moisture": -0.04407706248722672,
+     "profit": -0.027522513508147793,
+     "soilc": 0.007966991417663292,
+     "yield": -0.02781953900772776
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1367388187.801369,
+    "level": {
+     "leaching": -0.043171036439648425,
+     "moisture": -0.15449888145775273,
+     "profit": -0.04405264198814666,
+     "soilc": 0.015236742333197075,
+     "yield": -0.04359824371539587
+    },
+    "n": 5,
+    "own_score": 0.5906696372447653,
+    "trend": {
+     "leaching": -0.015705352156378975,
+     "moisture": -0.06331330215320805,
+     "profit": -0.01589997393347187,
+     "soilc": 0.007615330474776802,
+     "yield": -0.01586197457191135
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 253852899.38947046,
+    "level": {
+     "leaching": 0.2954725087094592,
+     "moisture": 0.18994998504542487,
+     "profit": 0.36582279246360544,
+     "soilc": 0.02739550027303974,
+     "yield": 0.29780824933964195
+    },
+    "n": 5,
+    "own_score": 3.9245482230871813,
+    "trend": {
+     "leaching": 0.12578980537596693,
+     "moisture": 0.08040761050910902,
+     "profit": 0.16242116949617214,
+     "soilc": 0.013688161395576812,
+     "yield": 0.12671947984817425
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 140525427.5230604,
+    "level": {
+     "leaching": -0.03237019337563816,
+     "moisture": -0.042948908914065664,
+     "profit": -0.033197918750428754,
+     "soilc": 0.03664487681702376,
+     "yield": -0.03268886580493382
+    },
+    "n": 5,
+    "own_score": 1.0566413140619115,
+    "trend": {
+     "leaching": -0.015048171596694195,
+     "moisture": -0.019569278998793543,
+     "profit": -0.015303161841695135,
+     "soilc": 0.0183077554056547,
+     "yield": -0.01519755129238606
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 672343199.6116422,
+    "level": {
+     "leaching": -0.1482298875496479,
+     "moisture": 0.01033394547367265,
+     "profit": -0.1399389951924064,
+     "soilc": 0.006951476979799409,
+     "yield": -0.1498136508011843
+    },
+    "n": 5,
+    "own_score": 0.21898990394055443,
+    "trend": {
+     "leaching": -0.0633501296438785,
+     "moisture": 0.004491711320513387,
+     "profit": -0.05775900808020745,
+     "soilc": 0.0034751913131006607,
+     "yield": -0.06404919605986632
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 659246486.9535435,
+    "level": {
+     "leaching": 0.04482238101856327,
+     "moisture": 0.18255881003767396,
+     "profit": 0.048739008752776425,
+     "soilc": 0.03285008278712479,
+     "yield": 0.045238250672291626
+    },
+    "n": 5,
+    "own_score": 1.983901327685047,
+    "trend": {
+     "leaching": 0.023461100429412945,
+     "moisture": 0.08264052902260435,
+     "profit": 0.025675657657615893,
+     "soilc": 0.016412344447131133,
+     "yield": 0.023677281385617012
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1628749934.4486187,
+    "level": {
+     "leaching": -0.05950999148564203,
+     "moisture": -0.07844622051125308,
+     "profit": -0.05986597913504281,
+     "soilc": 0.00970449060395997,
+     "yield": -0.06010720999044274
+    },
+    "n": 5,
+    "own_score": 0.5678852026567218,
+    "trend": {
+     "leaching": -0.02632206189194762,
+     "moisture": -0.03441482069675795,
+     "profit": -0.026129166581526028,
+     "soilc": 0.004851168546422939,
+     "yield": -0.026589625527451196
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 837854196.1635237,
+    "level": {
+     "leaching": -0.06822072336007019,
+     "moisture": 0.04716080856603169,
+     "profit": -0.06852922005276708,
+     "soilc": 0.007660402487336068,
+     "yield": -0.06890628019415404
+    },
+    "n": 5,
+    "own_score": 0.7669714494893186,
+    "trend": {
+     "leaching": -0.02178078025836297,
+     "moisture": 0.02766922811805702,
+     "profit": -0.02168207640076998,
+     "soilc": 0.003829424625953648,
+     "yield": -0.02200160094684021
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1479940027.8597279,
+    "level": {
+     "leaching": 0.04542594430428773,
+     "moisture": 0.0023171172713050267,
+     "profit": 0.04909205026675505,
+     "soilc": 0.01894424121579884,
+     "yield": 0.04585006651821635
+    },
+    "n": 5,
+    "own_score": 1.4677042151807542,
+    "trend": {
+     "leaching": 0.014060970256767709,
+     "moisture": -0.004380453094342172,
+     "profit": 0.015255403586915977,
+     "soilc": 0.009467868137903276,
+     "yield": 0.014191718977022046
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 950268535.4217237,
+    "level": {
+     "leaching": -0.05405120737853101,
+     "moisture": 0.006104815315630927,
+     "profit": -0.05435181668424133,
+     "soilc": 0.03174285485334058,
+     "yield": -0.05459394060365689
+    },
+    "n": 5,
+    "own_score": 0.9557566073945016,
+    "trend": {
+     "leaching": -0.028011018085752834,
+     "moisture": -0.002239602710366392,
+     "profit": -0.02771984943808486,
+     "soilc": 0.015858160354673977,
+     "yield": -0.028296647036660686
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 891787456.0174129,
+    "level": {
+     "leaching": 0.18976359148457056,
+     "moisture": 0.25388465915425906,
+     "profit": 0.22476673636936226,
+     "soilc": 0.008634796468430314,
+     "yield": 0.19136077181879857
+    },
+    "n": 5,
+    "own_score": 2.731740134366198,
+    "trend": {
+     "leaching": 0.08829248673696377,
+     "moisture": 0.11590231163463546,
+     "profit": 0.10861432456955292,
+     "soilc": 0.004316528613364095,
+     "yield": 0.08899956871317989
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 682519472.4703212,
+    "level": {
+     "leaching": -0.20008167406033364,
+     "moisture": -0.1659507359446324,
+     "profit": -0.1826532489297374,
+     "soilc": 0.029185419615606677,
+     "yield": -0.20229136984078488
+    },
+    "n": 5,
+    "own_score": 0.5852374388254575,
+    "trend": {
+     "leaching": -0.0786817213603527,
+     "moisture": -0.0641413403595666,
+     "profit": -0.0687251365309682,
+     "soilc": 0.014581473828862927,
+     "yield": -0.07958666919969282
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1020272514.7606677,
+    "level": {
+     "leaching": 0.10540784994014454,
+     "moisture": -0.03398676482264798,
+     "profit": 0.11826246249038216,
+     "soilc": 0.022669210871874946,
+     "yield": 0.10635355281015155
+    },
+    "n": 5,
+    "own_score": 1.9737839086135487,
+    "trend": {
+     "leaching": 0.039556942888272155,
+     "moisture": -0.020165442691260783,
+     "profit": 0.04530864720435179,
+     "soilc": 0.011328569963139029,
+     "yield": 0.0399036930186181
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1289957433.1754184,
+    "level": {
+     "leaching": -0.21879151605326214,
+     "moisture": -0.22975421913804345,
+     "profit": -0.22686261312869138,
+     "soilc": 0.04291589136716332,
+     "yield": -0.19632432675635667
+    },
+    "n": 4,
+    "own_score": 0.37452410146133686,
+    "trend": {
+     "leaching": -0.05442841867566974,
+     "moisture": -0.06020650458829122,
+     "profit": -0.06401477516362993,
+     "soilc": 0.012488586859289597,
+     "yield": -0.055148839094772174
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1089764835.2547235,
+    "level": {
+     "leaching": -0.022698315295946337,
+     "moisture": 0.03758796703554722,
+     "profit": -0.02316436849913011,
+     "soilc": 0.0194622615863351,
+     "yield": -0.022922889771365397
+    },
+    "n": 5,
+    "own_score": 1.0792072408632407,
+    "trend": {
+     "leaching": -0.017366487427961364,
+     "moisture": 0.008486800162076964,
+     "profit": -0.017678821609281355,
+     "soilc": 0.009726766361031664,
+     "yield": -0.017538745161229732
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 898435716.1373911,
+    "level": {
+     "leaching": -0.1595139851214442,
+     "moisture": -0.253412375888275,
+     "profit": -0.14909691908744627,
+     "soilc": 0.026774076811237918,
+     "yield": -0.16123632286333928
+    },
+    "n": 5,
+    "own_score": 0.48154391354679604,
+    "trend": {
+     "leaching": -0.06984799457265282,
+     "moisture": -0.10974272377768514,
+     "profit": -0.06226094108860405,
+     "soilc": 0.013378791893389738,
+     "yield": -0.07063617393150533
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1097676599.1903677,
+    "level": {
+     "leaching": -0.019347025978591025,
+     "moisture": 0.05346027471316859,
+     "profit": -0.020056850326093816,
+     "soilc": 0.02570061134312654,
+     "yield": -0.019535445086152504
+    },
+    "n": 5,
+    "own_score": 1.6238144817261784,
+    "trend": {
+     "leaching": -0.00647140930248368,
+     "moisture": 0.024743645812408267,
+     "profit": -0.006690893001449117,
+     "soilc": 0.012841658157091547,
+     "yield": -0.006534593862165728
+    }
+   }
+  ],
+  "2028": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 987684710.1752629,
+    "level": {
+     "leaching": 0.05310249596788694,
+     "moisture": -0.21335637896186774,
+     "profit": 0.05782162252806348,
+     "soilc": 0.05507458809293211,
+     "yield": 0.05359435851593904
+    },
+    "n": 6,
+    "own_score": 1.3771035692707654,
+    "trend": {
+     "leaching": 0.019284846502397642,
+     "moisture": -0.07181963101033406,
+     "profit": 0.021221823743199704,
+     "soilc": 0.022738434377844684,
+     "yield": 0.019461483472843745
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 481539635.37881374,
+    "level": {
+     "leaching": 0.166513766443273,
+     "moisture": 0.13556477309546636,
+     "profit": 0.193646732457021,
+     "soilc": 0.02704496379262142,
+     "yield": 0.16794773233513674
+    },
+    "n": 6,
+    "own_score": 2.4683022257549845,
+    "trend": {
+     "leaching": 0.0564293732639632,
+     "moisture": 0.045796879172162554,
+     "profit": 0.06780260459797845,
+     "soilc": 0.011173874905795701,
+     "yield": 0.0568961797696575
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 233130853.6082934,
+    "level": {
+     "leaching": 0.07876605262422758,
+     "moisture": 0.12093433363310081,
+     "profit": 0.08737475979540815,
+     "soilc": 0.04678998135348142,
+     "yield": 0.07948148163516884
+    },
+    "n": 6,
+    "own_score": 2.4050150723901127,
+    "trend": {
+     "leaching": 0.03079988819835738,
+     "moisture": 0.04528774849928647,
+     "profit": 0.0348441317726742,
+     "soilc": 0.019326737247504503,
+     "yield": 0.031073644172157862
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 112215641.47481695,
+    "level": {
+     "leaching": 0.20140676561630333,
+     "moisture": 0.41883261091871543,
+     "profit": 0.2387930768170953,
+     "soilc": 0.01632311673799604,
+     "yield": 0.2031000527597814
+    },
+    "n": 6,
+    "own_score": 3.108616897923709,
+    "trend": {
+     "leaching": 0.07062524924082163,
+     "moisture": 0.14564193437453019,
+     "profit": 0.0872010243113248,
+     "soilc": 0.006746478663349001,
+     "yield": 0.07118803303842966
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1140235077.1774552,
+    "level": {
+     "leaching": -0.05587341651124353,
+     "moisture": -0.10203184306691655,
+     "profit": -0.05626195699445124,
+     "soilc": 0.02052382322912894,
+     "yield": -0.05643349781371293
+    },
+    "n": 6,
+    "own_score": 0.6835030441247241,
+    "trend": {
+     "leaching": -0.01869983151049445,
+     "moisture": -0.03449780908787924,
+     "profit": -0.0187677927201461,
+     "soilc": 0.008480976026750115,
+     "yield": -0.01888789581562329
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1355728155.1888216,
+    "level": {
+     "leaching": -0.05094375630507613,
+     "moisture": -0.18327814792490815,
+     "profit": -0.05172148238798357,
+     "soilc": 0.019617780749627254,
+     "yield": -0.05145043566976229
+    },
+    "n": 6,
+    "own_score": 0.5769669023218982,
+    "trend": {
+     "leaching": -0.015636818259726005,
+     "moisture": -0.060846972487966396,
+     "profit": -0.01565899116184414,
+     "soilc": 0.008106793199669756,
+     "yield": -0.015794435716263412
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 270873070.1708889,
+    "level": {
+     "leaching": 0.35587179133734853,
+     "moisture": 0.23000289352371484,
+     "profit": 0.44904620902715947,
+     "soilc": 0.03526546313484549,
+     "yield": 0.35858895070553715
+    },
+    "n": 6,
+    "own_score": 4.094102942562058,
+    "trend": {
+     "leaching": 0.12365070246731483,
+     "moisture": 0.08027827041516798,
+     "profit": 0.16414645390943036,
+     "soilc": 0.014567488964734532,
+     "yield": 0.12450887536972405
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 139231745.3578146,
+    "level": {
+     "leaching": -0.04355574052586895,
+     "moisture": -0.056106604851109916,
+     "profit": -0.0442093927864145,
+     "soilc": 0.04716955004864757,
+     "yield": -0.0439890181871429
+    },
+    "n": 6,
+    "own_score": 1.0018140993592652,
+    "trend": {
+     "leaching": -0.018186567041165922,
+     "moisture": -0.022460470231062808,
+     "profit": -0.018183070226099298,
+     "soilc": 0.019482723001765942,
+     "yield": -0.018370159923256968
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 656272608.8763969,
+    "level": {
+     "leaching": -0.17437725173508034,
+     "moisture": 0.014240177005461605,
+     "profit": -0.16206842399568952,
+     "soilc": 0.008951738195235459,
+     "yield": -0.17626977823565293
+    },
+    "n": 6,
+    "own_score": 0.22590805673846517,
+    "trend": {
+     "leaching": -0.05861210052687262,
+     "moisture": 0.005914890638969612,
+     "profit": -0.05197322930578978,
+     "soilc": 0.0037003332207169912,
+     "yield": -0.05927622126375384
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 664085899.7128937,
+    "level": {
+     "leaching": 0.04996581331551834,
+     "moisture": 0.21409701792138883,
+     "profit": 0.054358887627583584,
+     "soilc": 0.042285291654552505,
+     "yield": 0.050429164864873754
+    },
+    "n": 6,
+    "own_score": 1.953993435174876,
+    "trend": {
+     "leaching": 0.0178149993570546,
+     "moisture": 0.07425590905610097,
+     "profit": 0.019488843411329483,
+     "soilc": 0.017465804427584403,
+     "yield": 0.017979230099708688
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1607711187.8039775,
+    "level": {
+     "leaching": -0.07437263069685374,
+     "moisture": -0.09685997516852178,
+     "profit": -0.07398232490634203,
+     "soilc": 0.012496389182000465,
+     "yield": -0.07512740551935652
+    },
+    "n": 6,
+    "own_score": 0.526654953954607,
+    "trend": {
+     "leaching": -0.027780583262151524,
+     "moisture": -0.0354488301043777,
+     "profit": -0.027030677279128473,
+     "soilc": 0.005165152236276391,
+     "yield": -0.02806852504046963
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 829344101.1896342,
+    "level": {
+     "leaching": -0.07476861994659774,
+     "moisture": 0.06261047525078793,
+     "profit": -0.07491168317587046,
+     "soilc": 0.009864314231807286,
+     "yield": -0.07552190576835532
+    },
+    "n": 6,
+    "own_score": 0.8040413873804966,
+    "trend": {
+     "leaching": -0.018058642936088193,
+     "moisture": 0.029053558940109348,
+     "profit": -0.01786044062024289,
+     "soilc": 0.004077309852948841,
+     "yield": -0.01824287960465266
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1488566961.3693373,
+    "level": {
+     "leaching": 0.049785404218563645,
+     "moisture": -0.0015091793081615252,
+     "profit": 0.053883163913318634,
+     "soilc": 0.024390637339086352,
+     "yield": 0.05024951204930531
+    },
+    "n": 6,
+    "own_score": 1.4422701243009408,
+    "trend": {
+     "leaching": 0.01177152007324662,
+     "moisture": -0.0057827988363097155,
+     "profit": 0.012824042318149357,
+     "soilc": 0.010078549898762598,
+     "yield": 0.011880507013517425
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 937364909.1481043,
+    "level": {
+     "leaching": -0.06961320182251829,
+     "moisture": 0.0019755697998635833,
+     "profit": -0.06919861658776914,
+     "soilc": 0.040857814467150234,
+     "yield": -0.07032024976467662
+    },
+    "n": 6,
+    "own_score": 0.9056434043265587,
+    "trend": {
+     "leaching": -0.029345148429562134,
+     "moisture": -0.004819126276581377,
+     "profit": -0.02856574245335806,
+     "soilc": 0.01687462844307913,
+     "yield": -0.02964920615896588
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 929827616.1533289,
+    "level": {
+     "leaching": 0.23339390697101817,
+     "moisture": 0.3099032238047208,
+     "profit": 0.2820061017197452,
+     "soilc": 0.011119095588959673,
+     "yield": 0.23530618047067664
+    },
+    "n": 6,
+    "own_score": 2.835641306576208,
+    "trend": {
+     "leaching": 0.08785026283807727,
+     "moisture": 0.11424580492018743,
+     "profit": 0.11112764148292996,
+     "soilc": 0.004595987025233222,
+     "yield": 0.0885243895377126
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 663245790.3361261,
+    "level": {
+     "leaching": -0.23138035401742107,
+     "moisture": -0.19085626374893674,
+     "profit": -0.20745663385261046,
+     "soilc": 0.03756768265746729,
+     "yield": -0.23398286318493608
+    },
+    "n": 6,
+    "own_score": 0.6205487475897538,
+    "trend": {
+     "leaching": -0.07178842359770507,
+     "moisture": -0.057999789752013226,
+     "profit": -0.06053155080873018,
+     "soilc": 0.01551706765237361,
+     "yield": -0.07264223383766834
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1042944500.2949412,
+    "level": {
+     "leaching": 0.1228530294139475,
+     "moisture": -0.04310854203318778,
+     "profit": 0.13906268294432425,
+     "soilc": 0.029184925116645704,
+     "yield": 0.12394449585485796
+    },
+    "n": 6,
+    "own_score": 1.9825403853497294,
+    "trend": {
+     "leaching": 0.03755697834227234,
+     "moisture": -0.01934177628975455,
+     "profit": 0.04371941593443709,
+     "soilc": 0.012058366474454383,
+     "yield": 0.037880061477530105
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1252239330.8484368,
+    "level": {
+     "leaching": -0.25079031649893285,
+     "moisture": -0.2645563258029712,
+     "profit": -0.25470069121808764,
+     "soilc": 0.049937145095674894,
+     "yield": -0.22877833378412982
+    },
+    "n": 5,
+    "own_score": 0.37344410266170247,
+    "trend": {
+     "leaching": -0.05921300978350565,
+     "moisture": -0.06490535895907332,
+     "profit": -0.05984546567121121,
+     "soilc": 0.013265547158156376,
+     "yield": -0.06002842657515927
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1083264607.1713567,
+    "level": {
+     "leaching": -0.03128665241108297,
+     "moisture": 0.04048896808920905,
+     "profit": -0.03181145812579556,
+     "soilc": 0.02505764193032412,
+     "yield": -0.03159732910348769
+    },
+    "n": 6,
+    "own_score": 1.0471268822995246,
+    "trend": {
+     "leaching": -0.01728513891466646,
+     "moisture": 0.007336172424325548,
+     "profit": -0.01751397488530259,
+     "soilc": 0.010354192501151535,
+     "yield": -0.017457373805378963
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 874523993.2915955,
+    "level": {
+     "leaching": -0.19313655433205199,
+     "moisture": -0.30439522639267985,
+     "profit": -0.176448839735162,
+     "soilc": 0.03446779394822358,
+     "yield": -0.1952706098532702
+    },
+    "n": 6,
+    "own_score": 0.46472745315671393,
+    "trend": {
+     "leaching": -0.0687324847934654,
+     "moisture": -0.1064097140195956,
+     "profit": -0.05902218403438727,
+     "soilc": 0.014239638627924697,
+     "yield": -0.06953577395222957
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1092434584.617079,
+    "level": {
+     "leaching": -0.02555686838769958,
+     "moisture": 0.06112731993747841,
+     "profit": -0.02633959020067185,
+     "soilc": 0.03308420975157287,
+     "yield": -0.025807233313252537
+    },
+    "n": 6,
+    "own_score": 1.6033472750776747,
+    "trend": {
+     "leaching": -0.009020670237798014,
+     "moisture": 0.020710979227927417,
+     "profit": -0.00920857303618066,
+     "soilc": 0.013666889011292016,
+     "yield": -0.009109872115894726
+    }
+   }
+  ],
+  "2029": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 997868215.5181941,
+    "level": {
+     "leaching": 0.060908130621141685,
+     "moisture": -0.247049590434181,
+     "profit": 0.066585105737468,
+     "soilc": 0.06853706362872014,
+     "yield": 0.0614699538021542
+    },
+    "n": 7,
+    "own_score": 1.3712868151435462,
+    "trend": {
+     "leaching": 0.017907255053939593,
+     "moisture": -0.07015717798569376,
+     "profit": 0.01983625224655321,
+     "soilc": 0.024308378137993948,
+     "yield": 0.018070123635188708
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 495566440.3250538,
+    "level": {
+     "leaching": 0.1910313125202725,
+     "moisture": 0.1551988182447457,
+     "profit": 0.22466820182162026,
+     "soilc": 0.03366867070254535,
+     "yield": 0.19265400110671344
+    },
+    "n": 7,
+    "own_score": 2.409890617372195,
+    "trend": {
+     "leaching": 0.05365651784772659,
+     "moisture": 0.04334858334456111,
+     "profit": 0.06564272989718602,
+     "soilc": 0.011951451998565265,
+     "yield": 0.05408981393471845
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 236530971.88472784,
+    "level": {
+     "leaching": 0.09082295251622172,
+     "moisture": 0.1396637647454433,
+     "profit": 0.10132606451640447,
+     "soilc": 0.058243010410706786,
+     "yield": 0.09164281247852689
+    },
+    "n": 7,
+    "own_score": 2.373670135006297,
+    "trend": {
+     "leaching": 0.028292605042968988,
+     "moisture": 0.04235191614631091,
+     "profit": 0.03224106089866862,
+     "soilc": 0.020668982572609337,
+     "yield": 0.028542025740117213
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 117069010.98043962,
+    "level": {
+     "leaching": 0.23499099967700982,
+     "moisture": 0.48711996135365426,
+     "profit": 0.28281665834539266,
+     "soilc": 0.02032503317499907,
+     "yield": 0.23692743029974966
+    },
+    "n": 7,
+    "own_score": 3.055508665717846,
+    "trend": {
+     "leaching": 0.0693289563210434,
+     "moisture": 0.14224172181028547,
+     "profit": 0.08751832634080095,
+     "soilc": 0.007217986492345399,
+     "yield": 0.06986305380399473
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1132405534.4342945,
+    "level": {
+     "leaching": -0.06064060071810114,
+     "moisture": -0.11404674000752844,
+     "profit": -0.06101404009693028,
+     "soilc": 0.025552611485747338,
+     "yield": -0.061248945830653885
+    },
+    "n": 7,
+    "own_score": 0.7338898923174558,
+    "trend": {
+     "leaching": -0.015262782849202239,
+     "moisture": -0.030572303385383456,
+     "profit": -0.015293932776950597,
+     "soilc": 0.009072201209182616,
+     "yield": -0.01541652089747027
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1343427734.2477603,
+    "level": {
+     "leaching": -0.05723483595943298,
+     "moisture": -0.21016132456493894,
+     "profit": -0.057903813002708346,
+     "soilc": 0.02442493106710978,
+     "yield": -0.05780608977878031
+    },
+    "n": 7,
+    "own_score": 0.6142243077239308,
+    "trend": {
+     "leaching": -0.014491321153096402,
+     "moisture": -0.058191740285002104,
+     "profit": -0.01442361743719618,
+     "soilc": 0.008672108487905493,
+     "yield": -0.014638262904428156
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 292868386.04804015,
+    "level": {
+     "leaching": 0.41784597938644463,
+     "moisture": 0.27191200843275193,
+     "profit": 0.535696189892046,
+     "soilc": 0.04389811840786523,
+     "yield": 0.4209230071216431
+    },
+    "n": 7,
+    "own_score": 4.070254440898057,
+    "trend": {
+     "leaching": 0.12376233007889387,
+     "moisture": 0.0816057551912578,
+     "profit": 0.1675790193420588,
+     "soilc": 0.015579172057723878,
+     "yield": 0.12456858941815696
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 137480574.5043787,
+    "level": {
+     "leaching": -0.05692992774820547,
+     "moisture": -0.07139471224859573,
+     "profit": -0.05706354783622836,
+     "soilc": 0.0587140012409107,
+     "yield": -0.05750341948978214
+    },
+    "n": 7,
+    "own_score": 0.9658214069296275,
+    "trend": {
+     "leaching": -0.02139724481748109,
+     "moisture": -0.025503874442528617,
+     "profit": -0.021005035178672436,
+     "soilc": 0.020835040270301062,
+     "yield": -0.021617150929015016
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 638947576.3115915,
+    "level": {
+     "leaching": -0.19708890543168892,
+     "moisture": 0.02104167640151044,
+     "profit": -0.18083467170469786,
+     "soilc": 0.011147176538152972,
+     "yield": -0.1992555586474812
+    },
+    "n": 7,
+    "own_score": 0.3040916336506493,
+    "trend": {
+     "leaching": -0.05366630310175186,
+     "moisture": 0.008797931196392633,
+     "profit": -0.04655795409787488,
+     "soilc": 0.003959287020136253,
+     "yield": -0.05428697359871739
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 668815638.0848008,
+    "level": {
+     "leaching": 0.05340351159887203,
+     "moisture": 0.24349553227230492,
+     "profit": 0.05810670836288899,
+     "soilc": 0.05263454755026226,
+     "yield": 0.053898675766677014
+    },
+    "n": 7,
+    "own_score": 1.8782388293834738,
+    "trend": {
+     "leaching": 0.013712648310674388,
+     "moisture": 0.06845882892325016,
+     "profit": 0.01499139268355998,
+     "soilc": 0.01867806968902257,
+     "yield": 0.013839151988670383
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1581274039.1020427,
+    "level": {
+     "leaching": -0.09098936355012995,
+     "moisture": -0.1169330848135809,
+     "profit": -0.08931296879239227,
+     "soilc": 0.01556050967125851,
+     "yield": -0.09192518199357262
+    },
+    "n": 7,
+    "own_score": 0.520438781138614,
+    "trend": {
+     "leaching": -0.029825414178801864,
+     "moisture": -0.037210351049030393,
+     "profit": -0.028392156213993002,
+     "soilc": 0.00552631051461628,
+     "yield": -0.03014116050595562
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 821651706.4054476,
+    "level": {
+     "leaching": -0.07789615829521945,
+     "moisture": 0.0811297281459092,
+     "profit": -0.07800904169250371,
+     "soilc": 0.012283103505780246,
+     "yield": -0.07868130632064381
+    },
+    "n": 7,
+    "own_score": 0.8712136655796437,
+    "trend": {
+     "leaching": -0.013632305596521406,
+     "moisture": 0.032047914008909315,
+     "profit": -0.013485794275126741,
+     "soilc": 0.004362410613572747,
+     "yield": -0.013771350167124287
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1499839122.5428376,
+    "level": {
+     "leaching": 0.055893674586680896,
+     "moisture": -0.00346026259479291,
+     "profit": 0.060704662827878016,
+     "soilc": 0.0303666457653796,
+     "yield": 0.056412851009301414
+    },
+    "n": 7,
+    "own_score": 1.42243733149643,
+    "trend": {
+     "leaching": 0.011938402821867082,
+     "moisture": -0.00507756173766711,
+     "profit": 0.01313115063476288,
+     "soilc": 0.010781100006446559,
+     "yield": 0.012047821103445473
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 925041240.3171448,
+    "level": {
+     "leaching": -0.07971263082406245,
+     "moisture": 0.0031043420760403545,
+     "profit": -0.0788883802312249,
+     "soilc": 0.05085446020728548,
+     "yield": -0.08052574915517895
+    },
+    "n": 7,
+    "own_score": 0.9311744310842137,
+    "trend": {
+     "leaching": -0.02591528951963446,
+     "moisture": -0.002165374715730782,
+     "profit": -0.025120911765940588,
+     "soilc": 0.01804412708202588,
+     "yield": -0.026184878392230434
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 974836708.4523104,
+    "level": {
+     "leaching": 0.2737648153981168,
+     "moisture": 0.36249019125160287,
+     "profit": 0.33601583768441207,
+     "soilc": 0.013845670213055272,
+     "yield": 0.2759565344913346
+    },
+    "n": 7,
+    "own_score": 2.8078022095095574,
+    "trend": {
+     "leaching": 0.08518459559412223,
+     "moisture": 0.11084385366027866,
+     "profit": 0.10996207790033137,
+     "soilc": 0.0049174228588424644,
+     "yield": 0.08581550897656384
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 643130021.5304575,
+    "level": {
+     "leaching": -0.2567251205792961,
+     "moisture": -0.2099587837310472,
+     "profit": -0.22716516250621138,
+     "soilc": 0.046761423031676456,
+     "yield": -0.2596512189648705
+    },
+    "n": 7,
+    "own_score": 0.7266518246047234,
+    "trend": {
+     "leaching": -0.06387633966997192,
+     "moisture": -0.05057675858159109,
+     "profit": -0.052613615745657025,
+     "soilc": 0.016593472563390384,
+     "yield": -0.06465266298349354
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1069716196.2591412,
+    "level": {
+     "leaching": 0.14012661427928644,
+     "moisture": -0.05194063729570148,
+     "profit": 0.16004493460611183,
+     "soilc": 0.03633364284981793,
+     "yield": 0.14135900572619603
+    },
+    "n": 7,
+    "own_score": 1.9635530221165545,
+    "trend": {
+     "leaching": 0.036428300112924424,
+     "moisture": -0.018712681627981873,
+     "profit": 0.04306132370536384,
+     "soilc": 0.012898017346413153,
+     "yield": 0.03673592082695987
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1211142095.9941885,
+    "level": {
+     "leaching": -0.2798737206990238,
+     "moisture": -0.2964415875072724,
+     "profit": -0.27846408947381107,
+     "soilc": 0.05747601065246874,
+     "yield": -0.2582888833061829
+    },
+    "n": 6,
+    "own_score": 0.46209333975876193,
+    "trend": {
+     "leaching": -0.058764637762081136,
+     "moisture": -0.06441900086601426,
+     "profit": -0.054566036031312236,
+     "soilc": 0.014042197424769788,
+     "yield": -0.0595967147761365
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1075713302.2900763,
+    "level": {
+     "leaching": -0.03921225979574018,
+     "moisture": 0.043844874753503085,
+     "profit": -0.03971744397767877,
+     "soilc": 0.031197188011178684,
+     "yield": -0.0396031201537868
+    },
+    "n": 7,
+    "own_score": 1.0333907411839314,
+    "trend": {
+     "leaching": -0.01674741736015945,
+     "moisture": 0.007102037763423994,
+     "profit": -0.01687572369222652,
+     "soilc": 0.011076029873860633,
+     "yield": -0.01691520191608618
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 848863992.6291723,
+    "level": {
+     "leaching": -0.22177130189241004,
+     "moisture": -0.35001241791246646,
+     "profit": -0.19914355512061907,
+     "soilc": 0.04290831692077072,
+     "yield": -0.22426451019048502
+    },
+    "n": 7,
+    "own_score": 0.5372976282740201,
+    "trend": {
+     "leaching": -0.06443386366618443,
+     "moisture": -0.10071896490208732,
+     "profit": -0.05390990156058479,
+     "soilc": 0.015230166371863288,
+     "yield": -0.06520528397305457
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1087943495.2922046,
+    "level": {
+     "leaching": -0.028805587660904852,
+     "moisture": 0.07152195399992753,
+     "profit": -0.02964641542866966,
+     "soilc": 0.041183508893840516,
+     "yield": -0.029088166693414946
+    },
+    "n": 7,
+    "own_score": 1.6035581189266064,
+    "trend": {
+     "leaching": -0.008074458353527714,
+     "moisture": 0.020740337564291493,
+     "profit": -0.008235477068611266,
+     "soilc": 0.014616279988758253,
+     "yield": -0.008154370107556012
+    }
+   }
+  ],
+  "2030": [
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1010642951.1153109,
+    "level": {
+     "leaching": 0.06996961869707993,
+     "moisture": -0.2789640708559853,
+     "profit": 0.0769228610751427,
+     "soilc": 0.08321544147983648,
+     "yield": 0.0706112160399694
+    },
+    "n": 8,
+    "own_score": 1.3618042971758215,
+    "trend": {
+     "leaching": 0.01797916208658522,
+     "moisture": -0.06804777227166534,
+     "profit": 0.020116005056151954,
+     "soilc": 0.025991170659406853,
+     "yield": 0.01814092391533594
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 510027558.5093371,
+    "level": {
+     "leaching": 0.21052499461813606,
+     "moisture": 0.169888077936173,
+     "profit": 0.24943691088633227,
+     "soilc": 0.04089495191062866,
+     "yield": 0.21229674782812985
+    },
+    "n": 8,
+    "own_score": 2.3537616305730826,
+    "trend": {
+     "leaching": 0.04876679996372676,
+     "moisture": 0.038691895357325604,
+     "profit": 0.060274292641265326,
+     "soilc": 0.012785155471099041,
+     "yield": 0.04915504043742328
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 240380822.49247664,
+    "level": {
+     "leaching": 0.10233028585861993,
+     "moisture": 0.15778049849756076,
+     "profit": 0.11480743707146403,
+     "soilc": 0.07073689583730328,
+     "yield": 0.10324837682427136
+    },
+    "n": 8,
+    "own_score": 2.360671682621974,
+    "trend": {
+     "leaching": 0.026533292256911468,
+     "moisture": 0.04031243326561894,
+     "profit": 0.03048162230248545,
+     "soilc": 0.022108578666137225,
+     "yield": 0.02676506005724112
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 123598307.1690816,
+    "level": {
+     "leaching": 0.27458364653745776,
+     "moisture": 0.5611991289255787,
+     "profit": 0.3364023032504364,
+     "soilc": 0.024692576757226324,
+     "yield": 0.276786668626278
+    },
+    "n": 8,
+    "own_score": 3.142845495766901,
+    "trend": {
+     "leaching": 0.07261440212099425,
+     "moisture": 0.1442139262548066,
+     "profit": 0.09406931416389652,
+     "soilc": 0.007723686716381771,
+     "yield": 0.07314819475368199
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1121499081.9248433,
+    "level": {
+     "leaching": -0.06888773621789118,
+     "moisture": -0.12940096194000264,
+     "profit": -0.06895649511847028,
+     "soilc": 0.031039613349182302,
+     "yield": -0.06958237651492442
+    },
+    "n": 8,
+    "own_score": 0.7304587254071587,
+    "trend": {
+     "leaching": -0.015673278899328204,
+     "moisture": -0.03061768354523841,
+     "profit": -0.015490925198993734,
+     "soilc": 0.009706135381745055,
+     "yield": -0.015833301054493865
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1325463134.8040092,
+    "level": {
+     "leaching": -0.06782415876841057,
+     "moisture": -0.2409111095809318,
+     "profit": -0.0679793970717237,
+     "soilc": 0.029670230165816765,
+     "yield": -0.06850748107108637
+    },
+    "n": 8,
+    "own_score": 0.5898284133820816,
+    "trend": {
+     "leaching": -0.01672042930804933,
+     "moisture": -0.05929435020066333,
+     "profit": -0.01633280100414101,
+     "soilc": 0.00927827172440832,
+     "yield": -0.016893102797822808
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 319378898.9485442,
+    "level": {
+     "leaching": 0.47760630915848545,
+     "moisture": 0.311801600616219,
+     "profit": 0.6196034231741758,
+     "soilc": 0.05331470380170441,
+     "yield": 0.4810079270995887
+    },
+    "n": 8,
+    "own_score": 4.096508693321564,
+    "trend": {
+     "leaching": 0.12234843990062308,
+     "moisture": 0.0809968982498166,
+     "profit": 0.16765750174945918,
+     "soilc": 0.016663838301042042,
+     "yield": 0.12310233959740169
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 135089530.64876327,
+    "level": {
+     "leaching": -0.07386319715027523,
+     "moisture": -0.09018327727731298,
+     "profit": -0.07277460035719213,
+     "soilc": 0.07130696416790973,
+     "yield": -0.07462024862372803
+    },
+    "n": 8,
+    "own_score": 0.9053562398747586,
+    "trend": {
+     "leaching": -0.025553676146367235,
+     "moisture": -0.029528292980830578,
+     "profit": -0.02447739179975748,
+     "soilc": 0.022285335464866725,
+     "yield": -0.025822653375307276
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 619723184.3127542,
+    "level": {
+     "leaching": -0.2196656565546209,
+     "moisture": 0.027594082018509603,
+     "profit": -0.19880102995752225,
+     "soilc": 0.013543397690713686,
+     "yield": -0.22211427473010267
+    },
+    "n": 8,
+    "own_score": 0.350516222378024,
+    "trend": {
+     "leaching": -0.05082870281645588,
+     "moisture": 0.01023355787559453,
+     "profit": -0.043016208233799494,
+     "soilc": 0.004237005448464649,
+     "yield": -0.05143045978755919
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 675465501.1884531,
+    "level": {
+     "leaching": 0.059551358652394054,
+     "moisture": 0.27538744900613177,
+     "profit": 0.06499248766419748,
+     "soilc": 0.06392342573169944,
+     "yield": 0.06010178789429548
+    },
+    "n": 8,
+    "own_score": 1.869578031155279,
+    "trend": {
+     "leaching": 0.013240330242797608,
+     "moisture": 0.06690049710471796,
+     "profit": 0.014584781323245647,
+     "soilc": 0.019977965246973168,
+     "yield": 0.01336150941085924
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1553893039.7221484,
+    "level": {
+     "leaching": -0.1043929899140123,
+     "moisture": -0.13377110705543288,
+     "profit": -0.10161081317689696,
+     "soilc": 0.018904652600303638,
+     "yield": -0.10547560579284773
+    },
+    "n": 8,
+    "own_score": 0.5213798042458415,
+    "trend": {
+     "leaching": -0.0288193603617895,
+     "moisture": -0.03603224886058822,
+     "profit": -0.027126667065665123,
+     "soilc": 0.005913635629107607,
+     "yield": -0.02912772287015381
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 812284343.8512288,
+    "level": {
+     "leaching": -0.08303507045048851,
+     "moisture": 0.09738563689932196,
+     "profit": -0.08295014832392095,
+     "soilc": 0.014922902251426687,
+     "yield": -0.0838740584711519
+    },
+    "n": 8,
+    "own_score": 0.9058072652891442,
+    "trend": {
+     "leaching": -0.012514145167860313,
+     "moisture": 0.032202548508214725,
+     "profit": -0.01228460060436266,
+     "soilc": 0.00466813957281279,
+     "yield": -0.012642734878421586
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1509128302.2960372,
+    "level": {
+     "leaching": 0.05851592465941048,
+     "moisture": -0.008768828212391085,
+     "profit": 0.06359165061597404,
+     "soilc": 0.03688728668719228,
+     "yield": 0.05905910630390877
+    },
+    "n": 8,
+    "own_score": 1.3822959587506833,
+    "trend": {
+     "leaching": 0.009707101929731106,
+     "moisture": -0.006924084903510191,
+     "profit": 0.01067875894857261,
+     "soilc": 0.011534493952172816,
+     "yield": 0.009796050932035213
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 909601602.5970693,
+    "level": {
+     "leaching": -0.09214095889483793,
+     "moisture": 0.001758258494994217,
+     "profit": -0.09044872551454822,
+     "soilc": 0.06175708007482686,
+     "yield": -0.09308848099797379
+    },
+    "n": 8,
+    "own_score": 0.9247699483933811,
+    "trend": {
+     "leaching": -0.02556241172693996,
+     "moisture": -0.0023409721978512794,
+     "profit": -0.024454171366175944,
+     "soilc": 0.019297831299711504,
+     "yield": -0.02583174015668351
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1023856892.6277559,
+    "level": {
+     "leaching": 0.30845452874529095,
+     "moisture": 0.40929144655985694,
+     "profit": 0.382870505323033,
+     "soilc": 0.016821462604858995,
+     "yield": 0.3108806086336215
+    },
+    "n": 8,
+    "own_score": 2.7935567537224353,
+    "trend": {
+     "leaching": 0.07991620596086424,
+     "moisture": 0.10509673931235522,
+     "profit": 0.1045444970259682,
+     "soilc": 0.005262143500430793,
+     "yield": 0.0804930554125671
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 619945626.0150865,
+    "level": {
+     "leaching": -0.2857544736176834,
+     "moisture": -0.23284108146277688,
+     "profit": -0.2482280145558511,
+     "soilc": 0.05678907663658294,
+     "yield": -0.28907507745942856
+    },
+    "n": 8,
+    "own_score": 0.7603633332974183,
+    "trend": {
+     "leaching": -0.061937128472239505,
+     "moisture": -0.048972704208880495,
+     "profit": -0.04911764519686451,
+     "soilc": 0.01774741744553125,
+     "yield": -0.06271768098536774
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1099883656.3895206,
+    "level": {
+     "leaching": 0.1564655498002167,
+     "moisture": -0.06140233128443641,
+     "profit": 0.1801732060348321,
+     "soilc": 0.04413326612467712,
+     "yield": 0.15782873922730176
+    },
+    "n": 8,
+    "own_score": 1.9488106096013051,
+    "trend": {
+     "leaching": 0.03517815708923648,
+     "moisture": -0.018782917077811195,
+     "profit": 0.042126396756056096,
+     "soilc": 0.013798427080848235,
+     "yield": 0.03547043621871039
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1165422490.4339554,
+    "level": {
+     "leaching": -0.31026682385346727,
+     "moisture": -0.329588421478033,
+     "profit": -0.30145578788857424,
+     "soilc": 0.0655322601896738,
+     "yield": -0.28914972291173596
+    },
+    "n": 7,
+    "own_score": 0.4877316675933203,
+    "trend": {
+     "leaching": -0.059522725967133365,
+     "moisture": -0.06512200101932944,
+     "profit": -0.0513475463306425,
+     "soilc": 0.014818560543384904,
+     "yield": -0.06039357643925009
+    }
+   },
+   {
+    "aft": "traditionalist",
+    "bundle": "residue",
+    "capital": 1066766014.0847769,
+    "level": {
+     "leaching": -0.04726877851255888,
+     "moisture": 0.04693731135625152,
+     "profit": -0.047654329174911,
+     "soilc": 0.03789636316110184,
+     "yield": -0.047742141400182646
+    },
+    "n": 8,
+    "own_score": 1.0206001485627438,
+    "trend": {
+     "leaching": -0.01653595738465211,
+     "moisture": 0.0067963162441149454,
+     "profit": -0.016541739259639168,
+     "soilc": 0.011850136682522524,
+     "yield": -0.016702815441654688
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 821201584.0656681,
+    "level": {
+     "leaching": -0.2480425602082724,
+     "moisture": -0.39295750744320884,
+     "profit": -0.21930500325004826,
+     "soilc": 0.052116731455815586,
+     "yield": -0.2508751493072586
+    },
+    "n": 8,
+    "own_score": 0.5654262529390095,
+    "trend": {
+     "leaching": -0.0604700813213645,
+     "moisture": -0.0957760362885531,
+     "profit": -0.04938089979334266,
+     "soilc": 0.016292387271272104,
+     "yield": -0.06121061539321874
+    }
+   },
+   {
+    "aft": "pioneer",
+    "bundle": "residue",
+    "capital": 1084006237.1463482,
+    "level": {
+     "leaching": -0.03048167248485567,
+     "moisture": 0.0833484757220799,
+     "profit": -0.031364212205244206,
+     "soilc": 0.050018421916136015,
+     "yield": -0.030780760766781254
+    },
+    "n": 8,
+    "own_score": 1.612402591557146,
+    "trend": {
+     "leaching": -0.006500362118319016,
+     "moisture": 0.021711239524295916,
+     "profit": -0.006635515896790541,
+     "soilc": 0.015634128674035835,
+     "yield": -0.006564642787281548
+    }
+   }
+  ]
+ },
+ "peer_probe": {
+  "farmer0:conservation->conventional": -0.06011711320891106,
+  "farmer0:conventional->conservation": 0.06396234472803365,
+  "farmer11:conservation->conventional": -0.05635005256320148,
+  "farmer11:conventional->conservation": 0.05971499571028754,
+  "farmer5:conservation->conventional": -0.06011711320891106,
+  "farmer5:conventional->conservation": 0.06396234472803365
+ },
+ "regions": {
+  "2023": {
+   "NLD": {
+    "bundles": {
+     "notill_residue": {
+      "adoption": 1.0,
+      "count": 1,
+      "leaching_trend": 0.0,
+      "mean_leaching": 0.0,
+      "mean_moisture": 0.0,
+      "mean_profit": 0.0,
+      "mean_soilc": 0.0,
+      "mean_yield": 0.0,
+      "soilc_trend": 0.0,
+      "yield_trend": 0.0
+     },
+     "residue": {
+      "adoption": 20.0,
+      "count": 20,
+      "leaching_trend": 0.0,
+      "mean_leaching": 0.0,
+      "mean_moisture": 0.0,
+      "mean_profit": 0.0,
+      "mean_soilc": 0.0,
+      "mean_yield": 0.0,
+      "soilc_trend": 0.0,
+      "yield_trend": 0.0
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2024": {
+   "NLD": {
+    "bundles": {
+     "notill_residue": {
+      "adoption": 1.0,
+      "count": 1,
+      "leaching_trend": 0.0,
+      "mean_leaching": -0.032958976566884034,
+      "mean_moisture": -0.03431005386455116,
+      "mean_profit": -0.02428331893316148,
+      "mean_soilc": 0.011703347525802937,
+      "mean_yield": -0.023628609809034938,
+      "soilc_trend": 0.0,
+      "yield_trend": 0.0
+     },
+     "residue": {
+      "adoption": 20.0,
+      "count": 20,
+      "leaching_trend": 0.0,
+      "mean_leaching": 0.004488410538108633,
+      "mean_moisture": 0.006355017144686925,
+      "mean_profit": 0.005681970218999108,
+      "mean_soilc": 0.005104436609130992,
+      "mean_yield": 0.0045226648759270835,
+      "soilc_trend": 0.0,
+      "yield_trend": 0.0
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2025": {
+   "NLD": {
+    "bundles": {
+     "residue": {
+      "adoption": 21.0,
+      "count": 21,
+      "leaching_trend": 0.008279237215594797,
+      "mean_leaching": 0.001966736557090416,
+      "mean_moisture": 0.005449366648400594,
+      "mean_profit": 0.007395767853291261,
+      "mean_soilc": 0.01284837035491571,
+      "mean_yield": 0.0031344319716685312,
+      "soilc_trend": 0.011659778635841698,
+      "yield_trend": 0.008323787506964768
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2026": {
+   "NLD": {
+    "bundles": {
+     "residue": {
+      "adoption": 21.0,
+      "count": 21,
+      "leaching_trend": 0.0015654692146903886,
+      "mean_leaching": 6.716245070161285e-05,
+      "mean_moisture": 0.005181292812518386,
+      "mean_profit": 0.007669199014726631,
+      "mean_soilc": 0.02210065489510859,
+      "mean_yield": 0.0011635260235041728,
+      "soilc_trend": 0.01071635626951453,
+      "yield_trend": 0.0015316621566564225
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2027": {
+   "NLD": {
+    "bundles": {
+     "residue": {
+      "adoption": 21.0,
+      "count": 21,
+      "leaching_trend": 0.0029510479402598206,
+      "mean_leaching": 0.00652811636128013,
+      "mean_moisture": 0.013294431810176564,
+      "mean_profit": 0.02094986745143625,
+      "mean_soilc": 0.033356701572527535,
+      "mean_yield": 0.007621924166377073,
+      "soilc_trend": 0.010746668702874367,
+      "yield_trend": 0.002925900818267874
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2028": {
+   "NLD": {
+    "bundles": {
+     "residue": {
+      "adoption": 21.0,
+      "count": 21,
+      "leaching_trend": 0.0026378942618806535,
+      "mean_leaching": 0.006969711437589936,
+      "mean_moisture": 0.015519878819425783,
+      "mean_profit": 0.029754574931037253,
+      "mean_soilc": 0.0466132005891735,
+      "mean_yield": 0.007980845806520075,
+      "soilc_trend": 0.011262097770844082,
+      "yield_trend": 0.0026016062761979658
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2029": {
+   "NLD": {
+    "bundles": {
+     "residue": {
+      "adoption": 21.0,
+      "count": 21,
+      "leaching_trend": 0.002067828618585907,
+      "mean_leaching": 0.00669742999357088,
+      "mean_moisture": 0.017072628963138225,
+      "mean_profit": 0.03975409305404739,
+      "mean_soilc": 0.061867097954570335,
+      "mean_yield": 0.007591555257900435,
+      "soilc_trend": 0.011984903472255644,
+      "yield_trend": 0.002015685721045957
+     }
+    },
+    "total_farmers": 21.0
+   }
+  },
+  "2030": {
+   "NLD": {
+    "bundles": {
+     "residue": {
+      "adoption": 21.0,
+      "count": 21,
+      "leaching_trend": 0.0025773444359879355,
+      "mean_leaching": 0.015067355709664308,
+      "mean_moisture": 0.02730657054054473,
+      "mean_profit": 0.05733710374249158,
+      "mean_soilc": 0.07911556972200211,
+      "mean_yield": 0.015941227833478584,
+      "soilc_trend": 0.012810962503825966,
+      "yield_trend": 0.002523403727454651
+     }
+    },
+    "total_farmers": 21.0
+   }
+  }
+ },
+ "scales": {
+  "2023": {
+   "leaching": 0.0,
+   "leaching_std": 0.01,
+   "leaching_trend_std": 0.01,
+   "moisture": 0.0,
+   "moisture_std": 0.01,
+   "moisture_trend_std": 0.01,
+   "profit": 0.0,
+   "profit_std": 0.01,
+   "profit_trend_std": 0.01,
+   "soilc": 0.0,
+   "soilc_std": 0.01,
+   "soilc_trend_std": 0.01,
+   "yield": 0.0,
+   "yield_std": 0.01,
+   "yield_trend_std": 0.01
+  },
+  "2024": {
+   "leaching": 0.0,
+   "leaching_std": 0.01,
+   "leaching_trend_std": 0.01,
+   "moisture": 0.0,
+   "moisture_std": 0.01,
+   "moisture_trend_std": 0.01,
+   "profit": 0.0,
+   "profit_std": 0.01,
+   "profit_trend_std": 0.01,
+   "soilc": 0.0,
+   "soilc_std": 0.01,
+   "soilc_trend_std": 0.01,
+   "yield": 0.0,
+   "yield_std": 0.01,
+   "yield_trend_std": 0.01
+  },
+  "2025": {
+   "leaching": 0.0,
+   "leaching_std": 0.03535635832885815,
+   "leaching_trend_std": 0.3436356435592392,
+   "moisture": 0.0,
+   "moisture_std": 0.045166752119852965,
+   "moisture_trend_std": 0.43632372486393295,
+   "profit": 0.0,
+   "profit_std": 0.03775989230791748,
+   "profit_trend_std": 0.3540079175989293,
+   "soilc": 0.0,
+   "soilc_std": 0.01,
+   "soilc_trend_std": 0.03841072903377519,
+   "yield": 0.0,
+   "yield_std": 0.03569043048345729,
+   "yield_trend_std": 0.34700358624679023
+  },
+  "2026": {
+   "leaching": 0.0,
+   "leaching_std": 0.06809723438011431,
+   "leaching_trend_std": 0.37854942174457196,
+   "moisture": 0.0,
+   "moisture_std": 0.08557397792231052,
+   "moisture_trend_std": 0.5051622531602635,
+   "profit": 0.0,
+   "profit_std": 0.0723444000630893,
+   "profit_trend_std": 0.4034651453358268,
+   "soilc": 0.0,
+   "soilc_std": 0.01,
+   "soilc_trend_std": 0.0313491020504682,
+   "yield": 0.0,
+   "yield_std": 0.06874437321498347,
+   "yield_trend_std": 0.38213475189741675
+  },
+  "2027": {
+   "leaching": 0.0,
+   "leaching_std": 0.08813003726490191,
+   "leaching_trend_std": 0.333768130133621,
+   "moisture": 0.0,
+   "moisture_std": 0.11877931378404263,
+   "moisture_trend_std": 0.47153521635694123,
+   "profit": 0.0,
+   "profit_std": 0.0942093613617411,
+   "profit_trend_std": 0.3619923055264548,
+   "soilc": 0.0,
+   "soilc_std": 0.011224906176764861,
+   "soilc_trend_std": 0.027773754582015826,
+   "yield": 0.0,
+   "yield_std": 0.08896232250622832,
+   "yield_trend_std": 0.33753774496696115
+  },
+  "2028": {
+   "leaching": 0.0,
+   "leaching_std": 0.10100102728330701,
+   "leaching_trend_std": 0.33378802005895525,
+   "moisture": 0.0,
+   "moisture_std": 0.14421831790103504,
+   "moisture_trend_std": 0.39045202854724204,
+   "profit": 0.0,
+   "profit_std": 0.10712736646230132,
+   "profit_trend_std": 0.35461207102707504,
+   "soilc": 0.0,
+   "soilc_std": 0.014870609360598013,
+   "soilc_trend_std": 0.02906269123188227,
+   "yield": 0.0,
+   "yield_std": 0.10196278499493389,
+   "yield_trend_std": 0.33696163582380073
+  },
+  "2029": {
+   "leaching": 0.0,
+   "leaching_std": 0.12511535138666077,
+   "leaching_trend_std": 0.3181341027419031,
+   "moisture": 0.0,
+   "moisture_std": 0.1763682632591575,
+   "moisture_trend_std": 0.4021081636769273,
+   "profit": 0.0,
+   "profit_std": 0.1328900053774114,
+   "profit_trend_std": 0.32418720462616646,
+   "soilc": 0.0,
+   "soilc_std": 0.019145229156426986,
+   "soilc_trend_std": 0.030915604139920137,
+   "yield": 0.0,
+   "yield_std": 0.12630519606456206,
+   "yield_trend_std": 0.32117913890900024
+  },
+  "2030": {
+   "leaching": 0.0,
+   "leaching_std": 0.14843849083206906,
+   "leaching_trend_std": 0.2873233534757199,
+   "moisture": 0.0,
+   "moisture_std": 0.20246300004965678,
+   "moisture_trend_std": 0.3547115121573984,
+   "profit": 0.0,
+   "profit_std": 0.1576041602076766,
+   "profit_trend_std": 0.29329592189544335,
+   "soilc": 0.0,
+   "soilc_std": 0.02405977288066172,
+   "soilc_trend_std": 0.033048294629727346,
+   "yield": 0.0,
+   "yield_std": 0.14985093944707814,
+   "yield_trend_std": 0.2900737627223773
+  }
+ }
+}

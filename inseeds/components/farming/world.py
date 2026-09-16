@@ -23,8 +23,14 @@ class World(base.World):
                 ind for ind in self.individuals
                 if any("Farmer" in c.__name__ for c in ind.__class__.__mro__)
             }
-            # Sort once by avg_hdate for deterministic order
-            self._farmers_cache = sorted(farmers_set, key=lambda f: f.avg_hdate)
+            # Sort once by avg_hdate for deterministic order. The cell index
+            # breaks ties: sorting a set is only as deterministic as its keys,
+            # and two farms harvesting on the same day would otherwise be left
+            # in whatever order object identity gave them.
+            self._farmers_cache = sorted(
+                farmers_set,
+                key=lambda f: (f.avg_hdate, int(f.cell.cell_index)),
+            )
         return self._farmers_cache
 
     def update(self, t):

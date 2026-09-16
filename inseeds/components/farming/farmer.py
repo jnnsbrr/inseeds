@@ -23,8 +23,7 @@ class CellCache:
     Usage:
         cell.cache = CellCache()
         cell.cache.avg_hdate = 180.0
-        cell.cache.net_farm_size_ha = 30.5
-        cell.cache.gross_farm_size_ha = 50.5
+        cell.cache.farm_size_ha = 30.5
 
         # Access:
         value = cell.cache.avg_hdate
@@ -114,51 +113,56 @@ def get_cell_var(cell, var_name, time_idx=-1, drop_band=None, band=None,
 
 
 def avg_hdate(cell, model):
-    """Weighted mean harvest day-of-year for cell."""
+    """Weighted mean harvest day-of-year for cell.
+
+    Weighted over the bands hdate and cftfrac share, which is what keeps the
+    dates and their weights aligned: the two outputs do not carry the same
+    bands. The landuse meta map narrows them to the crops the run grows, and
+    where it is absent the shared bands do that on their own.
+    """
     hdate = get_cell_var(cell, "hdate")
     cftfrac = get_cell_var(cell, "cftfrac")
-    cftmap = model.config.cftmap
-    
-    hdate_idx = [i for i, b in enumerate(hdate.band.values) 
-                 if any(x in b for x in cftmap)]
-    cft_idx = [i for i, b in enumerate(cftfrac.band.values) 
-               if b in [hdate.band.values[j] for j in hdate_idx]]
-    
-    if not cft_idx:
+    landusemap = model.config.landusemap
+
+    hdate_bands = [
+        b for b in hdate.band.values
+        if landusemap is None or any(x in b for x in landusemap)
+    ]
+    shared = [b for b in cftfrac.band.values if b in hdate_bands]
+
+    if not shared:
         return 365
-    
-    hdate_sel = hdate.isel(band=hdate_idx)
-    cft_sel = cftfrac.isel(band=cft_idx)
-    
+
+    hdate_sel = hdate.sel(band=shared)
+    cft_sel = cftfrac.sel(band=shared)
+
     if np.sum(cft_sel.values) == 0:
         return 365
     return float(np.average(hdate_sel.values, weights=cft_sel.values))
 
 
-def farm_size_ha(cell, net=True, average_over_spinup=False):
-    """Farm size in hectares (cftfrac * area).
-    
+def farm_size_ha(cell):
+    """Cropped area of a cell in hectares (crop-band cftfrac * cell area).
+
+    Managed grassland and biomass plantations are dropped, so this is the area
+    that earns the revenue. Every monetary quantity is scaled on it - costs, the
+    capital endowment, the min_capital threshold, the baseline revenue floor -
+    because a cost charged on more land than the revenue would not be comparable
+    with it. In rangeland-dominated cells the two differ by an order of
+    magnitude.
+
     Parameters
     ----------
     cell : Cell
-        The cell to compute farm size for.
-    net : bool, default True
-        If True, subtract non-crop landuse from total landuse.
-    average_over_spinup : bool
-        If True, average cftfrac over spinup years for robust baseline.
+        The cell to compute the cropped area for.
+
+    Returns
+    -------
+    float
+        Cropped area in hectares.
     """
-    if net:
-        landuse = getattr(cell.from_earth, "cftfrac", None).isel(time=-1)
-    else:
-        landuse = get_cell_var(
-            cell,
-            "landuse",
-            source="to_earth",
-            drop_band=NON_CROPS,
-            partial_match=True,
-            time_idx=-1,
-        )
-    
+    landuse = get_cell_var(cell, "cftfrac", drop_band=NON_CROPS, time_idx=-1)
+
     total = float(np.sum(landuse.values))
     area = cell.area
     area_m2 = float(np.asarray(area.values).mean()) if hasattr(area, "values") else float(area)
@@ -166,7 +170,14 @@ def farm_size_ha(cell, net=True, average_over_spinup=False):
 
 
 def cropyield(cell):
-    """Weighted crop yield (gC/m2)."""
+    """Crop yield per m2 of cropland (gC/m2).
+
+    Harvest weighted by cftfrac and merely summed gives production per m2 of
+    *cell*, which scales with how much of the cell is cropped. That makes
+    yields incomparable between cells and lets a shrinking cropland extent
+    masquerade as falling yields. Dividing by the cropped fraction turns it
+    back into a per-hectare yield.
+    """
     harvestc = get_cell_var(cell, "pft_harvestc", drop_band=NON_CROPS)
     cftfrac = get_cell_var(cell, "cftfrac", drop_band=NON_CROPS)
     w = cftfrac.values.flatten()
@@ -181,9 +192,26 @@ def soilc(cell):
     return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
 
 
+# Root moisture is taken from the crop stands alone. rootmoist_agr averages over
+# every agricultural stand including setaside, and setaside is where the cover
+# crop grows, so it mixes the water a cover crop transpires on fallow land into
+# what is meant to represent the water available to the crop - a cost read as a
+# state. rootmoist_agr stays as a fallback for output written before
+# rootmoist_crop existed.
+MOISTURE_VARS = ("rootmoist_crop", "rootmoist_agr")
+
+
+def moisture_var(source):
+    """Name of the root-moisture variable present in source, or None."""
+    for name in MOISTURE_VARS:
+        if name in source:
+            return name
+    return None
+
+
 def root_moisture(cell):
-    """Root zone soil moisture (mm)."""
-    data = get_cell_var(cell, "rootmoist_agr")
+    """Root zone soil moisture of the crop stands (mm)."""
+    data = get_cell_var(cell, moisture_var(cell.from_earth))
     v = data.values
     return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
 
@@ -202,7 +230,7 @@ def cache_yearly(cell, model):
     cell.cache.avg_hdate = avg_hdate(cell, model)
     cell.cache.cropyield = cropyield(cell)
     cell.cache.soilc = soilc(cell)
-    if "rootmoist_agr" in cell.from_earth:
+    if moisture_var(cell.from_earth):
         cell.cache.root_moisture = root_moisture(cell)
     if "litcover_agr" in cell.from_earth:
         cell.cache.litter_cover = litter_cover(cell)
@@ -225,6 +253,168 @@ def sigmoid(x):
         Sigmoid output in (0, 1). Zero maps to 0.5.
     """
     return 0.5 * (np.tanh(x) + 1)
+
+
+# Guards on the reported concentration, which is a ratio and so goes to
+# infinity as drainage goes to zero. They only shape the output series now: the
+# flux the model tracks needs no such guard, being bounded by the nitrogen that
+# went onto the field in the first place.
+MIN_RUNOFF_MM = 1.0     # mm/yr; below this, concentration is undefined
+MAX_CONC_MGN_L = 200.0  # mgN/l; ~18x the EU limit of 50 mg NO3/l = 11.3 mgN/l
+
+# LPJmL reports per square metre and policy instruments are written per hectare
+# and per tonne, so every priced quantity crosses one of these on its way into
+# a cash flow. Kept together so the two halves of an instrument - what the farm
+# is paid at year end and what it expects when deciding - cannot drift apart.
+GC_M2_TO_TCO2_HA = 0.01 * 44.0 / 12.0  # gC/m2 -> tCO2e/ha
+GN_M2_TO_KGN_HA = 10.0                 # gN/m2 -> kgN/ha
+
+
+def agricultural_leaching(farmer, time_idx=-1):
+    """Nitrogen leached from this cell, gN per m2 of cell.
+
+    Uses the whole-cell ``leaching`` output from LPJmL, which is what reaches
+    the water body regardless of which stand it came from. This matches the
+    boundaries package measurement and keeps the tax base consistent with
+    environmental outcomes: the aquifer does not know which hectare the
+    nitrogen came from.
+
+    Parameters
+    ----------
+    farmer : Farmer
+        Farmer whose cell is read.
+    time_idx : int, optional
+        Index into the output time axis, last year by default.
+
+    Returns
+    -------
+    float
+        Leached nitrogen in gN/m2 of cell.
+    """
+    flux = farmer.get_from_earth(
+        "leaching", as_scalar=True, time_idx=time_idx
+    )
+    return float(flux)
+
+
+def nitrate_concentration(leaching, runoff):
+    """Nitrate concentration of the leachate in mgN/l, or None if undefined.
+
+    Reported, not scored. Nothing in the model decides on this: a concentration
+    is an intensive quantity, so it cannot be summed over farms or multiplied by
+    a price, and it rises as drainage falls, which makes the driest cells - the
+    ones losing least nitrogen - look like the worst polluters. The flux is what
+    the model tracks and what an instrument would be written on. This is here
+    because a concentration is what a nitrate standard is written on, and so
+    what makes the output comparable to one.
+
+    The numerator is per m2 of cropland (see ``agricultural_leaching``) and the
+    denominator is the cell's runoff, so this assumes cropland drains at about
+    the rate the cell does. LPJmL does not report runoff by stand, and the
+    alternative - dividing agricultural nitrogen by the whole cell's water -
+    would say a farm on a tenth of its cell pollutes a tenth as much, which is
+    worse. The same assumption sits behind the levy-free allowance, which is
+    this concentration read against a standard.
+
+    None when runoff is below MIN_RUNOFF_MM: with no water leaving the profile
+    there is no concentration to measure, and the ratio is 0/0.
+
+    Above the threshold the concentration is capped at MAX_CONC_MGN_L. The cap
+    is a numerical guard, not a regulatory reference: the EU drinking-water
+    limit of 50 mg NO3/l corresponds to 11.3 mgN/l, so the cap sits well above
+    it. Unguarded, near-zero runoff produces concentrations up to 47,000 mgN/l.
+
+    Parameters
+    ----------
+    leaching : float
+        Leached nitrogen flux (gN/m2).
+    runoff : float
+        Runoff (mm/yr).
+
+    Returns
+    -------
+    float or None
+        Concentration in mgN/l, or None when runoff is too low to define one.
+    """
+    if runoff < MIN_RUNOFF_MM:
+        return None
+    return min(leaching * 1e3 / runoff, MAX_CONC_MGN_L)
+
+
+def log_rate(value, baseline, negligible):
+    """Symmetric relative deviation from baseline, ln((v + n) / (b + n)).
+
+    Log rather than the plain ratio v/b - 1, which is bounded at -1 below but
+    unbounded above and so weights an improvement more heavily than a
+    deterioration of the same multiplicative size. Under the log a doubling
+    (+0.69) and a halving (-0.69) are equidistant from zero, and for small
+    deviations ln(v/b) ~ v/b - 1, so a modest change still reads as a
+    percentage change. It also matches diminishing sensitivity to magnitude
+    (Weber-Fechner).
+
+    Both sides are offset by ``negligible``, the level of this metric at which
+    a difference stops being worth noticing. That offset is what lets a bare
+    ratio be taken at all: ln(v/b) needs a positive baseline and grows without
+    bound as either side approaches zero, so a cell whose historic mean is
+    almost nothing reports a spectacular change from a physically trivial one.
+    Offsetting instead of clamping the denominator keeps the rate exactly zero
+    whenever nothing changed, however small the baseline, and bounds a collapse
+    to zero at -ln(1 + b/n) rather than an arbitrary sentinel.
+
+    Lives here rather than next to its callers because both the farmer metrics
+    and the historic series that calibrates the scoring scales have to apply
+    the same transform, or the ruler and the values it measures end up on
+    different scales.
+
+    Parameters
+    ----------
+    value : float
+        Current metric value.
+    baseline : float
+        Reference baseline value.
+    negligible : float
+        Level of this metric that counts as negligible, in the metric's own
+        physical unit. Must be positive; see materiality in the config.
+
+    Returns
+    -------
+    float
+        ln((value + negligible) / (baseline + negligible)).
+    """
+    if baseline + negligible <= 0:
+        return 0.0
+    return float(np.log((value + negligible) / (baseline + negligible)))
+
+
+def annuity_factor(horizon, rate):
+    """Years of annual benefit a farmer counts over horizon, discounted at rate.
+
+    Returns (1 - (1+r)^-H) / r, the present value of one unit received annually
+    for H years. Discounting rather than a bare multiplication by the horizon,
+    because an undiscounted window is a cliff rather than a preference: every
+    year inside it counts fully and every year beyond it counts nothing.
+
+    The two arguments trade off sharply, which is why both are stated: ten years
+    at 10% counts 6.14 years of benefit, and at 15% counts 5.02. A long horizon
+    is therefore only as generous as the discount rate allows.
+
+    Parameters
+    ----------
+    horizon : float
+        Years ahead the farmer considers.
+    rate : float
+        Annual discount rate. Zero falls back to the horizon itself.
+
+    Returns
+    -------
+    float
+        Discounted number of benefit-years.
+    """
+    if horizon <= 0:
+        return 0.0
+    if rate <= 0:
+        return float(horizon)
+    return float((1.0 - (1.0 + rate) ** -horizon) / rate)
 
 
 class AFT(Enum):
@@ -266,7 +456,7 @@ class Farmer(core.Individual, base.Individual):
         # Same applies for cropyield (as for soilc)
         self.cropyield = self.cell_cropyield
         # Optional outputs (only available in some model versions)
-        if "rootmoist_agr" in self.cell.from_earth:
+        if moisture_var(self.cell.from_earth):
             self.root_moisture = self.cell_root_moisture
         if "litcover_agr" in self.cell.from_earth:
             self.litter_cover = self.cell_litter_cover
@@ -327,13 +517,23 @@ class Farmer(core.Individual, base.Individual):
                 self.set_lpjml(attribute=attribute)
 
     def init_neighbourhood(self):
-        """Initialize the neighbourhood of the agent."""
-        self.neighbourhood = [
-            neighbour
-            for cell_neighbours in self.cell.neighbourhood
-            if len(cell_neighbours.individuals) > 0
-            for neighbour in cell_neighbours.individuals
-        ]
+        """Initialize the neighbourhood of the agent, ordered by cell.
+
+        Sorted rather than taken as it comes, because ``individuals`` is a set:
+        iterating it gives an order that depends on object identity and so
+        differs between processes. Local social learning sums over this list and
+        takes a weighted median of it, both of which can land differently under
+        a different order, which would leave a seeded run irreproducible.
+        """
+        self.neighbourhood = sorted(
+            (
+                neighbour
+                for cell_neighbours in self.cell.neighbourhood
+                if len(cell_neighbours.individuals) > 0
+                for neighbour in cell_neighbours.individuals
+            ),
+            key=lambda neighbour: int(neighbour.cell.cell_index),
+        )
 
     def get_from_earth(self, var_name, as_scalar=False, band=None, drop_band=None, time_idx=None):  # noqa: E501
         """Get variable from cell.from_earth, handling multi-year data.
@@ -423,11 +623,7 @@ class Farmer(core.Individual, base.Individual):
         cached = self._cached("cropyield")
         if cached is not None:
             return cached
-        return (
-            self.get_from_earth("pft_harvestc", as_scalar=False, drop_band=NON_CROPS, time_idx=-1)
-            .weighted(self.get_from_earth("cftfrac", as_scalar=False, drop_band=NON_CROPS, time_idx=-1))
-            .sum("band")
-        ).item()
+        return cropyield(self.cell)
 
     @property
     def cell_pft_yield(self):
@@ -455,11 +651,13 @@ class Farmer(core.Individual, base.Individual):
 
     @property
     def cell_root_moisture(self):
-        """Return rootzone soil moisture (cache-aware)."""
+        """Return rootzone soil moisture of the crop stands (cache-aware)."""
         cached = self._cached("root_moisture")
         if cached is not None:
             return cached
-        return self.get_from_earth("rootmoist_agr", as_scalar=True, time_idx=-1)
+        return self.get_from_earth(
+            moisture_var(self.cell.from_earth), as_scalar=True, time_idx=-1
+        )
 
     @property
     def cell_litter_cover(self):
@@ -476,8 +674,12 @@ class Farmer(core.Individual, base.Individual):
 
     @property
     def cell_leaching(self):
-        """Return N leaching (gN/m2/yr) from LPJmL (whole cell)."""
-        return self.get_from_earth("leaching", as_scalar=True, time_idx=-1)
+        """Nitrogen leached from this cell's cropland, gN/m2 of cropland/yr.
+
+        Agricultural stands only and normalised to the cropped area; see
+        ``agricultural_leaching`` for why both matter.
+        """
+        return agricultural_leaching(self, time_idx=-1)
 
     @property
     def cell_fertilizer(self):
@@ -496,33 +698,18 @@ class Farmer(core.Individual, base.Individual):
         return self.get_from_earth("irrig", as_scalar=True, time_idx=-1)
 
     @property
-    def net_farm_size(self):
-        """Return farm size in hectares (sum of cftfrac * area).
+    def farm_size(self):
+        """Cropped area in hectares (crop-band cftfrac × cell area).
 
-        Calculated as the sum of crop functional type fractions times cell area.
-        Uses cached value if available (set during initialization to average
-        over spinup years for robust baseline).
-
-        Used for:
-        - Scaling maintenance costs
-        - Calculating total profit (yield × area × price)
-        - Determining equipment investment thresholds
-
-        Returns
-        -------
-        float
-            Farm size in hectares (ha). Cell area from pycopanlpjml is in m²,
-            converted to ha (1 ha = 10,000 m²).
+        Grassland and biomass plantations are excluded, so this is the area
+        that earns the revenue. Costs, capital and the min_capital threshold
+        are all scaled on it. Uses the cell cache when it holds
+        ``farm_size_ha``.
         """
         cached = self._cached("farm_size_ha")
         if cached is not None:
             return cached
-        return farm_size_ha(self.cell, net=True)
-
-    @property
-    def gross_farm_size(self):
-        """Return farm size in hectares (sum of cftfrac * area)."""
-        return farm_size_ha(self.cell, net=False)
+        return farm_size_ha(self.cell)
 
     @property
     def cell_avg_hdate(self):
@@ -564,7 +751,7 @@ class Farmer(core.Individual, base.Individual):
                 self.litter_cover = cache.litter_cover
         else:
             # Fallback to direct access (slower)
-            if "rootmoist_agr" in self.cell.from_earth:
+            if moisture_var(self.cell.from_earth):
                 self.root_moisture = self.cell_root_moisture
             if "litcover_agr" in self.cell.from_earth:
                 self.litter_cover = self.cell_litter_cover
