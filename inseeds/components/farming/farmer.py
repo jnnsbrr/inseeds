@@ -185,11 +185,100 @@ def cropyield(cell):
     return float((v * w).sum() / w.sum()) if w.sum() > 0 else 0.0
 
 
-def soilc(cell):
-    """Top-layer soil carbon (gC/m2)."""
-    data = get_cell_var(cell, "soilc_agr_layer", band=0)
-    v = data.values
-    return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
+# Lower boundaries of the LPJmL soil layers that soilc_agr_layer writes, in mm.
+# Band k is the layer whose lower boundary is this value (band 0 is 0-200 mm),
+# and the bands are layer stocks, so a stock to depth D is their sum. 200 mm is
+# the top layer and the only stock the model read before a depth existed.
+SOIL_CARBON_LAYER_BOUNDS_MM = (200, 500, 1000, 2000, 3000)
+SOIL_CARBON_TOP_MM = SOIL_CARBON_LAYER_BOUNDS_MM[0]
+
+
+def validate_soil_carbon_depth(depth_mm):
+    """Return ``depth_mm`` if it is a layer boundary, else raise.
+
+    A depth between boundaries would need a split of a layer the output does
+    not carry, so it is rejected rather than rounded to a neighbour.
+    """
+    if isinstance(depth_mm, bool) or isinstance(depth_mm, np.bool_):
+        depth = None
+    elif isinstance(depth_mm, (int, np.integer)):
+        depth = int(depth_mm)
+    elif isinstance(depth_mm, (float, np.floating)) and float(depth_mm).is_integer():
+        depth = int(depth_mm)
+    else:
+        depth = None
+    if depth not in SOIL_CARBON_LAYER_BOUNDS_MM:
+        raise ValueError(
+            "soil_carbon_depth must be a lower boundary of an LPJmL soil "
+            f"layer in mm, one of {list(SOIL_CARBON_LAYER_BOUNDS_MM)}, "
+            f"got {depth_mm!r}"
+        )
+    return depth
+
+
+def soil_carbon_depth_mm(model):
+    """Configured SOC accounting depth in mm. Absent means the top layer."""
+    coupled = getattr(getattr(model, "config", None), "coupled_config", None)
+    if coupled is None or not hasattr(coupled, "soil_carbon_depth"):
+        return SOIL_CARBON_TOP_MM
+    return validate_soil_carbon_depth(coupled.soil_carbon_depth)
+
+
+def _sum_soil_layers(data, n_layers):
+    """Sum the first ``n_layers`` bands of a soilc_agr_layer array."""
+    if "band" not in getattr(data, "dims", ()):
+        raise ValueError(
+            "soilc_agr_layer has no band dimension, so layers cannot be summed"
+        )
+    available = int(data.sizes["band"])
+    if available < n_layers:
+        raise ValueError(
+            f"soilc_agr_layer has {available} band(s); {n_layers} are needed "
+            "for this soil_carbon_depth"
+        )
+    layers = data.isel(band=slice(0, n_layers))
+    band_axis = layers.dims.index("band")
+    total = np.sum(np.asarray(layers.values), axis=band_axis, dtype=np.float64)
+    flat = np.asarray(total).reshape(-1)
+    if flat.size != 1:
+        raise ValueError(
+            "soilc_agr_layer summed over layers is not one stock per cell; "
+            f"remaining shape {np.asarray(total).shape}"
+        )
+    return float(flat[0])
+
+
+def agricultural_soilc(cell, depth_mm=SOIL_CARBON_TOP_MM, time_idx=-1, *,
+                       farmer=None):
+    """Agricultural soil carbon stock to ``depth_mm`` (gC/m2).
+
+    The stock is the sum of the ``soilc_agr_layer`` bands whose lower boundary
+    is at most ``depth_mm``. The top layer is that one band, read by the same
+    call the model made before a depth existed: ``soilc`` for a cell, and
+    ``get_from_earth`` where a farmer used to ask for band 0. Deeper stocks
+    are the sum of those layers.
+    """
+    depth_mm = validate_soil_carbon_depth(depth_mm)
+    n_layers = SOIL_CARBON_LAYER_BOUNDS_MM.index(depth_mm) + 1
+    if n_layers == 1:
+        if farmer is not None:
+            return farmer.get_from_earth(
+                "soilc_agr_layer", as_scalar=True, band=0, time_idx=time_idx
+            )
+        data = get_cell_var(cell, "soilc_agr_layer", band=0, time_idx=time_idx)
+        v = data.values
+        return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
+    data = get_cell_var(cell, "soilc_agr_layer", time_idx=time_idx)
+    return _sum_soil_layers(data, n_layers)
+
+
+def soilc(cell, depth_mm=SOIL_CARBON_TOP_MM):
+    """Agricultural soil carbon to ``depth_mm`` (gC/m2).
+
+    200 mm is the top layer. Passed through ``agricultural_soilc`` so the
+    cached stock and every other read share one depth.
+    """
+    return agricultural_soilc(cell, depth_mm)
 
 
 # Root moisture is taken from the crop stands alone. rootmoist_agr averages over
@@ -216,6 +305,26 @@ def root_moisture(cell):
     return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
 
 
+def n_mineralization(cell, time_idx=-1):
+    """Net N mineralisation on agricultural stands (gN/m2/yr), NaN if absent.
+
+    The nitrogen the land releases on its own, which is what a legume's
+    fixation has to be worth something against: a soil already mineralising
+    plenty supplies the crop without help. Stand-matched to ``soilc_agr_layer``
+    rather than taken from the whole cell, so it describes cropland and not the
+    natural vegetation beside it.
+
+    NaN rather than an error where the output is missing, because this feeds
+    only the land-similarity weighting, which drops a covariate it cannot read.
+    Output written before the variable existed therefore stays runnable.
+    """
+    if "nmineralization_agr" not in cell.from_earth:
+        return float("nan")
+    data = get_cell_var(cell, "nmineralization_agr", time_idx=time_idx)
+    v = data.values
+    return float(v.item()) if hasattr(v, "item") else float(np.nanmean(v))
+
+
 def litter_cover(cell):
     """Litter cover fraction (0-1)."""
     data = get_cell_var(cell, "litcover_agr")
@@ -229,7 +338,7 @@ def cache_yearly(cell, model):
         cell.cache = CellCache()
     cell.cache.avg_hdate = avg_hdate(cell, model)
     cell.cache.cropyield = cropyield(cell)
-    cell.cache.soilc = soilc(cell)
+    cell.cache.soilc = soilc(cell, soil_carbon_depth_mm(model))
     if moisture_var(cell.from_earth):
         cell.cache.root_moisture = root_moisture(cell)
     if "litcover_agr" in cell.from_earth:
@@ -643,11 +752,13 @@ class Farmer(core.Individual, base.Individual):
 
     @property
     def cell_soilc(self):
-        """Return top-layer soil carbon (gC/m2, cache-aware)."""
+        """Agricultural soil carbon to the configured depth (gC/m2, cache-aware)."""
         cached = self._cached("soilc")
         if cached is not None:
             return cached
-        return self.get_from_earth("soilc_agr_layer", as_scalar=True, band=0, time_idx=-1)
+        return agricultural_soilc(
+            self.cell, soil_carbon_depth_mm(self.model), time_idx=-1, farmer=self
+        )
 
     @property
     def cell_root_moisture(self):

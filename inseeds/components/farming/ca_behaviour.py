@@ -87,10 +87,13 @@ from inseeds.components.farming.ca_management import (
     ManagementPerformanceMemory,
     ManagementPerformanceTracker,
     PRACTICE_FIELDS,
+    PerceptionNoise,
+    ReportingNoise,
     RegionManagementPerformanceStore,
     compute_performance_score,
 )
 from inseeds.components.farming.metrics import METRICS, rates_of
+from inseeds.components.farming.ca_world import LAND_COVARIATES
 
 
 def _weighted_median(values, weights):
@@ -447,6 +450,13 @@ class DecisionModel(ABC):
         # Own score for the current year, filled on first read (see own_score)
         self._own_score = None
         self._own_score_year = None
+
+        # How this farm's account of each comparison departs from its record,
+        # drawn on first telling and kept thereafter so the story does not
+        # change with the listener or the year. Empty and untouched unless
+        # tpb.reporting_noise is on; see report_error. One entry per comparison
+        # the farm is actually asked about, which is a handful of bundle pairs.
+        self._report_errors = {}
 
     # -------------------------------------------------------------------------
     # Properties for external access
@@ -957,6 +967,9 @@ class TPB(DecisionModel):
         self.performance_tracker.add_observation(
             rates_of(self.farmer),
             self.farmer.model.lpjml.sim_year,
+            noise=PerceptionNoise.from_config(
+                self.farmer.model.config.coupled_config.tpb
+            ),
         )
 
         # The tracker has moved, so any score cached before this point is stale.
@@ -1959,6 +1972,78 @@ class TPB(DecisionModel):
 
         return w_bundle * bundle_sim + w_crop * crop_sim
 
+    def _land_similarity_config(self):
+        """The ``tpb.land_similarity`` block, or ``None`` if it is off or absent.
+
+        On, it reaches every comparison the estimator serves, because the
+        objection is to the estimator and not to any one practice. Absent as
+        well as off, because a configuration written before this setting
+        existed must keep running and must reproduce its old numbers.
+        """
+        tpb = self.farmer.model.config.coupled_config.tpb
+        settings = getattr(tpb, "land_similarity", None)
+        if settings is None or not getattr(settings, "enabled", False):
+            return None
+        return settings
+
+    def land_similarity(self, peer, settings):
+        """How well ``peer``'s land stands in for this farm's, in [floor, 1].
+
+        Distance between the two farms in the baseline covariates of
+        ``LAND_COVARIATES``, each divided by its cross-farmer spread so
+        nitrogen mineralisation and root-zone moisture are comparable before
+        being summed::
+
+            similarity = floor + (1 - floor) / (1 + d2)
+            d2         = mean_k ((own_k - peer_k) / scale_k)^2
+
+        The mean rather than the sum over covariates, so adding a covariate
+        changes what is measured and not how sharply it discriminates.
+
+        There is no width parameter because the covariates already supply one:
+        distances are in units of the population's own robust spread, so a peer
+        one spread away in every covariate is halfway discounted by
+        construction, and the kernel sharpens or relaxes with the dispersion of
+        the land rather than with a number someone chose. The rational form
+        rather than a Gaussian for its heavier tail: with a pool that can be
+        three peers, a distant one should be discounted and not erased.
+
+        ``floor`` is the only setting, and it is the strength of the whole
+        correction: 0 lets a distant peer be discarded outright, 1 makes the
+        kernel inert and recovers the unweighted estimator.
+
+        Returns
+        -------
+        float
+            Weight multiplier for this peer's contribution.
+        """
+        scales = self.farmer.world.statistic.get("land_scales")
+        if not scales:
+            # Scales not computed yet (farmers still initialising); a uniform
+            # weight reproduces the unweighted estimator rather than guessing.
+            return 1.0
+
+        floor = float(getattr(settings, "floor", 0.0))
+
+        squared = []
+        for name in LAND_COVARIATES:
+            scale = scales.get(name)
+            if not scale:
+                continue
+            own = getattr(self.farmer, name, None)
+            theirs = getattr(peer, name, None)
+            if own is None or theirs is None:
+                continue
+            if not (np.isfinite(own) and np.isfinite(theirs)):
+                continue
+            squared.append(((own - theirs) / scale) ** 2)
+
+        if not squared:
+            return 1.0
+
+        distance = float(np.mean(squared))
+        return floor + (1.0 - floor) / (1.0 + distance)
+
     def _shrink_to_neutral(self, score, evidence):
         """Shrink a [0,1] component score toward 0.5 when evidence is thin.
 
@@ -2506,6 +2591,15 @@ class TPB(DecisionModel):
         needs the same within-peer differencing, the same experience weighting
         and the same country cache as any other.
 
+        Under ``tpb.land_similarity.enabled`` each peer is additionally
+        weighted by how well its land stands in for this farm's. Without that
+        the estimate is a property of the pool and not of the asker: peers are
+        differenced within themselves, which removes site confounding from each
+        peer's own record, but nothing then asks whether that site resembles the
+        receiving one. A farm whose soil already mineralises plenty of nitrogen,
+        where a legume's fixation is worth least, reads the same fraction as a
+        farm where it is worth most.
+
         Parameters
         ----------
         metric : str
@@ -2523,36 +2617,114 @@ class TPB(DecisionModel):
         if current_key == target_key:
             return 0.0
 
+        effect = self._peer_effect(metric, current_key, target_key, min_peers)
+        return 0.0 if effect is None else float(np.expm1(effect))
+
+    def anticipated_trend_change(
+        self, metric, current_bundle, target_bundle, min_peers=3
+    ):
+        """Expected change in one metric's yearly trend from switching bundles.
+
+        The same peers, weights and search order as ``anticipated_change``,
+        differencing each peer's remembered trend on the two bundles instead of
+        its remembered level. A level answers how far above its own baseline a
+        practice holds a farm; a trend answers which way the metric is moving
+        under it, and the two can disagree in sign. On land losing soil carbon
+        under every management, a peer that slowed the loss from -8 to -2
+        gC/m2/yr still sits lower in its second episode than in its first, so
+        its level difference reads as a loss while its trend difference reads
+        as the 6 gC/m2/yr gained against the old path - which is what a
+        payment on the carbon flow is written on.
+
+        Reporting noise is not applied: it is scaled on the interannual spread
+        of levels and has no counterpart for a slope.
+
+        Returns
+        -------
+        float
+            Change in the trend in log deviation per year, or 0.0 if
+            insufficient peers.
+        """
+        if current_bundle == target_bundle:
+            return 0.0
+
+        effect = self._peer_effect(
+            metric,
+            self.performance_memory.key(current_bundle),
+            self.performance_memory.key(target_bundle),
+            min_peers,
+            quantity="trend",
+        )
+        return 0.0 if effect is None else float(effect)
+
+    def _peer_effect(
+        self, metric, current_key, target_key, min_peers, quantity="level"
+    ):
+        """Peer median of ``quantity`` differences in log space, or None."""
         spec = METRICS[metric]
         enable_local, enable_country, _ = self._get_enabled_spreading_levels()
         tpb = self.farmer.model.config.coupled_config.tpb
         max_experience = tpb.max_experience_years
+        land = self._land_similarity_config()
+        reporting = (
+            ReportingNoise.from_config(tpb) if quantity == "level" else None
+        )
         effect = None
 
         # Local first: closer climates / soils transfer better
         if enable_local and self.farmer.neighbourhood:
             neighbours = [f for f in self.farmer.neighbourhood if f is not self.farmer]
-            _, deltas, weights = self._collect_effects(
-                metric, neighbours, current_key, target_key, max_experience
+            _, deltas, weights, peers = self._collect_effects(
+                metric,
+                neighbours,
+                current_key,
+                target_key,
+                max_experience,
+                reporting=reporting,
+                quantity=quantity,
             )
             if len(deltas) >= min_peers:
-                effect = self._reduce_effects(spec, deltas, weights)
+                # min_peers is counted before similarity weighting, so turning
+                # the weighting on cannot change which spatial level is used:
+                # it reweights the pool, it does not shrink it.
+                effect = self._reduce_effects(
+                    spec,
+                    deltas,
+                    weights,
+                    similarity=self._similarity_weights(peers, land),
+                )
 
         if effect is None and enable_country:
-            index, deltas, weights, reduced = self._country_effects(
-                metric, current_key, target_key, max_experience
+            index, deltas, weights, peers, reduced = self._country_effects(
+                metric, current_key, target_key, max_experience, quantity
             )
             own = index.get(id(self.farmer))
             if len(index) - (1 if own is not None else 0) >= min_peers:
                 # Cached country median includes self if dual-experienced;
                 # drop own index so the farm does not learn from itself.
-                effect = (
-                    reduced
-                    if own is None
-                    else self._reduce_effects(spec, deltas, weights, skip=own)
-                )
+                if own is None and land is None:
+                    effect = reduced
+                else:
+                    effect = self._reduce_effects(
+                        spec,
+                        deltas,
+                        weights,
+                        skip=own,
+                        similarity=self._similarity_weights(peers, land),
+                    )
 
-        return 0.0 if effect is None else float(np.expm1(effect))
+        return effect
+
+    def _similarity_weights(self, peers, settings):
+        """Per-peer land similarity, or ``None`` when the weighting is off.
+
+        ``None`` rather than a vector of ones so that the unweighted path stays
+        bit-identical to the model as it was specified before this setting
+        existed.
+        """
+        if settings is None:
+            return None
+        return [self.land_similarity(peer, settings) for peer in peers]
 
     def anticipated_absolute_change(self, metric, current_bundle, target_bundle):
         """Expected change in one metric in its own physical unit.
@@ -2599,6 +2771,50 @@ class TPB(DecisionModel):
         baseline = getattr(self.farmer, spec.physical_baseline_attr)
         return float(baseline) * relative
 
+    def anticipated_carbon_credit_change(self, new_bundle):
+        """Expected change in the yearly carbon credit from a switch, gC/m2/yr.
+
+        The payment is settled on the slope of the farm's own soil carbon, so
+        that is what the expectation is formed on: the farm's current slope,
+        moved by however much peers' slopes moved when they made the same
+        switch (``anticipated_trend_change``), credited on the instrument's own
+        basis by ``creditable_soilc_accumulation_at``, less what the farm is
+        credited on its current slope::
+
+            s_after = s_own + delta_trend
+            gain    = credit(baseline * expm1(s_after), new_bundle)
+                      - credit(baseline * expm1(s_own), current_bundle)
+
+        Under ``stock_gain`` this pays only where the stock would actually
+        rise; under an avoided-loss basis it pays for the departure from the
+        counterfactual slope, which for a farm still on conventional practice
+        is its own current slope - so slowing a loss reads as the credit it
+        will settle as.
+
+        Reading the peers' level difference instead, as this once did, priced
+        neither basis. On land losing carbon a peer that slowed the loss still
+        holds less carbon in its second episode than in its first, so the level
+        difference reads as a loss and the farm expected nothing even where the
+        avoided-loss scheme pays.
+
+        The slope a farm is credited on is fitted over its current episode, so
+        a new practice draws little for its first couple of years. That lag is
+        not discounted out here.
+        """
+        farmer = self.farmer
+        own = self.performance_tracker.trend["soilc"]
+        delta = self.anticipated_trend_change(
+            "soilc", self.practice_bundle, new_bundle
+        )
+        baseline = farmer.baseline_soilc
+        before = farmer.creditable_soilc_accumulation_at(
+            float(baseline * np.expm1(own)), self.committed_bundle
+        )
+        after = farmer.creditable_soilc_accumulation_at(
+            float(baseline * np.expm1(own + delta)), new_bundle
+        )
+        return after - before
+
     def anticipated_policy_transfer(self, new_bundle, benefit_years):
         """Cash a switch is expected to draw from policy, over the horizon.
 
@@ -2629,26 +2845,22 @@ class TPB(DecisionModel):
         farm_size = self.farmer.farm_size
         transfer = 0.0
 
+        # The two payments a no-stacking rule has to choose between, kept
+        # apart until the end. The rule picks the larger payment, which is a
+        # question about levels and not about the deltas they are used as:
+        # the difference between two maxima is not the maximum of two
+        # differences.
+        carbon_gain = 0.0
+        practice_delta = 0.0
+
         if settings.carbon_price:
-            # What the farm is paid each year is the increment; what it can
-            # know in advance is the total, because peers remember carbon
-            # levels rather than the year-by-year gains that built them. The
-            # two agree: peers holding 5% more carbon on a 2000 gC/m2 baseline
-            # is +100 gC/m2, which arrives as maybe 10 gC/m2/yr for ten years
-            # and pays exactly that 100 over the period. So the horizon must
-            # not multiply this - it is already the sum over one - whereas it
-            # must multiply the nitrogen term below, which really does repeat.
-            #
-            # Floored to match what is actually paid out: a switch expected to
-            # lose carbon draws no invoice, so it must not read as one here.
-            delta_stock = self.anticipated_absolute_change(
-                "soilc", self.practice_bundle, new_bundle
-            )
-            transfer += (
-                max(0.0, delta_stock)
+            # Paid every year on the flow, so the horizon applies.
+            carbon_gain = (
+                self.anticipated_carbon_credit_change(new_bundle)
                 * GC_M2_TO_TCO2_HA
                 * settings.carbon_price
                 * farm_size
+                * benefit_years
             )
 
         if settings.nitrogen_charge:
@@ -2679,16 +2891,74 @@ class TPB(DecisionModel):
             # the rate is posted, so the payment for a bundle is known exactly
             # rather than estimated from what neighbours have earned. A flow,
             # paid for every year the practice is held, so the horizon applies.
-            transfer += (
+            practice_delta = (
                 self.farmer.practice_subsidy_for(new_bundle)
                 - self.farmer.practice_subsidy_for(self.practice_bundle)
             ) * benefit_years
 
-        return transfer
+        if not settings.no_stacking:
+            # Both payments, summed, with the arithmetic left exactly as it
+            # was so a run without the rule is unchanged to the bit.
+            return transfer + carbon_gain + practice_delta
+
+        # Only the larger is paid, so the gain is what the farm would draw
+        # after the switch less what it draws now, each side resolved by the
+        # rule. Levels as horizon totals, like the deltas above.
+        carbon_now = self.farmer.carbon_payment * benefit_years
+        practice_now = (
+            self.farmer.practice_subsidy_for(self.practice_bundle) * benefit_years
+        )
+        after = sum(settings.unstacked(carbon_now + carbon_gain,
+                                       practice_now + practice_delta))
+        before = sum(settings.unstacked(carbon_now, practice_now))
+
+        return transfer + after - before
+
+    def report_error(self, metric, current_key, target_key, noise):
+        """How this farm's account of a comparison departs from its own record.
+
+        In the same log units as the delta it is added to, scaled on the farm's
+        own interannual spread so that ``reporting_noise.sigma`` and
+        ``perception_noise.sigma`` mean the same thing and can be read against
+        each other: a reporting sigma of four says what a farm passes on is
+        four times as far off as what it sees itself, which is roughly the
+        ratio the measurement literature reports between instrumented
+        comparison and self-reporting.
+
+        The random part is drawn once per comparison and kept, so the farm is
+        consistent from neighbour to neighbour and from year to year. The bias
+        is not cached: it tracks whichever practice the farm runs *now*, so a
+        farm that switches starts talking up the other one.
+        """
+        spread = self.performance_tracker.clean_interannual_std[metric]
+        if spread <= 0.0:
+            return 0.0
+
+        scale = noise.observability.get(metric, 1.0)
+        key = (metric, current_key, target_key)
+        drawn = self._report_errors.get(key)
+        if drawn is None:
+            drawn = noise.sigma * scale * np.random.normal()
+            self._report_errors[key] = drawn
+
+        # Positive favours the target, negative the practice being left.
+        favour = 0.0
+        if target_key[0] == self.practice_bundle:
+            favour = 1.0
+        elif current_key[0] == self.practice_bundle:
+            favour = -1.0
+
+        return spread * (drawn + noise.bias * scale * favour)
 
     @staticmethod
     def _collect_effects(
-        metric, farmers, current_key, target_key, max_experience
+        metric,
+        farmers,
+        current_key,
+        target_key,
+        max_experience,
+        reporting=None,
+        quantity="level",
     ):
         """Within-peer deltas in one metric between two episodes, with weights.
 
@@ -2708,10 +2978,24 @@ class TPB(DecisionModel):
             ``id(farmer) →`` index in deltas/weights (for dropping self).
         deltas, weights : list
             Log-rate differences and experience weights.
+        peers : list
+            The contributing farmers, in the order of ``deltas``, so a caller
+            can weight them by how well their land stands in for its own. The
+            scan itself is independent of who is asking, which is what lets the
+            country level stay cached while the weighting does not.
+
+        With ``reporting``, each delta is what the peer says rather than what
+        its record holds. That still leaves the scan independent of who is
+        asking - the distortion belongs to the peer telling the story, not to
+        whoever is listening - so the country cache remains valid.
+
+        ``quantity`` names the episode attribute differenced, ``"level"`` or
+        ``"trend"``.
         """
         contributor_index = {}
         deltas = []
         weights = []
+        peers = []
 
         for f in farmers:
             if not hasattr(f, "behaviour") or not hasattr(
@@ -2728,15 +3012,24 @@ class TPB(DecisionModel):
                 continue
 
             contributor_index[id(f)] = len(deltas)
-            deltas.append(target_exp.level[metric] - current_exp.level[metric])
+            delta = (
+                getattr(target_exp, quantity)[metric]
+                - getattr(current_exp, quantity)[metric]
+            )
+            if reporting is not None:
+                delta += f.behaviour.report_error(
+                    metric, current_key, target_key, reporting
+                )
+            deltas.append(delta)
             weights.append(
                 min(current_exp.duration, target_exp.duration, max_experience)
             )
+            peers.append(f)
 
-        return contributor_index, deltas, weights
+        return contributor_index, deltas, weights, peers
 
     @staticmethod
-    def _reduce_effects(spec, deltas, weights, skip=None):
+    def _reduce_effects(spec, deltas, weights, skip=None, similarity=None):
         """Experience-weighted median of the per-peer differences.
 
         Median rather than mean because the pool can be as small as three peers,
@@ -2745,7 +3038,17 @@ class TPB(DecisionModel):
         aggregates do. Weighting counts peers who have run the practice long
         enough for its benefits to show for more than recent converts; see
         _collect_effects.
+
+        ``similarity``, when given, multiplies each experience weight by how
+        well that peer's land stands in for the asking farm's, so a long record
+        on land that does not resemble this farm's no longer outvotes a shorter
+        one that does. It scales the existing weight rather than replacing it:
+        both questions, how good the record is and how relevant it is, bear on
+        the same estimate.
         """
+        if similarity is not None:
+            weights = [w * s for w, s in zip(weights, similarity)]
+
         if skip is not None:
             deltas = [v for i, v in enumerate(deltas) if i != skip]
             weights = [w for i, w in enumerate(weights) if i != skip]
@@ -2753,7 +3056,9 @@ class TPB(DecisionModel):
         lo, hi = spec.clip_bounds
         return _weighted_median(np.clip(deltas, lo, hi), weights)
 
-    def _country_effects(self, metric, current_key, target_key, max_experience):
+    def _country_effects(
+        self, metric, current_key, target_key, max_experience, quantity="level"
+    ):
         """Country-wide effects on one metric this year, computed once and shared.
 
         Every farmer in a country scans the same peers and reaches the same
@@ -2770,7 +3075,13 @@ class TPB(DecisionModel):
         pair with different cover crops in mind are reading different peers.
         The cap because it is one value for all farmer types today, and a
         per-AFT cap would otherwise silently share one type's answer with
-        another.
+        another. The quantity because a level difference and a trend difference
+        on the same pair are different answers.
+
+        What is cached is the scan, not the answer. ``reduced`` is the estimate
+        every farm would reach from an unweighted pool and is still shared; with
+        land similarity on, the deltas and the peers behind them are what get
+        re-used, and each farm reduces them against its own land.
         """
         country = self.farmer.cell.country
         year = self.farmer.model.lpjml.sim_year
@@ -2780,15 +3091,26 @@ class TPB(DecisionModel):
             country._effect_cache = {}
             country._effect_cache_year = year
 
-        key = (metric, current_key, target_key, max_experience)
+        key = (metric, current_key, target_key, max_experience, quantity)
         entry = country._effect_cache.get(key)
         if entry is None:
-            index, deltas, weights = self._collect_effects(
-                metric, country.farmers, current_key, target_key, max_experience
+            reporting = None
+            if quantity == "level":
+                reporting = ReportingNoise.from_config(
+                    self.farmer.model.config.coupled_config.tpb
+                )
+            index, deltas, weights, peers = self._collect_effects(
+                metric,
+                country.farmers,
+                current_key,
+                target_key,
+                max_experience,
+                reporting=reporting,
+                quantity=quantity,
             )
             spec = METRICS[metric]
             reduced = self._reduce_effects(spec, deltas, weights) if deltas else None
-            entry = (index, deltas, weights, reduced)
+            entry = (index, deltas, weights, peers, reduced)
             country._effect_cache[key] = entry
 
         return entry

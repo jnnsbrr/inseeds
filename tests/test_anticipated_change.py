@@ -304,12 +304,18 @@ class TestSoilCarbonFlow:
         tracker = farmer.behaviour.performance_tracker
 
         # A fitted slope needs two points that differ; write them directly so
-        # the sign under test is the one intended.
+        # the sign under test is the one intended. Both series get the same
+        # numbers, which is what a run without perception noise produces: the
+        # payment is billed from the clean one and the decision taken on the
+        # perceived one, and here there is nothing to tell them apart.
         tracker.n = 2
         tracker.sum_t, tracker.sum_tt = 1.0, 1.0
         tracker.sums["soilc"], tracker.time_sums["soilc"] = 0.02, 0.02
+        tracker.clean_sums["soilc"] = 0.02
+        tracker.clean_time_sums["soilc"] = 0.02
 
         assert tracker.trend["soilc"] == pytest.approx(0.02)
+        assert tracker.clean_trend["soilc"] == pytest.approx(0.02)
         assert farmer.soilc_accumulation == pytest.approx(
             farmer.baseline_soilc * np.expm1(0.02)
         )
@@ -324,6 +330,8 @@ class TestSoilCarbonFlow:
         tracker.n = 2
         tracker.sum_t, tracker.sum_tt = 1.0, 1.0
         tracker.sums["soilc"], tracker.time_sums["soilc"] = -0.02, -0.02
+        tracker.clean_sums["soilc"] = -0.02
+        tracker.clean_time_sums["soilc"] = -0.02
 
         assert farmer.soilc_accumulation < 0.0, (
             "The physical flow should report the decline as a decline."
@@ -339,6 +347,248 @@ class TestSoilCarbonFlow:
 
         farmer.behaviour.performance_tracker.n = 1  # no slope to fit
         assert farmer.creditable_soilc_accumulation == 0.0
+
+    def test_a_misread_stock_is_still_paid_on_what_the_soil_did(
+        self, ca_model_builder
+    ):
+        """Perception noise must not reach the cheque.
+
+        A scheme measures the soil; it does not pay a farm's opinion of it. If
+        the payment followed the perceived trend, an observation error would
+        become money, and the misperception these runs exist to slow adoption
+        down with would turn up instead as a mispriced subsidy.
+        """
+        model = ca_model_builder(seed=11)
+        farmer = list(model.world.farmers)[0]
+        tracker = farmer.behaviour.performance_tracker
+
+        tracker.n = 2
+        tracker.sum_t, tracker.sum_tt = 1.0, 1.0
+        # The soil gained; the farm believes it lost.
+        tracker.clean_sums["soilc"] = 0.02
+        tracker.clean_time_sums["soilc"] = 0.02
+        tracker.sums["soilc"], tracker.time_sums["soilc"] = -0.05, -0.05
+
+        assert tracker.trend["soilc"] == pytest.approx(-0.05)
+        assert farmer.soilc_accumulation == pytest.approx(
+            farmer.baseline_soilc * np.expm1(0.02)
+        )
+        assert farmer.creditable_soilc_accumulation > 0.0
+
+
+class TestPerceptionNoise:
+    """What a farm gets wrong reading its own fields."""
+
+    def _tracker(self, noise, weather=0.03, trend=0.02, years=40, seed=0):
+        from inseeds.components.farming.ca_management import (
+            ManagementPerformanceTracker,
+        )
+        from inseeds.components.farming.metrics import METRIC_KEYS
+
+        draw = np.random.RandomState(1)
+        series = [
+            {
+                key: (trend * t + weather * draw.randn() if key == "soilc" else 0.0)
+                for key in METRIC_KEYS
+            }
+            for t in range(years)
+        ]
+        np.random.seed(seed)
+        tracker = ManagementPerformanceTracker(t_start=0)
+        for year, rates in enumerate(series):
+            tracker.add_observation(rates, year, noise=noise)
+        return tracker
+
+    def test_off_leaves_the_two_series_identical(self):
+        """The default has to be the model as it was, to the bit."""
+        tracker = self._tracker(None)
+        assert tracker.trend == tracker.clean_trend
+        assert tracker.sums == tracker.clean_sums
+        assert tracker.time_sums == tracker.clean_time_sums
+
+    def test_the_ruler_is_the_wobble_and_not_the_climb(self):
+        """A strong trend must not be read as a farm that cannot see straight.
+
+        ``level_std`` grows with the trend because it is the spread of the
+        whole series. Scaling the error on that would hand the most noise to
+        the farms where the practice works best.
+        """
+        from inseeds.components.farming.ca_management import PerceptionNoise
+
+        for trend in (0.005, 0.02, 0.08):
+            tracker = self._tracker(PerceptionNoise(sigma=0.25), trend=trend)
+            assert tracker.clean_interannual_std["soilc"] == pytest.approx(
+                0.03, abs=0.01
+            ), "the ruler should recover the weather, whatever the trend"
+
+    def test_the_realised_error_matches_the_nominal_sigma(self):
+        """sigma is the swept number, so it has to mean what it says."""
+        from inseeds.components.farming.ca_management import PerceptionNoise
+
+        for sigma in (0.1, 0.25, 0.5):
+            totals = []
+            for seed in range(300):
+                tracker = self._tracker(PerceptionNoise(sigma=sigma), seed=seed)
+                totals.append(
+                    tracker.sums["soilc"] - tracker.clean_sums["soilc"]
+                )
+            # Sum of ~38 independent per-year errors.
+            realised = float(np.std(totals) / np.sqrt(38))
+            assert realised == pytest.approx(sigma * 0.03, rel=0.2)
+
+    def test_a_metric_can_be_made_harder_to_read_than_another(self):
+        """Soil carbon is not as legible as yield, and the config can say so."""
+        from inseeds.components.farming.ca_management import PerceptionNoise
+
+        plain = self._tracker(PerceptionNoise(sigma=0.25), seed=3)
+        harder = self._tracker(
+            PerceptionNoise(sigma=0.25, observability={"soilc": 20.0}), seed=3
+        )
+        plain_error = abs(plain.sums["soilc"] - plain.clean_sums["soilc"])
+        harder_error = abs(harder.sums["soilc"] - harder.clean_sums["soilc"])
+        assert harder_error > plain_error
+        assert plain.clean_trend == harder.clean_trend, (
+            "however badly it is read, the soil did the same thing"
+        )
+
+
+class TestNoStacking:
+    """Paying for the practice and for the carbon the practice produced."""
+
+    @staticmethod
+    def _settings(no_stacking):
+        from inseeds.components.farming.ca_management import PolicySettings
+
+        return PolicySettings.from_config(
+            {
+                "carbon_price": 185.0,
+                "practice_subsidies": {
+                    "cover_crop": [60.0, 60.0],
+                    "residue_on_field": [20.0, 20.0],
+                },
+                "no_stacking": no_stacking,
+            },
+            gdp_cost_ratio=1.0,
+            default_span=(2025, 2100),
+        )
+
+    def test_off_pays_both(self):
+        """The headline scenario, and the thing a referee calls double payment."""
+        assert self._settings(False).unstacked(70.0, 80.0) == (70.0, 80.0)
+
+    def test_on_pays_the_larger_and_not_the_sum(self):
+        assert self._settings(True).unstacked(70.0, 80.0) == (0.0, 80.0)
+        assert self._settings(True).unstacked(90.0, 80.0) == (90.0, 0.0)
+
+    def test_on_never_pays_more_than_off(self):
+        """The whole point: it can only bound the stacked result from below."""
+        settings_on = self._settings(True)
+        settings_off = self._settings(False)
+        for carbon, practice in [(0.0, 0.0), (70.0, 80.0), (90.0, 0.0), (0.0, 55.0)]:
+            assert sum(settings_on.unstacked(carbon, practice)) <= sum(
+                settings_off.unstacked(carbon, practice)
+            )
+
+    def test_a_farm_earning_only_one_is_untouched(self):
+        """It bites where both are on, so single-instrument runs are unchanged."""
+        settings = self._settings(True)
+        assert sum(settings.unstacked(90.0, 0.0)) == 90.0
+        assert sum(settings.unstacked(0.0, 55.0)) == 55.0
+
+    def test_the_rule_is_not_itself_an_instrument(self):
+        """A run with no_stacking and no rates still resolves to no policy."""
+        from inseeds.components.farming.ca_management import PolicySettings
+
+        settings = PolicySettings.from_config(
+            {"no_stacking": True},
+            gdp_cost_ratio=1.0,
+            default_span=(2025, 2100),
+        )
+        assert settings.any_in_force is False
+
+
+class TestReportingNoise:
+    """What a farm tells its neighbours, as against what its fields did."""
+
+    @staticmethod
+    def _give_a_record(behaviour, wobble=0.1):
+        """A real series on the tracker, so there is a spread to scale against."""
+        from inseeds.components.farming.metrics import METRIC_KEYS
+
+        tracker = behaviour.performance_tracker
+        draw = np.random.RandomState(4)
+        for t in range(12):
+            tracker._add_point(
+                t, {key: wobble * draw.randn() for key in METRIC_KEYS}
+            )
+        assert tracker.clean_interannual_std["yield"] > 0.0
+        return tracker
+
+    def test_off_is_absent_rather_than_zeroed(self):
+        """So a run without it takes no draws and disturbs no random stream."""
+        from inseeds.components.farming.ca_management import ReportingNoise
+
+        class Block:
+            enabled = False
+            sigma = 1.0
+
+        class Tpb:
+            reporting_noise = Block()
+
+        assert ReportingNoise.from_config(Tpb()) is None
+
+    def test_a_farm_tells_every_neighbour_the_same_story(self, ca_model_builder):
+        """Drawn once per comparison and kept.
+
+        Redrawing per listener would let the error average out across a
+        neighbourhood, which is the one thing the reporting literature says it
+        does not do.
+        """
+        from inseeds.components.farming.ca_management import ReportingNoise
+
+        model = ca_model_builder(seed=11)
+        farmer = list(model.world.farmers)[0]
+        behaviour = farmer.behaviour
+        self._give_a_record(behaviour)
+
+        noise = ReportingNoise(sigma=1.0)
+        first = behaviour.report_error("yield", ("a", 0), ("b", 0), noise)
+        again = behaviour.report_error("yield", ("a", 0), ("b", 0), noise)
+        assert first == again
+
+    def test_a_farm_talks_up_the_practice_it_runs(self, ca_model_builder):
+        """The self-justification term, and the half that does not cancel."""
+        from inseeds.components.farming.ca_management import ReportingNoise
+
+        model = ca_model_builder(seed=11)
+        farmer = list(model.world.farmers)[0]
+        behaviour = farmer.behaviour
+        self._give_a_record(behaviour)
+
+        mine = behaviour.practice_bundle
+        other = object()
+        noise = ReportingNoise(sigma=0.0, bias=0.5)
+
+        # Reporting on a move *to* the practice it runs: talked up.
+        towards = behaviour.report_error("yield", (other, 0), (mine, 0), noise)
+        # Reporting on a move *away* from it: talked down.
+        away = behaviour.report_error("yield", (mine, 0), (other, 0), noise)
+
+        assert towards > 0.0
+        assert away < 0.0
+        assert towards == pytest.approx(-away)
+
+    def test_a_farm_with_no_record_yet_says_nothing_wrong(self, ca_model_builder):
+        """No spread to scale against means no invented error."""
+        from inseeds.components.farming.ca_management import ReportingNoise
+
+        model = ca_model_builder(seed=11)
+        behaviour = list(model.world.farmers)[0].behaviour
+        behaviour.performance_tracker.n = 1
+
+        assert behaviour.report_error(
+            "yield", ("a", 0), ("b", 0), ReportingNoise(sigma=5.0)
+        ) == 0.0
 
 
 class TestPhysicalCounterparts:

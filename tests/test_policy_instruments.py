@@ -4,9 +4,9 @@ None of this is reachable from the golden trajectory: its farms never adopt a
 cover crop bundle and its instruments are off, which is exactly the point of
 the golden - it pins the counterfactual. So the instruments need testing here,
 against the two things that are easy to get wrong and impossible to see in an
-aggregate. First, a stock and a flow are paid for differently: soil carbon is
-banked once and nitrogen is lost every year, and an estimate that treats them
-alike is out by the length of the planning horizon. Second, the two cover crops
+aggregate. First, both payments are on flows - soil carbon on the slope of the
+stock, nitrogen on the yearly loss - so each is anticipated per year and
+repeated over the planning horizon. Second, the two cover crops
 are alternatives, so a farm must be charged for the seed it sowed and not for
 the sum of both.
 """
@@ -95,7 +95,7 @@ def subsidy(farmer):
     return farmer.practice_subsidy_for(farmer.behaviour.committed_bundle)
 
 
-def remember(farmer, bundle, cover_crop_type, levels, year, n=5):
+def remember(farmer, bundle, cover_crop_type, levels, year, n=5, trends=None):
     """Write a performance record under one exact ``(bundle, type)`` key.
 
     Goes at the slot directly rather than through ``record_performance``, which
@@ -104,12 +104,14 @@ def remember(farmer, bundle, cover_crop_type, levels, year, n=5):
     """
     level = zero_metrics()
     level.update(levels)
+    trend = zero_metrics()
+    trend.update(trends or {})
     farmer.behaviour.performance_memory._slots[(bundle, cover_crop_type)] = (
-        ManagementPerformance.from_tracker(zero_metrics(), level, n, year)
+        ManagementPerformance.from_tracker(trend, level, n, year)
     )
 
 
-def remember_either_type(farmer, bundle, levels, year):
+def remember_either_type(farmer, bundle, levels, year, trends=None):
     """Record the same experience under both cover crops.
 
     For tests about something other than the type, where which crop the farm
@@ -117,7 +119,7 @@ def remember_either_type(farmer, bundle, levels, year):
     finds a record at all.
     """
     for cover_crop_type in (COVER_CROP_NONLEGUME, COVER_CROP_LEGUME):
-        remember(farmer, bundle, cover_crop_type, levels, year)
+        remember(farmer, bundle, cover_crop_type, levels, year, trends=trends)
 
 
 def set_accumulation(monkeypatch, farmer, gc_per_m2_per_year):
@@ -857,15 +859,33 @@ class TestOnlyTheLocalInstrumentVariesByIncome:
 
 
 class TestAnticipationTreatsStocksAndFlowsApart:
-    """The error this file exists for.
+    """Both payments are on a flow, so the horizon multiplies both.
 
-    Soil carbon is a stock, so the peer estimate is the carbon a switch banks
-    in total. Leaching is a flow, so its estimate is a change repeated every
-    year. Multiplying the first by the horizon pays for the same tonnes once a
-    year; failing to multiply the second charges one year of a permanent bill.
+    The carbon payment is settled each year on the slope of the farm's soil
+    carbon, so its expectation is read off peers' slopes and repeats every
+    year like the nitrogen saving. Peers' carbon *levels* do not enter it: a
+    level difference can be negative where the slope improved.
     """
 
-    def test_the_carbon_term_does_not_grow_with_the_horizon(self, farm):
+    def test_the_carbon_term_grows_with_the_horizon(self, farm):
+        model, farmer = farm
+        set_policy(model, carbon_price=50.0)
+        year = model.lpjml.sim_year
+        current = farmer.behaviour.practice_bundle
+        for f in [farmer, *farmer.neighbourhood]:
+            remember(f, current, None, {}, year, trends={"soilc": 0.0})
+            remember_either_type(
+                f, COVER_CROP_BUNDLE, {}, year, trends={"soilc": 0.01}
+            )
+
+        short = farmer.behaviour.anticipated_policy_transfer(COVER_CROP_BUNDLE, 5.0)
+        long = farmer.behaviour.anticipated_policy_transfer(COVER_CROP_BUNDLE, 20.0)
+
+        assert short > 0.0, "The peers need to show a carbon gain worth paying."
+        assert long == pytest.approx(short * 4.0)
+
+    def test_a_level_gain_without_a_slope_gain_is_not_paid(self, farm):
+        """A one-off step up in the stock is not a yearly flow."""
         model, farmer = farm
         set_policy(model, carbon_price=50.0)
         year = model.lpjml.sim_year
@@ -874,11 +894,9 @@ class TestAnticipationTreatsStocksAndFlowsApart:
             remember(f, current, None, {"soilc": 0.0}, year)
             remember_either_type(f, COVER_CROP_BUNDLE, {"soilc": 0.3}, year)
 
-        short = farmer.behaviour.anticipated_policy_transfer(COVER_CROP_BUNDLE, 5.0)
-        long = farmer.behaviour.anticipated_policy_transfer(COVER_CROP_BUNDLE, 20.0)
-
-        assert short > 0.0, "The peers need to show a carbon gain worth paying."
-        assert short == pytest.approx(long)
+        assert farmer.behaviour.anticipated_policy_transfer(
+            COVER_CROP_BUNDLE, 10.0
+        ) == pytest.approx(0.0)
 
     def test_the_nitrogen_term_grows_with_the_horizon(self, farm):
         model, farmer = farm
@@ -897,14 +915,21 @@ class TestAnticipationTreatsStocksAndFlowsApart:
 
     def test_an_expected_carbon_loss_is_not_an_expected_invoice(self, farm):
         """Floored in the anticipation as it is in the payment, or the farm
-        would decline a switch over a bill it would never receive."""
+        would decline a switch over a bill it would never receive. Pinned to a
+        farm drawing no payment now, which has none to forfeit."""
         model, farmer = farm
         set_policy(model, carbon_price=50.0)
         year = model.lpjml.sim_year
         current = farmer.behaviour.practice_bundle
         for f in [farmer, *farmer.neighbourhood]:
-            remember(f, current, None, {"soilc": 0.0}, year)
-            remember_either_type(f, COVER_CROP_BUNDLE, {"soilc": -0.3}, year)
+            remember(f, current, None, {}, year, trends={"soilc": 0.0})
+            remember_either_type(
+                f, COVER_CROP_BUNDLE, {}, year, trends={"soilc": -0.01}
+            )
+        own = zero_metrics()
+        farmer.behaviour.performance_tracker = SimpleNamespace(
+            n=5, trend=own, clean_trend=own
+        )
 
         transfer = farmer.behaviour.anticipated_policy_transfer(
             COVER_CROP_BUNDLE, 10.0

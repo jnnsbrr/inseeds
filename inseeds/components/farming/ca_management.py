@@ -83,8 +83,10 @@ from inseeds.components.farming.farmer import (
     AFT,
     NON_CROPS,
     agricultural_leaching,
+    agricultural_soilc,
     log_rate,
     moisture_var,
+    soil_carbon_depth_mm,
 )
 from inseeds.components.farming.metrics import (
     DEFAULT_CLIP_BOUNDS,
@@ -531,6 +533,13 @@ class PolicySettings:
     ----------
     carbon_price : float
         USD per tonne of CO2 equivalent sequestered above baseline.
+    carbon_price_basis : str
+        What that price is paid on. ``stock_gain`` pays on the rise in the
+        farm's own stock, which is how soil carbon protocols are written and
+        what the published runs used; the two avoided-loss bases pay on the
+        loss the practice did not incur. See
+        ``CAFarmer.creditable_soilc_accumulation`` for what each one settles
+        and the config block for why there is a choice to make.
     nitrogen_charge : float
         USD per kg of nitrogen leached, already interpolated for this country.
     levy_free_concentration : float
@@ -561,6 +570,10 @@ class PolicySettings:
     windows : tuple of (str, int, int)
         Per-instrument overrides of that span, as ``(name, start, end)``. A
         tuple rather than a dict so the record stays hashable.
+    no_stacking : bool
+        Whether a farm may draw the practice payment and the carbon payment
+        together. Off, it draws both, which is what the headline scenario
+        does. On, it draws the larger and not the sum; see ``unstacked``.
     """
 
     carbon_price: float
@@ -573,6 +586,47 @@ class PolicySettings:
     start_year: int
     end_year: int = MAX_YEAR
     windows: tuple[tuple[str, int, int], ...] = ()
+    no_stacking: bool = False
+    carbon_price_basis: str = "stock_gain"
+
+    def unstacked(self, carbon: float, practice: float) -> tuple[float, float]:
+        """The two payments as a scheme that forbids double compensation pays them.
+
+        Off, both, which is what the headline "both instruments" scenario does
+        and what a referee is entitled to call paying twice for one action:
+        the farm is paid for holding the practice and again for the carbon the
+        practice put away.
+
+        On, the larger of the two and not the sum. The larger rather than
+        withholding the practice payment from anyone who earns a carbon
+        credit, which is the other reading of the same rule, because
+        withholding has a perverse edge: a farm sequestering a few gC would
+        forfeit a whole hectare payment for it, so the rational response is to
+        leave the carbon scheme rather than to sequester less, and the run
+        would be measuring that exit instead of the value of stacking. Taking
+        the larger is also the shape of the real prohibition - agri-environment
+        rules bar being paid twice for one action, not being paid at all for
+        the second.
+
+        One function because the bill and the expectation of it must not
+        disagree about what a farm will be paid: ``CAFarmer.update_capital``
+        settles the year on this, and ``anticipated_policy_transfer`` weighs
+        the switch on it, for the same reason ``nitrogen_charge_for`` is one
+        function.
+
+        Ties go to carbon, which only matters when both are zero.
+        """
+        if not self.no_stacking:
+            return carbon, practice
+        return (carbon, 0.0) if carbon >= practice else (0.0, practice)
+
+    #: What a carbon payment may be written against. ``stock_gain`` first,
+    #: being the default and the only one the published runs used.
+    CARBON_PRICE_BASES = (
+        "stock_gain",
+        "avoided_loss",
+        "avoided_loss_benchmark",
+    )
 
     #: Attributes holding the rates for each instrument a window can name. The
     #: residue payment has two, a flat rate and a cost share, and a window over
@@ -766,6 +820,15 @@ class PolicySettings:
                 "the cheaper one."
             )
 
+        # Absent reads as stock_gain, so a configuration written before this
+        # setting existed keeps its numbers to the bit.
+        basis = str(raw.get("carbon_price_basis") or "stock_gain")
+        if basis not in cls.CARBON_PRICE_BASES:
+            raise ValueError(
+                f"policy.carbon_price_basis must be one of "
+                f"{list(cls.CARBON_PRICE_BASES)}, got {basis!r}."
+            )
+
         ratio = 0.5 if gdp_cost_ratio is None else gdp_cost_ratio
 
         subsidies = raw.get("practice_subsidies", {}) or {}
@@ -790,6 +853,7 @@ class PolicySettings:
 
         return cls(
             carbon_price=float(carbon_price or 0.0),
+            carbon_price_basis=basis,
             nitrogen_charge=_scale_cost_value(
                 raw.get("nitrogen_charge", 0.0), ratio
             ),
@@ -818,6 +882,7 @@ class PolicySettings:
                 else raw["end_year"]
             ),
             windows=windows,
+            no_stacking=bool(raw.get("no_stacking", False)),
         )
 
 
@@ -1606,6 +1671,190 @@ class RegionManagementPerformanceStore:
 # TREND CALCULATION (Linear Regression)
 # =============================================================================
 
+@dataclass(frozen=True)
+class PerceptionNoise:
+    """How badly a farm reads its own fields, or nothing if it reads them exactly.
+
+    Farmers otherwise observe true model values, which makes the reported
+    detection threshold a lower bound: a signal that takes a decade to show
+    through clean observation takes longer through dirty observation. This puts
+    a number on that rather than conceding it.
+
+    The noise enters once, where the year's rates are taken in, which is the
+    only place a farm learns anything about its own land. Everything downstream
+    inherits it: the performance score the farm scores itself on, and - because
+    a farm reports its remembered trends to its neighbours - the peer records
+    the ``anticipated_*`` estimators difference. That is deliberate and it is
+    the realistic case. A farm that misreads its own yield tells its neighbours
+    the misreading; it does not keep a true set of books for them.
+
+    Scaled on the farm's own interannual spread, so there is no unit to choose
+    and no per-metric tuning: sigma is a fraction of how much that metric
+    already moves year to year on that farm. The same self-calibrating
+    construction as the land-similarity kernel, for the same reason - a number
+    in physical units would have to be set per metric, per region and per
+    scenario, and would silently mean something different in each.
+    """
+
+    sigma: float = 0.0
+    bias: float = 0.0
+    #: Per-metric multiplier on sigma; see read_observability.
+    observability: dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_config(cls, config) -> "PerceptionNoise | None":
+        """The ``tpb.perception_noise`` block, or None if off or absent.
+
+        None rather than a zeroed record, so a run without noise takes no draws
+        at all and stays bit-identical to the model as it stood before this
+        existed - and, because it draws nothing, does not disturb the global
+        random stream the rest of the model shares.
+        """
+        settings = getattr(config, "perception_noise", None)
+        if settings is None or not getattr(settings, "enabled", False):
+            return None
+        noise = cls(
+            sigma=float(getattr(settings, "sigma", 0.0)),
+            bias=float(getattr(settings, "bias", 0.0)),
+            observability=read_observability(settings),
+        )
+        if noise.sigma < 0.0:
+            raise ValueError(
+                f"tpb.perception_noise.sigma is {noise.sigma}, but it is a "
+                "width and cannot be negative. Use bias for a systematic "
+                "misreading in one direction."
+            )
+        return noise if (noise.sigma or noise.bias) else None
+
+    def perturb(
+        self, rates: dict[str, float], spreads: dict[str, float]
+    ) -> dict[str, float]:
+        """``rates`` as the farm misreads them, given its own metric spreads.
+
+        A metric the farm has not yet seen vary - ``spread`` of zero, which is
+        the first year or two of a fresh tracker - is passed through untouched.
+        There is nothing to scale the error against yet, and inventing a width
+        for it would make the error largest exactly where the record is
+        thinnest.
+        """
+        return {
+            key: value + spreads[key] * self.observability.get(key, 1.0) * (
+                self.bias + self.sigma * np.random.normal()
+            )
+            if spreads[key] > 0.0 else value
+            for key, value in rates.items()
+        }
+
+
+def read_observability(settings) -> dict[str, float]:
+    """Per-metric multipliers on a noise width, defaulting to one apiece.
+
+    One sigma for every metric says each is equally hard to read against its
+    own year-to-year movement, and the model's own output says otherwise. In
+    the conventional run the interannual spread of the log rate is 0.108 for
+    yield but 0.011 for agricultural soil carbon, because a stock integrates
+    the weather a flux is exposed to. A single sigma of 0.25 therefore asks a
+    farm to read its yield to about 3%, which is roughly what a combine yield
+    monitor achieves (Marchant et al. 2019 report standard errors of
+    0.03-0.32 t/ha on UK cereal experiments, and US yield-monitor work puts
+    the resolvable difference at 3-9%), but asks it to read soil carbon to 0.3%
+    - far beyond laboratory repeatability, let alone a farm's judgement of its
+    own ground. Stakeholders' perception of soil carbon *loss* matched the
+    measured indicator in 43% of French departments, close to chance, and
+    farmer fertility ratings separate low-carbon soils from the rest but not
+    medium from high.
+
+    Keeping sigma as the one swept number and the multipliers as fixed
+    evidence keeps the sweep one-dimensional: these are data about what can be
+    seen, not parameters to tune.
+
+    Absent or empty, every metric gets 1.0, which is the uniform sweep.
+    """
+    raw = getattr(settings, "observability", None)
+    if raw is None:
+        return {}
+    if hasattr(raw, "to_dict"):
+        raw = raw.to_dict()
+    elif not isinstance(raw, dict):
+        raw = {
+            key: value
+            for key, value in vars(raw).items()
+            if not key.startswith("_")
+        }
+
+    multipliers = {}
+    for key, value in raw.items():
+        if key not in METRIC_KEYS:
+            raise ValueError(
+                f"observability names {key!r}, which is not a metric. "
+                f"Known metrics: {sorted(METRIC_KEYS)}."
+            )
+        if float(value) < 0.0:
+            raise ValueError(
+                f"observability.{key} is {value}, but it scales a width and "
+                "cannot be negative."
+            )
+        multipliers[key] = float(value)
+    return multipliers
+
+
+@dataclass(frozen=True)
+class ReportingNoise:
+    """The gap between what a farm's fields did and what it tells its neighbours.
+
+    Distinct from ``PerceptionNoise`` and on top of it. Perception is what a
+    farm gets wrong looking at its own land; reporting is what is further lost
+    passing it on - recall, rounding, the half-season that gets left out, and
+    the fact that nobody describes an abandoned practice the way they describe
+    the one they have just taken up. The two are separate parameters because
+    the evidence separates them: instrumented comparison on a farm's own fields
+    resolves yield differences of a few percent (Marchant et al. 2019, Field
+    Crops Research, report standard errors of 0.03-0.32 t/ha on UK cereal
+    experiments), while what farmers *report* is far worse - self-reported
+    maize yields in Uganda ran at more than twice the crop-cut and full-plot
+    measures and correlated with full-plot harvest at r = 0.04 across all
+    plots and 0.28 on plots above 0.05 ha, with rounding and heaping on round
+    numbers among the named mechanisms (Lobell et al. 2020, AJAE; Gourlay,
+    Kilic and Lobell 2019, J. Dev. Econ.).
+
+    Applied to the within-peer difference rather than to the two levels
+    separately, because that is the only part a listener receives and the only
+    part that survives: ``_collect_effects`` differences each peer against
+    itself, so a farm that overstates everything it does by the same margin is
+    already corrected for. What does not cancel is a farm describing one
+    practice differently from the other, which is what both terms here are.
+
+    Drawn once per comparison and kept, so a farm tells the same story to every
+    neighbour and tells it again next year. Redrawing per listener would let
+    the error average out across a neighbourhood, which is the one thing the
+    reporting literature says it does not do.
+    """
+
+    sigma: float = 0.0
+    bias: float = 0.0
+    #: Per-metric multiplier on sigma; see read_observability.
+    observability: dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_config(cls, config) -> "ReportingNoise | None":
+        """The ``tpb.reporting_noise`` block, or None if off or absent."""
+        settings = getattr(config, "reporting_noise", None)
+        if settings is None or not getattr(settings, "enabled", False):
+            return None
+        noise = cls(
+            sigma=float(getattr(settings, "sigma", 0.0)),
+            bias=float(getattr(settings, "bias", 0.0)),
+            observability=read_observability(settings),
+        )
+        if noise.sigma < 0.0:
+            raise ValueError(
+                f"tpb.reporting_noise.sigma is {noise.sigma}, but it is a "
+                "width and cannot be negative. Use bias for a farm that talks "
+                "up the practice it runs."
+            )
+        return noise if (noise.sigma or noise.bias) else None
+
+
 @dataclass
 class ManagementPerformanceTracker:
     """Online linear regression of self-referenced metric rates.
@@ -1639,6 +1888,16 @@ class ManagementPerformanceTracker:
     sums: dict[str, float] = field(default_factory=zero_metrics)
     time_sums: dict[str, float] = field(default_factory=zero_metrics)
     square_sums: dict[str, float] = field(default_factory=zero_metrics)
+    # The same regression over what the land actually did, as against what the
+    # farm made of it. Only a scheme reads these: a payment is owed on the
+    # carbon in the soil and not on the farm's opinion of it, so
+    # ``CAFarmer.soilc_accumulation`` bills from here while every decision is
+    # taken on ``trend``. Without perception noise the two series are the same
+    # numbers in the same order and the trends are bit-identical, which is why
+    # they are kept unconditionally rather than behind the switch.
+    clean_sums: dict[str, float] = field(default_factory=zero_metrics)
+    clean_time_sums: dict[str, float] = field(default_factory=zero_metrics)
+    clean_square_sums: dict[str, float] = field(default_factory=zero_metrics)
     last_obs_year: int = -1
 
     @classmethod
@@ -1664,7 +1923,9 @@ class ManagementPerformanceTracker:
             n=1,
             # Time index of this single point is 0, so the time sums stay zero.
             sums=dict(rates),
+            clean_sums=dict(rates),
             square_sums={key: value * value for key, value in rates.items()},
+            clean_square_sums={key: value * value for key, value in rates.items()},
             last_obs_year=current_year,
         )
 
@@ -1703,6 +1964,7 @@ class ManagementPerformanceTracker:
             n_years = len(from_earth.time)
             baseline_revenue = farmer.baseline_revenue
             moisture_name = moisture_var(from_earth)
+            depth_mm = soil_carbon_depth_mm(farmer.model)
 
             for i in range(n_years):
                 pft_harvestc = farmer.get_from_earth(
@@ -1717,8 +1979,8 @@ class ManagementPerformanceTracker:
                     if cropped > 0 else 0.0
                 )
 
-                soilc = farmer.get_from_earth(
-                    "soilc_agr_layer", as_scalar=True, band=0, time_idx=i
+                soilc = agricultural_soilc(
+                    farmer.cell, depth_mm, time_idx=i, farmer=farmer
                 )
                 moisture = farmer.get_from_earth(
                     moisture_name, as_scalar=True, time_idx=i
@@ -1773,26 +2035,55 @@ class ManagementPerformanceTracker:
             self._add_point(i, obs)
         self.last_obs_year = sim_year
 
-    def _add_point(self, t: int, rates: dict[str, float]) -> None:
-        """Add one observation at time index t."""
+    def _add_point(
+        self,
+        t: int,
+        rates: dict[str, float],
+        observed: dict[str, float] | None = None,
+    ) -> None:
+        """Add one observation at time index t.
+
+        ``observed`` is what the farm made of ``rates``; it defaults to
+        ``rates`` itself, which is the case of a farm reading its fields
+        exactly. The decision series is built from the one, the billing series
+        from the other.
+        """
+        if observed is None:
+            observed = rates
         self.n += 1
         self.sum_t += t
         self.sum_tt += t * t
         for key in METRIC_KEYS:
-            value = rates[key]
+            value = observed[key]
             self.sums[key] += value
             self.time_sums[key] += t * value
             self.square_sums[key] += value * value
+            self.clean_sums[key] += rates[key]
+            self.clean_time_sums[key] += t * rates[key]
+            self.clean_square_sums[key] += rates[key] * rates[key]
 
     def add_observation(
         self,
         rates: dict[str, float],
         current_year: int,
+        noise: PerceptionNoise | None = None,
     ) -> None:
-        """Add current year's observation (skips if already recorded)."""
+        """Add current year's observation (skips if already recorded).
+
+        With ``noise``, the farm records what it read rather than what was
+        there. The error is scaled on the spread the tracker has accumulated so
+        far, so it is drawn against the record as it stood before this year's
+        observation - this year's own value cannot widen the error applied to
+        it.
+        """
         if self.last_obs_year >= current_year:
             return
-        self._add_point(self.n, rates)
+        observed = (
+            None
+            if noise is None
+            else noise.perturb(rates, self.clean_interannual_std)
+        )
+        self._add_point(self.n, rates, observed)
         self.last_obs_year = current_year
 
     def _slope(self, sum_y: float, sum_ty: float) -> float:
@@ -1830,6 +2121,22 @@ class ManagementPerformanceTracker:
         }
 
     @property
+    def clean_trend(self) -> dict[str, float]:
+        """``trend`` over the unperceived series: what the land actually did.
+
+        For the schemes, which pay on a measurement and not on a belief. Equal
+        to ``trend`` to the bit unless perception noise is on, so a run without
+        it cannot tell the two apart.
+        """
+        if self.n < 2:
+            return zero_metrics()
+
+        return {
+            key: self._slope(self.clean_sums[key], self.clean_time_sums[key])
+            for key in METRIC_KEYS
+        }
+
+    @property
     def level(self) -> dict[str, float]:
         """Absolute performance level (mean of all tracked metrics)."""
         return {key: self._mean(key) for key in METRIC_KEYS}
@@ -1837,13 +2144,64 @@ class ManagementPerformanceTracker:
     def _mean(self, key: str) -> float:
         return self.sums[key] / self.n if self.n else 0.0
 
-    def _std(self, key: str) -> float:
+    def _std(self, key: str, sums=None, square_sums=None) -> float:
         """Interannual std of one metric's rate over the tracking period."""
         if self.n < 2:
             return 0.0
-        mean = self.sums[key] / self.n
-        variance = self.square_sums[key] / self.n - mean * mean
+        sums = self.sums if sums is None else sums
+        square_sums = self.square_sums if square_sums is None else square_sums
+        mean = sums[key] / self.n
+        variance = square_sums[key] / self.n - mean * mean
         return float(np.sqrt(variance)) if variance > 0 else 0.0
+
+    @property
+    def clean_interannual_std(self) -> dict[str, float]:
+        """Year-to-year wobble about the trend, over what the land did.
+
+        What perception noise is scaled against. Two departures from
+        ``level_std``, both of which it needs:
+
+        About the trend, not about the mean. ``level_std`` is the spread of the
+        whole deviation series, which for a metric that is going somewhere is
+        mostly the going rather than the wobble: soil carbon climbing steadily
+        for forty years has a large spread and almost no year-to-year
+        uncertainty. Scaling the error on that would hand the most noise to the
+        farms where the practice works best, making a strong signal harder to
+        see than a weak one, which inverts the thing these runs are meant to
+        measure.
+
+        Over the clean series, not the perceived one, so that sigma means what
+        it says. Scaling on the perceived spread would feed the noise its own
+        output - the error widens the spread, the wider spread widens the error
+        - settling at sigma/sqrt(1 - sigma^2) rather than running away, but
+        making a swept 0.5 behave as 0.58.
+
+        ``level_std`` is deliberately left perceived and left as it was: it is
+        the farm's own sense of how much its land moves, a farm cannot separate
+        the weather from its own misreading when forming that sense, and
+        ``CAWorld.compute_reference_scales`` calibrates the scoring ruler on it.
+        """
+        if self.n < 3:
+            return zero_metrics()
+
+        sxx = self.sum_tt - self.sum_t * self.sum_t / self.n
+        if abs(sxx) < 1e-10:
+            return zero_metrics()
+
+        spreads = {}
+        for key in METRIC_KEYS:
+            total = (
+                self.clean_square_sums[key]
+                - self.clean_sums[key] ** 2 / self.n
+            )
+            sxy = (
+                self.clean_time_sums[key]
+                - self.sum_t * self.clean_sums[key] / self.n
+            )
+            # Residual sum of squares, on n - 2 for the two fitted parameters.
+            residual = (total - sxy * sxy / sxx) / (self.n - 2)
+            spreads[key] = float(np.sqrt(residual)) if residual > 0 else 0.0
+        return spreads
 
     @property
     def level_std(self) -> dict[str, float]:

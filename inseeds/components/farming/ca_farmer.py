@@ -94,10 +94,13 @@ from inseeds.components.farming.farmer import (
     GN_M2_TO_KGN_HA,
     NON_CROPS,
     agricultural_leaching,
+    agricultural_soilc,
     get_cell_var,
     log_rate,
     moisture_var,
+    n_mineralization,
     nitrate_concentration,
+    soil_carbon_depth_mm,
 )
 from inseeds.components.farming.ca_behaviour import (
     TPB,
@@ -113,6 +116,10 @@ from inseeds.components.farming.ca_management import (
 )
 from inseeds.components.exogenous.madrat import ResidueSource
 from inseeds.components.farming.ca_management import ManagementBundle
+from inseeds.components.farming.ca_world import (
+    GLOBAL_REFERENCE,
+    MIN_REFERENCE_YEARS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -375,6 +382,13 @@ class ConservationAgricultureFarmer(Farmer):
         # capital can be closed exactly; see the ``transition_cost`` property.
         self._transition_cost = 0.0
         self._residue_sale_income = 0.0
+
+        # The pre-adoption soil carbon slope an avoided-loss credit is written
+        # against, as (own slope, conventional reference) at the moment it was
+        # taken, and the flag that stops it ever being taken again. Unused
+        # under the default basis; see ``_update_soilc_anchor``.
+        self._soilc_anchor = None
+        self._soilc_anchor_frozen = False
 
         # This year's water and nitrogen fluxes, read once like the other levels
         self._read_leaching_state()
@@ -654,7 +668,7 @@ class ConservationAgricultureFarmer(Farmer):
 
     @property
     def soilc_rate(self) -> float:
-        """Top-layer soil carbon as log deviation from own baseline."""
+        """Soil carbon as log deviation from own baseline."""
         return log_rate(self.soilc, self.baseline_soilc, self.negligible_soilc)
 
     @property
@@ -679,32 +693,164 @@ class ConservationAgricultureFarmer(Farmer):
         current episode only, so it reads zero for a year or two after a switch,
         which understates rather than overstates a new practice.
 
-        The conversion out of log space is first order: the rate is a log
-        deviation about ``baseline_soilc``, so ``baseline x expm1(slope)`` is the
-        gain per year in gC/m2. Exact for soil carbon because the scored
+        Exact for soil carbon because the scored
         quantity and the physical one are the same thing (see
         ``metrics.METRICS``).
+
+        Billed off ``clean_trend``, the regression over what the soil did,
+        rather than ``trend``, the one the farm decides on. The two differ only
+        under perception noise, and there they must: a scheme pays against a
+        measurement, so a farm that misreads its own carbon is still paid for
+        the carbon it put away. Paying on the perceived trend would let an
+        observation error become money, and the misperception the noise runs
+        are meant to slow adoption down with would instead show up as a
+        mispriced subsidy.
         """
         tracker = getattr(self.behaviour, "performance_tracker", None)
         if tracker is None:
             return 0.0
-        return float(self.baseline_soilc * np.expm1(tracker.trend["soilc"]))
+        return float(self.baseline_soilc * np.expm1(tracker.clean_trend["soilc"]))
+
+    @property
+    def conventional_soilc_trend(self) -> float:
+        """Soil carbon slope where management stayed put, per year.
+
+        This farm's country where the conventional pool there is deep enough to
+        carry its own median, the global pool otherwise, and zero before any
+        tracker has the three observations a slope needs. See
+        ``CAWorld.compute_conventional_reference``.
+        """
+        reference = self.world.statistic.get("conventional_soilc_trend") or {}
+        code = getattr(getattr(self.cell, "country", None), "code", None)
+        if code in reference:
+            return float(reference[code])
+        return float(reference.get(GLOBAL_REFERENCE, 0.0))
+
+    def _update_soilc_anchor(self):
+        """Hold the farm's own slope from its last year of not having moved.
+
+        Called once a year from ``update_capital``, before the payment settles.
+        While the farm is still conventional the snapshot follows it, so what it
+        ends up holding is the slope of the last year the farm had changed
+        nothing - the loss rate its own carbon balance was running at before
+        any practice was in the ground. On the first year the farm is no longer
+        conventional the snapshot is frozen and never written again.
+
+        Never again is the point, and it is what makes the instrument proof
+        against cycling. A farm allowed to re-anchor could abandon the
+        practice, let its slope fall back to where it started, re-adopt, and be
+        paid a second time for recovering ground it chose to lose.
+
+        A farm that moves before it has three observations freezes nothing, and
+        is credited on the benchmark instead; see ``baseline_soilc_trend``. That
+        is most pioneers, by construction - they move early.
+        """
+        if self._soilc_anchor_frozen:
+            return
+        if self.behaviour.committed_bundle is not ManagementBundle.conventional:
+            self._soilc_anchor_frozen = True
+            return
+
+        tracker = getattr(self.behaviour, "performance_tracker", None)
+        if tracker is None or tracker.n < MIN_REFERENCE_YEARS:
+            return
+        own = tracker.clean_trend["soilc"]
+        if not np.isfinite(own):
+            return
+        self._soilc_anchor = (float(own), self.conventional_soilc_trend)
+
+    @property
+    def baseline_soilc_trend(self) -> float:
+        """The soil carbon slope a credit is written against, per year.
+
+        Under ``avoided_loss``, this farm's own slope in its last conventional
+        year, carried forward by however far the conventional reference has
+        moved since::
+
+            s_base(t) = s_own(t0) + [s_conv(t) - s_conv(t0)]
+
+        The anchor is what this farm's own carbon balance was doing before it
+        changed anything, so a farm on fast-degrading land is credited against a
+        steeper line than a farm on stable land - which is the whole of the
+        equilibrium argument for the instrument: carbon input sets the stock,
+        and the stock sets what comes back out.
+
+        The drift is measured on land that did not change practice, so adding it
+        leaves the farmer neither paid nor blamed for the climate. It also gives
+        the instrument the property the stock basis lacks: a farm that merely
+        holds its slope flat while conventional land steepens earns a widening
+        credit, because the line it is measured against is falling away beneath
+        it.
+
+        Under ``avoided_loss_benchmark``, the contemporaneous reference alone.
+        The farm is then credited for standing above the conventional population
+        rather than above its own past, which is the performance-standard
+        baseline of the protocol literature. This is also the fallback wherever
+        no anchor was frozen, so a pioneer is credited rather than skipped.
+        """
+        reference = self.conventional_soilc_trend
+        if self.carbon_price_basis != "avoided_loss" or self._soilc_anchor is None:
+            return reference
+        anchor_own, anchor_reference = self._soilc_anchor
+        return anchor_own + (reference - anchor_reference)
+
+    @property
+    def counterfactual_soilc_accumulation(self) -> float:
+        """What ``baseline_soilc_trend`` implies in gC/m2/yr.
+
+        Converted on this farm's own stock by the same first-order step
+        ``soilc_accumulation`` uses, so that the two are the same quantity about
+        the same baseline and subtract exactly.
+        """
+        return float(self.baseline_soilc * np.expm1(self.baseline_soilc_trend))
 
     @property
     def creditable_soilc_accumulation(self) -> float:
         """Soil carbon gain a payment could be made on, in gC/m2/yr.
 
-        The gain, floored at zero: a scheme pays for carbon put in and does not
-        invoice a farm for carbon coming back out. That is how soil carbon
-        schemes are written, and the alternative would make enrolling a wager on
-        the weather - a run of dry years releases carbon nobody chose to release.
+        Under ``stock_gain``, the default and what the published runs used: the
+        farm's own accumulation floored at zero. A scheme pays for carbon put in
+        and does not invoice a farm for carbon coming back out. That is how soil
+        carbon schemes are written, and the alternative would make enrolling a
+        wager on the weather - a run of dry years releases carbon nobody chose
+        to release.
 
-        The asymmetry is deliberate and it is not free: a farm can build the
-        stock, take the payments, shed the practice and keep both. Pricing the
-        decline would close that, at the cost of making the instrument something
-        a cautious farm declines to touch.
+        The asymmetry is deliberate and it is not free, in two ways. A farm can
+        build the stock, take the payments, shed the practice and keep both. And
+        where the stock falls under every available management, which is most
+        cropland here, the floor binds whatever the farm does: a practice that
+        turns a loss of 8 gC/m2/yr into a loss of 2 draws nothing, though it has
+        kept 6 gC/m2/yr out of the air.
+
+        Under either avoided-loss basis the payment is made on the departure
+        from ``baseline_soilc_trend`` instead. Still floored, for the enrolment
+        reason above. Nothing special happens where the farm crosses from
+        losing carbon to gaining it - it is one difference of slopes
+        throughout, so a farm going from -8 to +2 gC/m2/yr is credited for the
+        whole of the 10.
         """
-        return max(0.0, self.soilc_accumulation)
+        return self.creditable_soilc_accumulation_at(
+            self.soilc_accumulation, self.behaviour.committed_bundle
+        )
+
+    def creditable_soilc_accumulation_at(self, accumulation, bundle) -> float:
+        """What would be credited on ``accumulation`` gC/m2/yr held on ``bundle``.
+
+        The settlement rule of ``creditable_soilc_accumulation`` for a
+        hypothetical slope and bundle, so that the payment a farm expects from
+        a switch (``TPB.anticipated_carbon_credit_change``) is settled by the
+        same arithmetic as the one it then receives.
+        """
+        if self.carbon_price_basis == "stock_gain":
+            return max(0.0, accumulation)
+        if bundle is ManagementBundle.conventional:
+            # Nothing was changed, so there is nothing additional to credit. A
+            # conventional farm holding its carbon better than the pool is on
+            # better land or in better weather, not farming better. The stock
+            # basis needs no such gate: a conventional farm whose stock actually
+            # rose did put that carbon away.
+            return 0.0
+        return max(0.0, accumulation - self.counterfactual_soilc_accumulation)
 
     # =========================================================================
     # POLICY INSTRUMENTS
@@ -737,6 +883,16 @@ class ConservationAgricultureFarmer(Farmer):
         if not settings.any_in_force:
             return None
         return settings
+
+    @property
+    def carbon_price_basis(self) -> str:
+        """What this farm's carbon payment is written against.
+
+        From the instrument in force. ``stock_gain`` where none is running or
+        where the configuration predates the setting, so that a run without a
+        carbon price reports the accumulation it always did.
+        """
+        return getattr(self.policy, "carbon_price_basis", None) or "stock_gain"
 
     def carbon_payment_for(self, accumulation: float) -> float:
         """What this farm would be paid for sequestering ``accumulation`` gC/m2.
@@ -1041,11 +1197,10 @@ class ConservationAgricultureFarmer(Farmer):
             cftfrac.band.str.startswith("irrigated"), drop=True
         ).values
 
-        # Use local_index for country-subsetted exogenous data
-        cell_idx = (
-            getattr(self.cell, "local_index", None)
-            or getattr(self.cell, "_local_index", None)
-        )
+        # The residue cache is extracted for the whole simulation grid, so it is
+        # indexed by the global cell position. local_index is the cell's rank
+        # within its country and would read another cell's fractions.
+        cell_idx = getattr(self.cell, "cell_index", None)
         if cell_idx is None:
             cell_idx = self.cell.grid.cell.item()
 
@@ -1116,6 +1271,18 @@ class ConservationAgricultureFarmer(Farmer):
         # What peers gained in yield by sowing the legume instead of the catch
         # crop, as a fraction of their own yield, applied to this farm's
         # revenue - the same conversion pbc_for_bundle makes.
+        #
+        # Whether that fraction is corrected for how well the peer's land
+        # stands in for this farm's is set by tpb.land_similarity.enabled, and
+        # the correction lives in anticipated_change_between rather than here:
+        # scaling by own revenue is the right conversion and is what the capital
+        # accounts use, so the error was never on this line. Uncorrected, a farm
+        # whose soil already mineralises plenty of nitrogen, where a legume's
+        # fixation is worth least, reads the same fraction as a farm where it is
+        # worth most, and unaided legume adopters sit 0.22 SD below the cropland
+        # mean on the legume-minus-catch grain difference. This comparison is
+        # where that was measured, but the flag reweights every comparison the
+        # estimator serves, because the fault is in the estimator.
         extra_revenue = (
             self.behaviour.anticipated_change_between("yield", catch_key, legume_key)
             * self.baseline_revenue
@@ -1527,6 +1694,12 @@ class ConservationAgricultureFarmer(Farmer):
         self._transition_cost = 0.0
         self._residue_sale_income = 0.0
 
+        # Before the payment, because on the first year a farm is no longer
+        # conventional this is what stops the anchor following it; and while it
+        # still is, this is what keeps the anchor current. No-op under the
+        # default basis, which reads no anchor.
+        self._update_soilc_anchor()
+
         # Resolved once, here, and kept: the properties that report them read
         # these fields rather than the instrument again, so the output can be
         # reconciled against raw_profit whatever year the collector runs in.
@@ -1536,6 +1709,14 @@ class ConservationAgricultureFarmer(Farmer):
         self._practice_subsidy = self.practice_subsidy_for(
             self.behaviour.committed_bundle
         )
+        settings = self.policy
+        if settings is not None:
+            # A scheme that forbids double compensation pays the larger of the
+            # two, not the sum; see PolicySettings.unstacked. Off, which is the
+            # default, this returns both untouched.
+            self._carbon_payment, self._practice_subsidy = settings.unstacked(
+                self._carbon_payment, self._practice_subsidy
+            )
         self._nitrogen_charge = self.nitrogen_charge_for(self.leaching)
         self._transfers = (
             self._carbon_payment + self._practice_subsidy - self._nitrogen_charge
@@ -1723,11 +1904,16 @@ class ConservationAgricultureFarmer(Farmer):
         Metric definitions match the runtime properties so historic and
         coupled-run values live on the same scale:
         - yield: cft-fraction-weighted ``pft_harvestc``
-        - soilc: top-layer ``soilc_agr_layer``
+        - soilc: ``soilc_agr_layer`` summed to ``soil_carbon_depth``
         - moisture: ``rootmoist_crop`` (``rootmoist_agr`` for older output)
         - leaching: ``leaching``, the nitrogen flux, every year of the record
           including the dry ones. A year that drained nothing lost nothing,
           which is a real zero and belongs in the mean.
+
+        Also sets ``baseline_nmineralization``, which is not a metric: nothing
+        is scored against it and no rate is taken about it. It describes the
+        land rather than the farming, and exists only as a covariate for the
+        land-similarity weighting (see LAND_COVARIATES).
         """
         from_earth = self.cell.from_earth
         has_history = hasattr(from_earth, "time") and len(from_earth.time) > 1
@@ -1737,11 +1923,13 @@ class ConservationAgricultureFarmer(Farmer):
             self.baseline_soilc = self.soilc
             self.baseline_moisture = self.root_moisture
             self.baseline_leaching = self.leaching
+            self.baseline_nmineralization = n_mineralization(self.cell)
             return
 
         n_years = len(from_earth.time)
         moisture = moisture_var(from_earth)
-        yields, soilcs, moistures, leachings = [], [], [], []
+        depth_mm = soil_carbon_depth_mm(self.model)
+        yields, soilcs, moistures, leachings, nmins = [], [], [], [], []
         for i in range(n_years):
             pft_harvestc = self.get_from_earth(
                 "pft_harvestc", as_scalar=False, drop_band=NON_CROPS, time_idx=i
@@ -1755,12 +1943,15 @@ class ConservationAgricultureFarmer(Farmer):
                 if cropped > 0 else 0.0
             )
             soilcs.append(
-                self.get_from_earth("soilc_agr_layer", as_scalar=True, band=0, time_idx=i)
+                agricultural_soilc(
+                    self.cell, depth_mm, time_idx=i, farmer=self
+                )
             )
             moistures.append(
                 self.get_from_earth(moisture, as_scalar=True, time_idx=i)
             )
             leachings.append(agricultural_leaching(self, time_idx=i))
+            nmins.append(n_mineralization(self.cell, time_idx=i))
 
         self.baseline_yield = float(np.mean(yields))
         self.baseline_soilc = float(np.mean(soilcs))
@@ -1768,6 +1959,9 @@ class ConservationAgricultureFarmer(Farmer):
         # Zero in a cell that never leached, which the offset in log_rate turns
         # into a rate of zero rather than a division by nothing.
         self.baseline_leaching = float(np.mean(leachings))
+        # NaN where the output is absent, which the kernel reads as "no such
+        # covariate here" rather than as a distance.
+        self.baseline_nmineralization = float(np.mean(nmins))
 
     def _read_leaching_state(self) -> None:
         """Read this year's leached nitrogen and runoff off the cell.

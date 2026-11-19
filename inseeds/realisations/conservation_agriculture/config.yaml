@@ -461,6 +461,36 @@ practice_costs:
         # one on, is policy.practice_subsidies.residue_on_field, or a share of
         # this cost via policy.practice_subsidies.residue_on_field_share.
 
+# Soil carbon accounting depth
+# ----------------------------
+# How deep a stock of agricultural soil organic carbon is summed, in mm. It has
+# to be the lower boundary of an LPJmL soil layer. soilc_agr_layer stores each
+# layer's own carbon, not a running total: band k is the layer ending at that
+# depth (0-200, 200-500, 500-1000, 1000-2000, 2000-3000 mm), and the stock to
+# a depth is the sum of the bands whose lower boundary is at most that depth.
+#
+#   200   0-20 cm. The top layer, and the stock every published run used. A
+#         configuration that does not set this still reads that layer.
+#   500   0-50 cm
+#   1000  0-100 cm
+#   2000  0-200 cm
+#   3000  0-300 cm, the whole profile the model carries
+#
+# One depth for every read of the stock. The carbon payment, the payment a
+# farm anticipates when it weighs a practice, the soil metric it scores, the
+# historic baseline and the memory seeded from it, the reference scales, the
+# conventional drift an avoided-loss payment is written against, and the
+# soilc output are all this number. Paying a farm on a stock it does not see
+# would credit a change it never learned from.
+#
+# Schemes that pay for soil carbon sample 0-30 cm: Verra VM0042, the Climate
+# Action Reserve Soil Enrichment Protocol, and the IPCC Tier 1 default
+# stocks. LPJmL has no 30 cm boundary. The nearest layers are 0-20 cm and
+# 0-50 cm, so 500 is the model depth a 30 cm scheme can be set next to, and
+# it is not that scheme. A run at one depth is a different stock from a run
+# at another, and the two are not comparable.
+soil_carbon_depth: 200   # mm, a layer lower boundary
+
 # Policy instruments
 # ------------------
 # Every instrument the model has, and all of them zero by default, so the
@@ -500,14 +530,79 @@ policy:
     # the price is high rather than where it is cheap - the spillover a
     # differentiated price creates and a uniform one does not.
     #
-    # Paid on gains and not charged on losses (see
+    # Paid on gains and never charged on losses (see
     # `creditable_soilc_accumulation`), which is the asymmetry real schemes
-    # carry and the reason abandoning a practice stays cheap.
+    # carry and the reason abandoning a practice stays cheap. What counts as a
+    # gain is `carbon_price_basis` below.
     #
     # Suggested values:
     #   50   compliance-market framing, between voluntary (~30) and EU ETS (~80)
     #   185  damage-cost framing, Rennert et al. mean social cost of carbon
     carbon_price: 0.0        # $/tCO2e [20]
+
+    # What that price is actually paid on.
+    #
+    # stock_gain is the default and the only basis the published runs used: the
+    # rise in the farm's own stock, floored at zero, which is how soil carbon
+    # protocols are written. It has a consequence that only shows up on land
+    # that is losing carbon anyway, and most cropland here is. A practice that
+    # turns a loss of 8 gC/m2/yr into a loss of 2 has kept 6 out of the air and
+    # is paid nothing for it, because the stock still fell. Meanwhile the farm's
+    # expectation of the payment is formed on the difference between two
+    # bundles, which is positive - so the farm adopts expecting carbon revenue,
+    # receives none, and its neighbours read an adopter whose accounts the
+    # scheme never improved. The instrument is then weaker than a flat practice
+    # payment for a reason that has nothing to do with its rate.
+    #
+    # avoided_loss credits the departure from the farm's own pre-adoption loss
+    # rate, carried forward by the drift of land that did not change practice.
+    # The anchor is the farm's own carbon balance before it moved, so a farm on
+    # degrading land is measured against a steeper line than one on stable
+    # land; the drift term is climate, which the farmer did not cause, so
+    # adding it leaves them neither paid nor blamed for it. A farm that only
+    # holds its slope flat while conventional land steepens therefore earns a
+    # widening credit. Crossing from loss into genuine gain needs no special
+    # case: it is one difference of slopes throughout.
+    #
+    # avoided_loss_benchmark drops the anchor and credits the departure from
+    # the contemporaneous conventional population alone - the
+    # performance-standard baseline of the protocol literature. Also what the
+    # avoided_loss basis falls back to for a farm that moved before it had
+    # three years of record to freeze an anchor from, which is most pioneers.
+    #
+    # Either avoided-loss basis is credited only to farms that actually
+    # enrolled, and both stay floored at zero, so a scheme is still something a
+    # cautious farm will touch. Note for a write-up that these credit avoided
+    # emissions rather than removals, except in the part above zero, and so are
+    # not interchangeable with removals one tonne for one.
+    #
+    # Switching this changes what farms are paid and therefore what their peers
+    # learn, so runs made on different bases are not comparable with each other.
+    carbon_price_basis: stock_gain
+
+    # Whether a farm may draw the practice payment and the carbon payment
+    # together.
+    #
+    # false pays both, which is what the headline "both instruments" scenario
+    # does and what a referee is entitled to call paying twice for one action:
+    # the farm is paid for holding the practice, and again for the carbon the
+    # practice put away. true pays the larger of the two and not the sum,
+    # which is what agri-environment rules against double compensation
+    # actually require.
+    #
+    # The larger, rather than withholding the practice payment from anyone who
+    # earns a carbon credit, which is the other reading of the same rule. That
+    # version has a perverse edge: a farm sequestering a few gC would forfeit a
+    # whole per-hectare payment for it, so the rational response is to leave
+    # the carbon scheme rather than to sequester less, and the run would be
+    # measuring that exit rather than the value of stacking.
+    #
+    # Only bites where both instruments are on, so it changes nothing in the
+    # single-instrument scenarios. Applied identically to the bill
+    # (CAFarmer.update_capital) and to the expectation of it
+    # (anticipated_policy_transfer), so a farm cannot decide on a payment it
+    # will not receive.
+    no_stacking: false
 
     # Charge on nitrogen leached below the root zone, in USD per kg N, as
     # [low-income, high-income] and interpolated on the same GDP ratio as the
@@ -804,6 +899,155 @@ tpb:
     # lets every farmer in a country share one cached peer scan. Separate from
     # projection_horizon, which is how far a farmer projects its own benefits.
     max_experience_years: 15
+
+    # Whether a peer's remembered effect is weighted by how well its land
+    # stands in for the farm reading it (anticipated_change_between).
+    #
+    # Unweighted, the estimator differences each peer within itself, which
+    # removes that peer's site from its own record, and then pools across the
+    # neighbourhood or country with nothing asking whether those sites resemble
+    # the receiving one. The consequence is measurable in the runs: a farm whose
+    # soil already mineralises plenty of nitrogen, where a legume's fixation is
+    # worth least, reads the same fractional gain as a farm where it is worth
+    # most, and unaided legume adopters end up 0.22 SD below the cropland mean
+    # on the legume-minus-catch-crop grain difference - the wrong land for the
+    # crop they chose.
+    land_similarity:
+        # On, it reaches every comparison the estimator serves: anticipated
+        # revenue and the anticipated carbon and nitrogen transfers as well as
+        # the cover-crop type. Not narrowed to the cover crop, because the
+        # objection is to the estimator and not to any one practice - if a
+        # fractional gain is not conditioned on the receiving land in one
+        # comparison, it is not conditioned on it in any of them.
+        #
+        # So runs made with this on are not comparable with runs made without
+        # it. false reproduces the earlier runs exactly and is the way back.
+        enabled: true
+        # Smallest weight a peer can be reduced to, as a fraction of an
+        # identical peer's, and the strength of the whole correction: 0 lets a
+        # distant peer be discarded outright, 1 makes the kernel inert.
+        #
+        # Above zero so a distant peer is downweighted rather than discarded,
+        # which matters early in a run when the only farms with a record of
+        # both practices may be nothing like the asking farm. At 0.3 a peer has
+        # to be some 2.7 population spreads away in one covariate before it
+        # counts half as much as an identical farm, so the weighting bites on
+        # land that genuinely differs and leaves ordinary comparisons alone.
+        #
+        # The only number here: distances are in units of the population's own
+        # robust spread (world.compute_land_scales), so the kernel's width is
+        # set by the dispersion of the land and needs no second parameter.
+        floor: 0.3
+
+    # How badly a farm reads its own fields.
+    #
+    # Off, farmers observe true model values, which is why the detection
+    # threshold the paper reports is a lower bound: a signal that takes a
+    # decade to show through clean observation takes longer through dirty
+    # observation. On, it puts a number on that instead of conceding it.
+    #
+    # The error enters once, where the year's rates are taken in, and
+    # everything a farm knows is built from there - its own performance score,
+    # and the record its neighbours read, because a farm that misreads its
+    # yield tells its neighbours the misreading rather than keeping a true set
+    # of books for them. Schemes are not fooled: a carbon payment is billed off
+    # the measured trend (CAFarmer.soilc_accumulation), so an observation error
+    # slows adoption without becoming money.
+    perception_noise:
+        # false draws nothing at all, leaving the global random stream
+        # undisturbed, so a run without noise is bit-identical to the model
+        # before this existed.
+        enabled: false
+        # Width of the misreading, as a fraction of how much that metric
+        # already moves year to year on that farm. A fraction and not a
+        # physical figure, because a figure in gC/m2 would have to be set again
+        # per metric, per region and per scenario, and would quietly mean
+        # something different in each; the farm's own interannual spread is the
+        # natural ruler and the model already tracks it. 0.25 means a typical
+        # misreading a quarter the size of the year-to-year weather swing the
+        # farm is already trying to see through.
+        sigma: 0.25
+        # Systematic misreading, in the same units, applied every year in the
+        # same direction. Separate from sigma because optimism is not noise: it
+        # does not average out over a long record, so a farm never reads
+        # through it however long it watches. Negative is a farm that
+        # consistently underrates what its land is doing.
+        bias: 0.0
+        # Per-metric multiplier on sigma: how much harder this metric is to
+        # read than yield, which is the reference at 1.0.
+        #
+        # Needed because one sigma for all five says each is equally hard to
+        # read against its own year-to-year movement, and the model's own
+        # output says otherwise. In the conventional run the interannual spread
+        # of the log rate is 0.108 for yield but 0.011 for agricultural soil
+        # carbon, a stock integrating the weather a flux is exposed to. A flat
+        # sigma of 0.25 therefore asks a farm to read its yield to about 3%,
+        # which is about what a combine yield monitor manages, and its soil
+        # carbon to 0.3%, which is past laboratory repeatability.
+        #
+        # These are evidence about what can be seen, not parameters to tune,
+        # so sigma stays the one swept number and the sweep stays
+        # one-dimensional. Set every entry to 1.0 to recover the flat sweep.
+        observability:
+            # Reference. A combine yield monitor resolves 3-9% differences;
+            # Marchant et al. 2019 (Field Crops Res.) report standard errors
+            # of 0.03-0.32 t/ha on UK cereal experiments, about 1-4% of yield,
+            # against a modelled interannual spread of 0.108.
+            yield: 1.0
+            # A farm's accounts are the best-known number it has.
+            profit: 0.5
+            # Judged by feel and workability rather than measured.
+            moisture: 1.5
+            # Barely observable as a change. Stakeholders' perception of SOC
+            # loss matched the measured indicator in 43% of French
+            # departments, near chance, and farmer fertility ratings separate
+            # low-carbon soils from the rest but not medium from high. The
+            # large multiplier is mostly the small denominator: soil carbon's
+            # modelled interannual spread is 0.011, so 1.0 here would claim a
+            # farm reads its carbon to 0.3%.
+            soilc: 20.0
+            # Nitrate below the root zone is not visible at all without
+            # sampling, which almost no farm does.
+            leaching: 20.0
+
+    # What a farm tells its neighbours, as against what its fields did.
+    #
+    # On top of perception_noise and separate from it, because the evidence
+    # separates them. Instrumented comparison on a farm's own fields resolves
+    # yield differences of a few percent; what farmers *report* is far worse.
+    # Self-reported maize yields in Uganda ran at more than twice the crop-cut
+    # and full-plot measures and correlated with full-plot harvest at r = 0.04
+    # over all plots and 0.28 above 0.05 ha, with rounding and heaping on round
+    # numbers among the named mechanisms (Lobell et al. 2020 AJAE; Gourlay,
+    # Kilic & Lobell 2019 J. Dev. Econ.). Much of that gap is plot-area and
+    # unit error that cancels in a self-referenced deviation, which is why the
+    # default below is far smaller than those figures taken at face value.
+    #
+    # Applied to the within-peer difference, which is the only part a listener
+    # receives: _collect_effects differences each peer against itself, so a
+    # farm that overstates everything it does by one margin is already
+    # corrected for. What survives is a farm describing one practice
+    # differently from the other.
+    reporting_noise:
+        enabled: false
+        # On the same ruler as perception_noise.sigma, so the two can be read
+        # against each other: 1.0 says what a farm passes on is four times as
+        # far off as what it sees itself at the 0.25 default above, which is
+        # the rough ratio between instrumented comparison and self-reporting.
+        sigma: 1.0
+        # How much a farm talks up the practice it currently runs relative to
+        # the one it does not. The self-justification term, and the part of a
+        # reporting bias that does not cancel in the within-peer difference: a
+        # farm that overstates everything equally is already handled.
+        bias: 0.0
+        # Same meaning and same evidence as under perception_noise: a metric a
+        # farm cannot read is also one it cannot pass on.
+        observability:
+            yield: 1.0
+            profit: 0.5
+            moisture: 1.5
+            soilc: 20.0
+            leaching: 20.0
 
     # Spreading level toggles for social learning
     # Allows enabling/disabling each level of spreading for testing or single-country runs

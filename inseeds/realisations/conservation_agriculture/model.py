@@ -52,7 +52,7 @@ class Farmer(ConservationAgricultureFarmer):
         ),
         soilc=Variable(
             "soil organic carbon",
-            "soil organic carbon content of agent land",
+            "agricultural soil organic carbon to soil_carbon_depth",
             unit=DAU.gC_per_m2,
         ),
         cropyield=Variable(
@@ -340,6 +340,8 @@ class Model(lpjml.Model):
         # Compute static reference scales for performance scoring
         # Must be done AFTER farmers exist but BEFORE simulation starts
         self.world.compute_reference_scales()
+        self.world.compute_land_scales()
+        self.world.compute_conventional_reference()
 
         # Put the weights that actually reached the score on the record, so a
         # finished run can be attributed to a scenario
@@ -413,6 +415,11 @@ class Model(lpjml.Model):
         # the rates, which lengthens as pools like soil carbon drift apart, so it
         # has to track the population rather than stay frozen at init.
         self.world.compute_reference_scales()
+        self.world.compute_land_scales()
+        # Before any farm settles its year, so an avoided-loss credit is
+        # written against the drift as it stands now and not as it stood last
+        # year. Conventional farms only, so adoption does not erode it.
+        self.world.compute_conventional_reference()
 
         self.update_countries(t)
 
